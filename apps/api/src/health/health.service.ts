@@ -1,8 +1,8 @@
 import { Injectable } from "@nestjs/common";
 import type { ApiHealthResponse, HealthDependency } from "@ailyn/shared";
 import { AiService } from "../ai/ai.service.js";
-import type { PrismaService } from "../database/prisma.service.js";
-import type { RedisService } from "../database/redis.service.js";
+import { PrismaService } from "../database/prisma.service.js";
+import { RedisService } from "../database/redis.service.js";
 
 @Injectable()
 export class HealthService {
