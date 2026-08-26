@@ -1,0 +1,32 @@
+{
+  "name": "@ailyn/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "prisma generate && tsc -p tsconfig.json",
+    "dev": "nest start --watch",
+    "start": "node dist/apps/api/src/main.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "prisma:generate": "prisma generate --schema prisma/schema.prisma",
+    "prisma:migrate:deploy": "prisma migrate deploy --schema prisma/schema.prisma"
+  },
+  "dependencies": {
+    "@ailyn/business-rules": "workspace:*",
+    "@ailyn/config": "workspace:*",
+    "@ailyn/shared": "workspace:*",
+    "@nestjs/common": "^11.1.9",
+    "@nestjs/core": "^11.1.9",
+    "@nestjs/platform-express": "^11.1.9",
+    "@prisma/client": "^6.19.2",
+    "bullmq": "^5.65.0",
+    "ioredis": "^5.8.2",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2"
+  },
+  "devDependencies": {
+    "@nestjs/cli": "^11.0.14",
+    "@nestjs/testing": "^11.1.9",
+    "prisma": "^6.19.2"
+  }
+}

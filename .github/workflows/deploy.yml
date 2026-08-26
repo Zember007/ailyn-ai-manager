@@ -1,0 +1,78 @@
+name: Deploy
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    branches: [main]
+    types: [completed]
+
+jobs:
+  deploy:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.28.2
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Validate before deploy
+        run: |
+          pnpm lint
+          pnpm typecheck
+          pnpm test
+          pnpm test:scenarios
+          pnpm build
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/ailyn_deploy
+          chmod 600 ~/.ssh/ailyn_deploy
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+      - name: Sync source
+        env:
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+          DEPLOY_PORT: ${{ vars.DEPLOY_PORT }}
+        run: |
+          rsync -az --delete \
+            --exclude ".git" \
+            --exclude "node_modules" \
+            --exclude ".env" \
+            --exclude ".env.*" \
+            --exclude "backups" \
+            --exclude "data" \
+            -e "ssh -i ~/.ssh/ailyn_deploy -p ${DEPLOY_PORT:-22}" \
+            ./ "${DEPLOY_USER}@${DEPLOY_HOST}:/opt/ailyn/app/"
+      - name: Deploy on VPS
+        env:
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+          DEPLOY_PORT: ${{ vars.DEPLOY_PORT }}
+        run: |
+          ssh -i ~/.ssh/ailyn_deploy -p "${DEPLOY_PORT:-22}" "${DEPLOY_USER}@${DEPLOY_HOST}" <<'REMOTE'
+          set -Eeuo pipefail
+          cd /opt/ailyn/app
+          test -f /opt/ailyn/.env.production
+          docker compose --env-file /opt/ailyn/.env.production -f compose.production.yml build
+          docker compose --env-file /opt/ailyn/.env.production -f compose.production.yml run --rm api pnpm --filter @ailyn/api prisma:migrate:deploy
+          docker compose --env-file /opt/ailyn/.env.production -f compose.production.yml up -d
+          REMOTE
+      - name: Healthcheck
+        env:
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+        run: |
+          for attempt in {1..30}; do
+            curl -fsS "http://${DEPLOY_HOST}/api/health" && exit 0
+            sleep 5
+          done
+          exit 1

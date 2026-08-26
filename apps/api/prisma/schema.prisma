@@ -1,0 +1,220 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum MessageAuthor {
+  client
+  manager
+  system
+  ai
+}
+
+enum MessageChannel {
+  admin
+  whatsapp
+  telegram
+  system
+}
+
+enum ApplicationState {
+  draft
+  collecting_facts
+  ready_for_review
+  approved
+  refused
+  closed
+}
+
+model Contact {
+  id                 String         @id @default(uuid())
+  externalContactId  String?
+  fullName           String?
+  phone              String?
+  email              String?
+  metadata           Json           @default("{}")
+  conversations      Conversation[]
+  applications       Application[]
+  visits             Visit[]
+  facts              ApplicationFact[]
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+
+  @@index([phone])
+  @@index([externalContactId])
+}
+
+model Conversation {
+  id                     String        @id @default(uuid())
+  contactId              String?
+  channel                MessageChannel
+  externalConversationId String?
+  status                 String        @default("open")
+  metadata               Json          @default("{}")
+  contact                Contact?      @relation(fields: [contactId], references: [id])
+  messages               Message[]
+  applications           Application[]
+  createdAt              DateTime      @default(now())
+  updatedAt              DateTime      @updatedAt
+
+  @@index([contactId])
+  @@index([channel, externalConversationId])
+}
+
+model Application {
+  id             String           @id @default(uuid())
+  contactId      String?
+  conversationId String?
+  state          ApplicationState @default(draft)
+  idempotencyKey String?          @unique
+  metadata       Json             @default("{}")
+  contact        Contact?         @relation(fields: [contactId], references: [id])
+  conversation   Conversation?    @relation(fields: [conversationId], references: [id])
+  facts          ApplicationFact[]
+  reminders      Reminder[]
+  notifications  ManagerNotification[]
+  visits         Visit[]
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  @@index([contactId])
+  @@index([conversationId])
+  @@index([state])
+}
+
+model Message {
+  id                String          @id @default(uuid())
+  conversationId    String
+  author            MessageAuthor
+  channel           MessageChannel
+  body              String
+  externalMessageId String?
+  sourceMessageId   String?
+  idempotencyKey    String          @unique
+  metadata          Json            @default("{}")
+  conversation      Conversation    @relation(fields: [conversationId], references: [id])
+  attachments       Attachment[]
+  facts             ApplicationFact[] @relation("FactSourceMessage")
+  auditEvents       AuditEvent[]
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  @@index([conversationId, createdAt])
+  @@index([externalMessageId])
+  @@index([sourceMessageId])
+}
+
+model Attachment {
+  id                 String   @id @default(uuid())
+  messageId          String?
+  externalAttachmentId String?
+  storageKey         String
+  mimeType           String?
+  byteSize           Int?
+  checksum           String?
+  metadata           Json     @default("{}")
+  message            Message? @relation(fields: [messageId], references: [id])
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@index([messageId])
+}
+
+model ApplicationFact {
+  id              String     @id @default(uuid())
+  applicationId   String?
+  contactId       String?
+  key             String
+  value           Json
+  previousValue   Json?
+  source          String
+  sourceMessageId String?
+  supersededAt    DateTime?
+  metadata        Json       @default("{}")
+  application     Application? @relation(fields: [applicationId], references: [id])
+  contact         Contact?   @relation(fields: [contactId], references: [id])
+  sourceMessage   Message?   @relation("FactSourceMessage", fields: [sourceMessageId], references: [id])
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+
+  @@index([applicationId, key])
+  @@index([contactId, key])
+  @@index([sourceMessageId])
+}
+
+model Visit {
+  id            String       @id @default(uuid())
+  contactId     String?
+  applicationId String?
+  scheduledAt   DateTime?
+  completedAt   DateTime?
+  status        String       @default("planned")
+  metadata      Json         @default("{}")
+  contact       Contact?     @relation(fields: [contactId], references: [id])
+  application   Application? @relation(fields: [applicationId], references: [id])
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  @@index([contactId])
+  @@index([applicationId])
+}
+
+model ManagerNotification {
+  id            String       @id @default(uuid())
+  applicationId String?
+  channel       String
+  status        String       @default("pending")
+  payload       Json         @default("{}")
+  sentAt        DateTime?
+  application   Application? @relation(fields: [applicationId], references: [id])
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  @@index([applicationId])
+  @@index([status])
+}
+
+model Reminder {
+  id            String       @id @default(uuid())
+  applicationId String?
+  dueAt         DateTime
+  status        String       @default("scheduled")
+  payload       Json         @default("{}")
+  application   Application? @relation(fields: [applicationId], references: [id])
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  @@index([applicationId])
+  @@index([dueAt, status])
+}
+
+model KnowledgeItem {
+  id        String   @id @default(uuid())
+  title     String
+  body      String
+  source    String?
+  metadata  Json     @default("{}")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model AuditEvent {
+  id              String   @id @default(uuid())
+  actor           String
+  action          String
+  entityType      String
+  entityId        String?
+  messageId       String?
+  idempotencyKey  String?  @unique
+  metadata        Json     @default("{}")
+  message         Message? @relation(fields: [messageId], references: [id])
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([entityType, entityId])
+  @@index([messageId])
+}
