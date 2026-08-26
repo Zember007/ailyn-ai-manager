@@ -9,9 +9,9 @@ if [[ -f "${ENV_FILE}" ]]; then
   exit 0
 fi
 
-postgres_password="$(openssl rand -base64 36 | tr -d '\n')"
-redis_password="$(openssl rand -base64 36 | tr -d '\n')"
-app_secret="$(openssl rand -base64 48 | tr -d '\n')"
+postgres_password="$(openssl rand -hex 32)"
+redis_password="$(openssl rand -hex 32)"
+app_secret="$(openssl rand -hex 48)"
 
 cat > "${ENV_FILE}" <<EOF
 NODE_ENV=production
