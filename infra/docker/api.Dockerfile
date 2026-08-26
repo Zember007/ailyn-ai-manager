@@ -1,7 +1,7 @@
 FROM node:22.21.1-slim AS deps
 WORKDIR /app
 RUN corepack enable pnpm
-COPY package.json pnpm-workspace.yaml tsconfig.base.json ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
 COPY apps/api/package.json apps/api/package.json
 COPY packages/business-rules/package.json packages/business-rules/package.json
 COPY packages/config/package.json packages/config/package.json
@@ -22,7 +22,7 @@ FROM node:22.21.1-slim AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 RUN corepack enable pnpm
-COPY --from=builder /app/package.json /app/pnpm-workspace.yaml ./
+COPY --from=builder /app/package.json /app/pnpm-lock.yaml /app/pnpm-workspace.yaml ./
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/apps/api/package.json ./apps/api/package.json
 COPY --from=builder /app/apps/api/dist ./apps/api/dist

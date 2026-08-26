@@ -34,7 +34,7 @@ echo "Deploying on VPS..."
   cd '${DEPLOY_PATH}'
   test -f /opt/ailyn/.env.production
   docker compose --env-file /opt/ailyn/.env.production -f compose.production.yml build
-  docker compose --env-file /opt/ailyn/.env.production -f compose.production.yml run --rm api pnpm --filter @ailyn/api prisma:migrate:deploy
+  docker compose --env-file /opt/ailyn/.env.production -f compose.production.yml run --rm api ./node_modules/.bin/prisma migrate deploy --schema apps/api/prisma/schema.prisma
   docker compose --env-file /opt/ailyn/.env.production -f compose.production.yml up -d
   docker compose --env-file /opt/ailyn/.env.production -f compose.production.yml ps
 "

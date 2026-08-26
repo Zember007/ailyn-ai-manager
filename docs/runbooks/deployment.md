@@ -16,7 +16,7 @@ DEPLOY_HOST=62.60.217.110 DEPLOY_USER=ailyn scripts/deploy.sh
 Production migrations must use:
 
 ```bash
-docker compose --env-file /opt/ailyn/.env.production -f compose.production.yml run --rm api pnpm --filter @ailyn/api prisma:migrate:deploy
+docker compose --env-file /opt/ailyn/.env.production -f compose.production.yml run --rm api ./node_modules/.bin/prisma migrate deploy --schema apps/api/prisma/schema.prisma
 ```
 
 Never use `prisma migrate dev`, `prisma migrate reset`, or `docker compose down -v` on production.

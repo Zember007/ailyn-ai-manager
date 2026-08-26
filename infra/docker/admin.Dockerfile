@@ -1,7 +1,7 @@
 FROM node:22.21.1-slim AS deps
 WORKDIR /app
 RUN corepack enable pnpm
-COPY package.json pnpm-workspace.yaml tsconfig.base.json ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
 COPY apps/admin/package.json apps/admin/package.json
 COPY packages/shared/package.json packages/shared/package.json
 RUN pnpm install --frozen-lockfile
