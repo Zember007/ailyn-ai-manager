@@ -9,6 +9,7 @@ export interface HealthDependency {
 export interface ApiHealthResponse {
   status: ServiceStatus;
   version: string;
+  stage: string;
   dependencies: {
     postgres: HealthDependency;
     redis: HealthDependency;

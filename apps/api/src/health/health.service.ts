@@ -23,6 +23,7 @@ export class HealthService {
     return {
       status,
       version: process.env.APP_VERSION ?? "0.1.0",
+      stage: "stage-1",
       dependencies: { postgres, redis, ai },
       checkedAt: new Date().toISOString()
     };
