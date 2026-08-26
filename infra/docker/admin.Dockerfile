@@ -10,6 +10,8 @@ FROM node:22.21.1-slim AS builder
 WORKDIR /app
 RUN corepack enable pnpm
 COPY --from=deps /app/node_modules ./node_modules
+COPY --from=deps /app/apps ./apps
+COPY --from=deps /app/packages ./packages
 COPY . .
 RUN pnpm --filter @ailyn/shared build && pnpm --filter @ailyn/admin build
 
