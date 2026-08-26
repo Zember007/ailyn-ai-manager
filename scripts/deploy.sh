@@ -35,7 +35,7 @@ echo "Deploying on VPS..."
   test -f /opt/ailyn/.env.production
   docker compose --env-file /opt/ailyn/.env.production -f compose.production.yml build
   docker compose --env-file /opt/ailyn/.env.production -f compose.production.yml run --rm api sh -lc './apps/api/node_modules/.bin/prisma migrate deploy --schema apps/api/prisma/schema.prisma'
-  docker compose --env-file /opt/ailyn/.env.production -f compose.production.yml up -d
+  docker compose --env-file /opt/ailyn/.env.production -f compose.production.yml up -d --force-recreate api admin nginx
   docker compose --env-file /opt/ailyn/.env.production -f compose.production.yml ps
 "
 

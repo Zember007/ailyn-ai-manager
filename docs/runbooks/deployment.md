@@ -13,6 +13,9 @@ Manual deployment:
 DEPLOY_HOST=62.60.217.110 DEPLOY_USER=ailyn scripts/deploy.sh
 ```
 
+The deploy path rebuilds images and force-recreates `api`, `admin`, and `nginx`
+so running containers always pick up the newly built image.
+
 Production migrations must use:
 
 ```bash
