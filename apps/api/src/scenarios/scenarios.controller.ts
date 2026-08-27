@@ -16,8 +16,8 @@ export class ScenariosController {
   }
 
   @Get("runs/:id")
-  getRun(@Param("id") id: string) {
-    return this.scenarios.getRun(id) ?? { error: "not_found" };
+  async getRun(@Param("id") id: string) {
+    return (await this.scenarios.getRun(id)) ?? { error: "not_found" };
   }
 
   @Post("run")

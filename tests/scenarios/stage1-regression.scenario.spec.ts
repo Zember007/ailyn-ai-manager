@@ -33,4 +33,12 @@ describe("Stage 1 acceptance scenarios", () => {
 
     expect(failed).toEqual([]);
   });
+
+  it("does not manufacture PASS with a generic category-covered placeholder", () => {
+    const placeholders = results.filter((result) =>
+      result.assertions.some((assertion) => assertion.endsWith("_category_covered"))
+    );
+
+    expect(placeholders).toEqual([]);
+  });
 });

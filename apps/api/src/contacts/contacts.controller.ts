@@ -6,8 +6,8 @@ export class ContactsController {
   constructor(private readonly store: Stage1StoreService) {}
 
   @Get()
-  list() {
-    return this.store.listConversations().map((conversation) => ({
+  async list() {
+    return (await this.store.listConversations()).map((conversation) => ({
       id: conversation.contactId,
       externalContactId: conversation.externalContactId,
       conversationId: conversation.id

@@ -1,9 +1,11 @@
 import { Injectable } from "@nestjs/common";
 import type { ApplicationFacts, ApplicationStage, DecisionResult } from "@ailyn/business-rules";
+import type { ApplicationState, MessageAuthor, MessageChannel, Prisma } from "@prisma/client";
+import { PrismaService } from "../database/prisma.service.js";
 
 export interface Stage1Message {
   id: string;
-  author: "client" | "ai" | "system";
+  author: "client" | "ai" | "system" | "manager";
   body: string;
   attachmentIds: string[];
   createdAt: string;
@@ -39,8 +41,10 @@ export interface Stage1Conversation {
   channel: "web-test" | "wazzup";
   messages: Stage1Message[];
   applicationId: string;
+  application?: Stage1Application;
   createdAt: string;
   updatedAt: string;
+  status: string;
 }
 
 export interface AuditEntry {
@@ -52,182 +56,412 @@ export interface AuditEntry {
   createdAt: string;
 }
 
+type ConversationWithRelations = Awaited<ReturnType<Stage1StoreService["loadConversation"]>>;
+type ApplicationWithRelations = NonNullable<Awaited<ReturnType<Stage1StoreService["loadApplication"]>>>;
+
 @Injectable()
 export class Stage1StoreService {
-  private readonly conversations = new Map<string, Stage1Conversation>();
-  private readonly applications = new Map<string, Stage1Application>();
-  private readonly attachments = new Map<string, Stage1Attachment>();
-  private readonly audit: AuditEntry[] = [];
+  constructor(private readonly prisma: PrismaService) {}
 
-  listConversations(): Stage1Conversation[] {
-    return [...this.conversations.values()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  async listConversations(): Promise<Stage1Conversation[]> {
+    const conversations = await this.prisma.conversation.findMany({
+      orderBy: { updatedAt: "desc" },
+      include: conversationInclude()
+    });
+    return conversations.map((conversation) => this.mapConversation(conversation));
   }
 
-  listApplications(): Stage1Application[] {
-    return [...this.applications.values()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  async listApplications(): Promise<Stage1Application[]> {
+    const applications = await this.prisma.application.findMany({
+      orderBy: { updatedAt: "desc" },
+      include: applicationInclude()
+    });
+    return applications.map((application) => this.mapApplication(application));
   }
 
-  listMessages(): Stage1Message[] {
-    return this.listConversations().flatMap((conversation) =>
-      conversation.messages.map((message) => ({ ...message, metadata: { ...message.metadata, conversationId: conversation.id } }))
-    );
+  async listMessages(): Promise<Stage1Message[]> {
+    const messages = await this.prisma.message.findMany({
+      orderBy: { createdAt: "asc" },
+      include: { attachments: true, conversation: true }
+    });
+    return messages.map((message) => ({
+      id: message.id,
+      author: message.author,
+      body: message.body,
+      attachmentIds: message.attachments.map((attachment) => attachment.id),
+      createdAt: message.createdAt.toISOString(),
+      metadata: {
+        ...asRecord(message.metadata),
+        conversationId: message.conversationId,
+        externalConversationId: message.conversation.externalConversationId
+      }
+    }));
   }
 
-  listFacts(): { applicationId: string; key: string; value: unknown }[] {
-    return this.listApplications().flatMap((application) =>
-      Object.entries(application.facts).map(([key, value]) => ({ applicationId: application.id, key, value }))
-    );
+  async listFacts(): Promise<{ applicationId: string; key: string; value: unknown }[]> {
+    const facts = await this.prisma.applicationFact.findMany({
+      where: { supersededAt: null },
+      orderBy: { updatedAt: "desc" }
+    });
+    return facts.map((fact) => ({ applicationId: fact.applicationId ?? "", key: fact.key, value: fact.value }));
   }
 
-  listAttachments(): Stage1Attachment[] {
-    return [...this.attachments.values()];
+  async listAttachments(): Promise<Stage1Attachment[]> {
+    const attachments = await this.prisma.attachment.findMany({
+      orderBy: { createdAt: "desc" },
+      include: { message: true }
+    });
+    return attachments.map((attachment) => ({
+      id: attachment.id,
+      conversationId: attachment.message?.conversationId ?? String(asRecord(attachment.metadata).conversationId ?? ""),
+      type: String(asRecord(attachment.metadata).type ?? "unknown"),
+      status: String(asRecord(attachment.metadata).status ?? "received"),
+      fileName: String(asRecord(attachment.metadata).fileName ?? attachment.storageKey),
+      createdAt: attachment.createdAt.toISOString()
+    }));
   }
 
-  listAudit(): AuditEntry[] {
-    return [...this.audit].reverse();
+  async listAudit(): Promise<AuditEntry[]> {
+    const audit = await this.prisma.auditEvent.findMany({ orderBy: { createdAt: "desc" }, take: 200 });
+    return audit.map((event) => ({
+      id: event.id,
+      action: event.action,
+      entityType: event.entityType,
+      entityId: event.entityId ?? undefined,
+      metadata: asRecord(event.metadata),
+      createdAt: event.createdAt.toISOString()
+    }));
   }
 
-  getConversation(id: string): Stage1Conversation | undefined {
-    return this.conversations.get(id);
+  async getConversation(id: string): Promise<Stage1Conversation | undefined> {
+    const conversation = await this.loadConversation(id);
+    return conversation ? this.mapConversation(conversation) : undefined;
   }
 
-  getApplication(id: string): Stage1Application | undefined {
-    return this.applications.get(id);
+  async getApplication(id: string): Promise<Stage1Application | undefined> {
+    const application = await this.loadApplication(id);
+    return application ? this.mapApplication(application) : undefined;
   }
 
-  getOrCreateConversation(input: {
+  async createWebTestConversation(input?: { externalContactId?: string; externalConversationId?: string }): Promise<Stage1Conversation> {
+    return this.createConversation({
+      channel: "web-test",
+      externalContactId: input?.externalContactId || `web-client-${crypto.randomUUID()}`,
+      externalConversationId: input?.externalConversationId || `web-conversation-${crypto.randomUUID()}`
+    });
+  }
+
+  private async createConversation(input: {
+    channel: "web-test" | "wazzup";
+    externalContactId: string;
+    externalConversationId: string;
+  }): Promise<Stage1Conversation> {
+    const contact = await this.prisma.contact.create({
+      data: {
+        externalContactId: input.externalContactId,
+        metadata: toJson({ source: toPrismaChannel(input.channel) })
+      }
+    });
+    const conversation = await this.prisma.conversation.create({
+      data: {
+        contactId: contact.id,
+        channel: toPrismaChannel(input.channel),
+        externalConversationId: input.externalConversationId,
+        metadata: toJson({ source: toPrismaChannel(input.channel) }),
+        applications: {
+          create: {
+            contactId: contact.id,
+            state: "NEW",
+            metadata: toJson({ status: "need_more_data" })
+          }
+        }
+      },
+      include: conversationInclude()
+    });
+    await this.recordAudit("conversation.created", "Conversation", conversation.id, { externalConversationId: input.externalConversationId });
+    return this.mapConversation(conversation);
+  }
+
+  async getOrCreateConversation(input: {
     externalContactId: string;
     externalConversationId?: string;
     channel: "web-test" | "wazzup";
-  }): { conversation: Stage1Conversation; application: Stage1Application; isNew: boolean } {
-    const id = input.externalConversationId || `conv-${input.externalContactId}`;
-    const existing = this.conversations.get(id);
+  }): Promise<{ conversation: Stage1Conversation; application: Stage1Application; isNew: boolean }> {
+    const externalConversationId = input.externalConversationId || `conv-${input.externalContactId}`;
+    const channel = toPrismaChannel(input.channel);
+    const existing = await this.prisma.conversation.findFirst({
+      where: { channel, externalConversationId },
+      include: conversationInclude()
+    });
     if (existing) {
-      const application = this.applications.get(existing.applicationId);
+      const mapped = this.mapConversation(existing);
+      const application = mapped.application;
       if (!application) {
-        throw new Error(`Application ${existing.applicationId} is missing for conversation ${id}`);
+        throw new Error(`Application is missing for conversation ${mapped.id}`);
       }
-      return { conversation: existing, application, isNew: false };
+      return { conversation: mapped, application, isNew: false };
     }
 
-    const now = new Date().toISOString();
-    const applicationId = `app-${crypto.randomUUID()}`;
-    const conversation: Stage1Conversation = {
-      id,
-      contactId: `contact-${input.externalContactId}`,
-      externalContactId: input.externalContactId,
+    const conversation = await this.createConversation({
       channel: input.channel,
-      messages: [],
-      applicationId,
-      createdAt: now,
-      updatedAt: now
-    };
-    const application: Stage1Application = {
-      id: applicationId,
-      conversationId: conversation.id,
-      contactId: conversation.contactId,
-      status: "need_more_data",
-      stage: "NEW",
-      facts: {},
-      factHistory: [],
-      createdAt: now,
-      updatedAt: now
-    };
-    this.conversations.set(conversation.id, conversation);
-    this.applications.set(application.id, application);
-    this.recordAudit("conversation.created", "Conversation", conversation.id);
-    this.recordAudit("application.created", "Application", application.id);
+      externalContactId: input.externalContactId,
+      externalConversationId
+    });
+    const application = conversation.application;
+    if (!application) {
+      throw new Error(`Application is missing for conversation ${conversation.id}`);
+    }
     return { conversation, application, isNew: true };
   }
 
-  createNewApplication(conversation: Stage1Conversation, previousFacts: ApplicationFacts): Stage1Application {
-    const now = new Date().toISOString();
-    const application: Stage1Application = {
-      id: `app-${crypto.randomUUID()}`,
-      conversationId: conversation.id,
-      contactId: conversation.contactId,
-      status: "need_more_data",
-      stage: "NEW",
-      facts: {
-        fullName: previousFacts.fullName,
-        phone: previousFacts.phone,
-        language: previousFacts.language
+  async createNewApplication(conversation: Stage1Conversation, previousFacts: ApplicationFacts): Promise<Stage1Application> {
+    const saved = await this.prisma.application.create({
+      data: {
+        contactId: conversation.contactId,
+        conversationId: conversation.id,
+        state: "NEW",
+        metadata: { status: "need_more_data" }
       },
-      factHistory: [],
-      createdAt: now,
-      updatedAt: now
-    };
-    conversation.applicationId = application.id;
-    conversation.updatedAt = now;
-    this.applications.set(application.id, application);
-    this.recordAudit("application.created_after_owner_or_plate_change", "Application", application.id);
-    return application;
+      include: applicationInclude()
+    });
+    await this.updateFacts(this.mapApplication(saved), {
+      fullName: previousFacts.fullName,
+      phone: previousFacts.phone,
+      language: previousFacts.language
+    });
+    await this.prisma.conversation.update({
+      where: { id: conversation.id },
+      data: { updatedAt: new Date() }
+    });
+    await this.recordAudit("application.created_after_owner_or_plate_change", "Application", saved.id);
+    const reloaded = await this.loadApplication(saved.id);
+    return this.mapApplication(reloaded ?? saved);
   }
 
-  addMessage(conversation: Stage1Conversation, message: Omit<Stage1Message, "id" | "createdAt">): Stage1Message {
-    const now = new Date().toISOString();
-    const saved: Stage1Message = {
-      id: `msg-${crypto.randomUUID()}`,
-      createdAt: now,
-      ...message
+  async addMessage(conversation: Stage1Conversation, message: Omit<Stage1Message, "id" | "createdAt">): Promise<Stage1Message> {
+    const saved = await this.prisma.message.create({
+      data: {
+        conversationId: conversation.id,
+        author: message.author as MessageAuthor,
+        channel: toPrismaChannel(conversation.channel),
+        body: message.body,
+        idempotencyKey: `msg-${crypto.randomUUID()}`,
+        metadata: toJson(message.metadata ?? {})
+      }
+    });
+    await this.recordAudit("message.created", "Message", saved.id, message.metadata);
+    return {
+      id: saved.id,
+      author: saved.author,
+      body: saved.body,
+      attachmentIds: message.attachmentIds,
+      createdAt: saved.createdAt.toISOString(),
+      metadata: asRecord(saved.metadata)
     };
-    conversation.messages.push(saved);
-    conversation.updatedAt = now;
-    this.recordAudit("message.created", "Message", saved.id);
-    return saved;
   }
 
-  addAttachment(attachment: Omit<Stage1Attachment, "id" | "createdAt">): Stage1Attachment {
-    const saved: Stage1Attachment = {
-      id: `att-${crypto.randomUUID()}`,
-      createdAt: new Date().toISOString(),
-      ...attachment
+  async addAttachment(attachment: Omit<Stage1Attachment, "id" | "createdAt"> & { messageId?: string }): Promise<Stage1Attachment> {
+    const saved = await this.prisma.attachment.create({
+      data: {
+        messageId: attachment.messageId,
+        storageKey: attachment.fileName ?? `web-test/${crypto.randomUUID()}`,
+        mimeType: "application/octet-stream",
+        metadata: toJson({
+          conversationId: attachment.conversationId,
+          type: attachment.type,
+          status: attachment.status,
+          fileName: attachment.fileName
+        })
+      }
+    });
+    await this.recordAudit("attachment.created", "Attachment", saved.id, { type: attachment.type, status: attachment.status });
+    return {
+      id: saved.id,
+      conversationId: attachment.conversationId,
+      type: attachment.type,
+      status: attachment.status,
+      fileName: attachment.fileName,
+      createdAt: saved.createdAt.toISOString()
     };
-    this.attachments.set(saved.id, saved);
-    this.recordAudit("attachment.created", "Attachment", saved.id, { type: saved.type });
-    return saved;
   }
 
-  updateFacts(application: Stage1Application, incoming: Partial<ApplicationFacts>): void {
-    const now = new Date().toISOString();
+  async updateFacts(application: Stage1Application, incoming: Partial<ApplicationFacts>): Promise<void> {
     for (const [key, newValue] of Object.entries(incoming)) {
       if (newValue === undefined) continue;
-      const previousValue = application.facts[key as keyof ApplicationFacts];
+      const current = await this.prisma.applicationFact.findFirst({
+        where: { applicationId: application.id, key, supersededAt: null },
+        orderBy: { updatedAt: "desc" }
+      });
+      const previousValue = current?.value ?? undefined;
       if (JSON.stringify(previousValue) === JSON.stringify(newValue)) continue;
-      application.factHistory.push({ key, previousValue, newValue, changedAt: now });
-      (application.facts as Record<string, unknown>)[key] = newValue;
-      this.recordAudit("fact.updated", "Application", application.id, { key, previousValue, newValue });
+
+      if (current) {
+        await this.prisma.applicationFact.update({
+          where: { id: current.id },
+          data: { supersededAt: new Date() }
+        });
+      }
+      await this.prisma.applicationFact.create({
+        data: {
+          applicationId: application.id,
+          contactId: application.contactId,
+          key,
+          value: toJson(newValue),
+          previousValue: previousValue === undefined ? undefined : toJson(previousValue),
+          source: "web_test"
+        }
+      });
+      await this.prisma.factHistory.create({
+        data: {
+          applicationId: application.id,
+          key,
+          previousValue: previousValue === undefined ? undefined : toJson(previousValue),
+          newValue: toJson(newValue),
+          source: "web_test"
+        }
+      });
+      await this.recordAudit("fact.updated", "Application", application.id, { key, previousValue, newValue });
     }
-    application.updatedAt = now;
+    await this.prisma.application.update({ where: { id: application.id }, data: { updatedAt: new Date() } });
   }
 
-  saveDecision(application: Stage1Application, decision: DecisionResult): void {
-    application.decision = decision;
-    application.status = decision.status;
-    application.stage = decision.stage;
-    application.updatedAt = new Date().toISOString();
-    this.recordAudit("decision.created", "Application", application.id, {
+  async saveDecision(application: Stage1Application, decision: DecisionResult): Promise<void> {
+    await this.prisma.application.update({
+      where: { id: application.id },
+      data: {
+        state: decision.stage as ApplicationState,
+        metadata: toJson({
+          status: decision.status,
+          decision
+        })
+      }
+    });
+    await this.recordAudit("decision.created", "Application", application.id, {
       status: decision.status,
       stage: decision.stage,
       rulesApplied: decision.rulesApplied
     });
   }
 
-  reset(): void {
-    this.conversations.clear();
-    this.applications.clear();
-    this.attachments.clear();
-    this.audit.length = 0;
+  async reset(): Promise<void> {
+    await this.prisma.auditEvent.deleteMany();
+    await this.prisma.attachment.deleteMany();
+    await this.prisma.message.deleteMany();
+    await this.prisma.factHistory.deleteMany();
+    await this.prisma.applicationFact.deleteMany();
+    await this.prisma.application.deleteMany();
+    await this.prisma.conversation.deleteMany();
+    await this.prisma.contact.deleteMany();
   }
 
-  private recordAudit(action: string, entityType: string, entityId?: string, metadata?: Record<string, unknown>): void {
-    this.audit.push({
-      id: `audit-${crypto.randomUUID()}`,
-      action,
-      entityType,
-      entityId,
-      metadata,
-      createdAt: new Date().toISOString()
+  async recordAudit(action: string, entityType: string, entityId?: string, metadata?: Record<string, unknown>): Promise<void> {
+    await this.prisma.auditEvent.create({
+      data: {
+        actor: "admin",
+        action,
+        entityType,
+        entityId,
+        idempotencyKey: `audit-${crypto.randomUUID()}`,
+        metadata: toJson(metadata ?? {})
+      }
     });
   }
+
+  private async loadConversation(id: string) {
+    return this.prisma.conversation.findUnique({
+      where: { id },
+      include: conversationInclude()
+    });
+  }
+
+  private async loadApplication(id: string) {
+    return this.prisma.application.findUnique({
+      where: { id },
+      include: applicationInclude()
+    });
+  }
+
+  private mapConversation(conversation: NonNullable<ConversationWithRelations>): Stage1Conversation {
+    const latestApplication = [...conversation.applications].sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())[0];
+    const application = latestApplication ? this.mapApplication(latestApplication) : undefined;
+    return {
+      id: conversation.id,
+      contactId: conversation.contactId ?? "",
+      externalContactId: conversation.contact?.externalContactId ?? "",
+      channel: fromPrismaChannel(conversation.channel),
+      status: conversation.status,
+      messages: conversation.messages.map((message) => ({
+        id: message.id,
+        author: message.author,
+        body: message.body,
+        attachmentIds: message.attachments.map((attachment) => attachment.id),
+        createdAt: message.createdAt.toISOString(),
+        metadata: asRecord(message.metadata)
+      })),
+      applicationId: application?.id ?? "",
+      application,
+      createdAt: conversation.createdAt.toISOString(),
+      updatedAt: conversation.updatedAt.toISOString()
+    };
+  }
+
+  private mapApplication(application: ApplicationWithRelations): Stage1Application {
+    const metadata = asRecord(application.metadata);
+    return {
+      id: application.id,
+      conversationId: application.conversationId ?? "",
+      contactId: application.contactId ?? "",
+      status: (metadata.status as DecisionResult["status"]) ?? "need_more_data",
+      stage: application.state as ApplicationStage,
+      facts: factsFromRows(application.facts),
+      factHistory: application.factHistory.map((fact) => ({
+        key: fact.key,
+        previousValue: fact.previousValue,
+        newValue: fact.newValue,
+        changedAt: fact.createdAt.toISOString()
+      })),
+      decision: metadata.decision as DecisionResult | undefined,
+      createdAt: application.createdAt.toISOString(),
+      updatedAt: application.updatedAt.toISOString()
+    };
+  }
+}
+
+function conversationInclude() {
+  return {
+    contact: true,
+    messages: { orderBy: { createdAt: "asc" as const }, include: { attachments: true } },
+    applications: { orderBy: { updatedAt: "desc" as const }, include: applicationInclude() }
+  };
+}
+
+function applicationInclude() {
+  return {
+    facts: { where: { supersededAt: null }, orderBy: { updatedAt: "desc" as const } },
+    factHistory: { orderBy: { createdAt: "asc" as const } }
+  };
+}
+
+function factsFromRows(rows: { key: string; value: unknown }[]): ApplicationFacts {
+  const facts: ApplicationFacts = {};
+  for (const row of rows) {
+    (facts as Record<string, unknown>)[row.key] = row.value;
+  }
+  return facts;
+}
+
+function toPrismaChannel(channel: "web-test" | "wazzup"): MessageChannel {
+  return channel === "web-test" ? "web_test" : "wazzup";
+}
+
+function fromPrismaChannel(channel: MessageChannel): "web-test" | "wazzup" {
+  return channel === "wazzup" ? "wazzup" : "web-test";
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+function toJson(value: unknown): Prisma.InputJsonValue {
+  return JSON.parse(JSON.stringify(value ?? null)) as Prisma.InputJsonValue;
 }

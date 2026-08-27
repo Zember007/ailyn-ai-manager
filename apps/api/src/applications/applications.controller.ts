@@ -11,7 +11,7 @@ export class ApplicationsController {
   }
 
   @Get(":id")
-  get(@Param("id") id: string) {
-    return this.store.getApplication(id) ?? { error: "not_found" };
+  async get(@Param("id") id: string) {
+    return (await this.store.getApplication(id)) ?? { error: "not_found" };
   }
 }

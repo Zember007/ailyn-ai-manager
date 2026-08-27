@@ -6,6 +6,7 @@ import type { InboundMessage } from "../channels/channel.interface.js";
 import { ResponsePlanService } from "./response-plan.service.js";
 import { ResponseValidatorService } from "./response-validator.service.js";
 import { Stage1StoreService, type Stage1Application, type Stage1Conversation } from "./stage1-store.service.js";
+import { SettingsService } from "../settings/settings.service.js";
 
 export interface DialogueResult {
   conversation: Stage1Conversation;
@@ -22,18 +23,19 @@ export class DialogueOrchestratorService {
     private readonly ai: AiService,
     private readonly store: Stage1StoreService,
     private readonly responsePlan: ResponsePlanService,
-    private readonly validator: ResponseValidatorService
+    private readonly validator: ResponseValidatorService,
+    private readonly settings: SettingsService
   ) {}
 
   async receive(message: InboundMessage): Promise<DialogueResult> {
-    const { conversation, application: originalApplication, isNew } = this.store.getOrCreateConversation({
+    const { conversation, application: originalApplication, isNew } = await this.store.getOrCreateConversation({
       externalContactId: message.externalContactId,
       externalConversationId: message.externalConversationId,
       channel: message.channel
     });
     let application = originalApplication;
 
-    const inbound = this.store.addMessage(conversation, {
+    const inbound = await this.store.addMessage(conversation, {
       author: "client",
       body: message.text ?? "",
       attachmentIds: message.attachments.map((attachment) => attachment.id),
@@ -62,14 +64,16 @@ export class DialogueOrchestratorService {
     }
 
     if (incomingFacts.ownerChanged || incomingFacts.plateChanged) {
-      application = this.store.createNewApplication(conversation, application.facts);
+      application = await this.store.createNewApplication(conversation, application.facts);
     }
 
     const documentFacts = await this.processAttachments(conversation.id, message.attachments);
-    this.store.updateFacts(application, mergeFacts(incomingFacts, documentFacts));
+    await this.store.updateFacts(application, mergeFacts(incomingFacts, documentFacts));
+    application = (await this.store.getApplication(application.id)) ?? application;
 
-    const decision = evaluateApplication(application.facts);
-    this.store.saveDecision(application, decision);
+    const decision = evaluateApplication(application.facts, await this.settings.getBusinessRuleSettings());
+    await this.store.saveDecision(application, decision);
+    application = (await this.store.getApplication(application.id)) ?? { ...application, decision, status: decision.status, stage: decision.stage };
 
     const plan = this.responsePlan.build({
       facts: application.facts,
@@ -84,7 +88,7 @@ export class DialogueOrchestratorService {
       responsePlan: plan
     });
     const validation = this.validator.validate({ message: generated.message, decision });
-    this.store.addMessage(conversation, {
+    await this.store.addMessage(conversation, {
       author: "ai",
       body: validation.finalMessage,
       attachmentIds: [],
@@ -117,7 +121,7 @@ export class DialogueOrchestratorService {
       if (docCode) {
         documents[docCode] = vision.quality === "poor" ? "poor_quality" : "received";
       }
-      this.store.addAttachment({
+      await this.store.addAttachment({
         conversationId,
         type: vision.type,
         status: vision.quality === "poor" ? "poor_quality" : "received",
