@@ -3,15 +3,62 @@ set -Eeuo pipefail
 
 ENV_FILE="${ENV_FILE:-/opt/ailyn/.env.production}"
 
-ensure_key() {
-  local key="$1"
-  local value="$2"
+managed_keys=(
+  NODE_ENV
+  APP_VERSION
+  APP_SECRET
+  API_PORT
+  ADMIN_PORT
+  POSTGRES_DB
+  POSTGRES_USER
+  POSTGRES_PASSWORD
+  REDIS_PASSWORD
+  DATABASE_URL
+  REDIS_URL
+  S3_ENDPOINT
+  S3_BUCKET
+  S3_ACCESS_KEY
+  S3_SECRET_KEY
+  AI_PROVIDER
+  ROUTERAI_API_KEY
+  ROUTERAI_TEXT_MODEL
+  ROUTERAI_VISION_MODEL
+  ROUTERAI_EVAL_MODEL
+  ROUTERAI_TIMEOUT_MS
+  ROUTERAI_MAX_RETRIES
+  WHATSAPP_PROVIDER
+  WAZZUP_API_KEY
+  WAZZUP_BASE_URL
+  WAZZUP_CHANNEL_ID
+  WAZZUP_WEBHOOK_SECRET
+  WAZZUP_PHONE_NUMBER
+)
 
-  if grep -q "^${key}=" "${ENV_FILE}"; then
-    return 0
-  fi
+is_managed_key() {
+  local candidate="$1"
+  local key
 
-  printf '%s=%s\n' "${key}" "${value}" >> "${ENV_FILE}"
+  for key in "${managed_keys[@]}"; do
+    if [[ "${key}" == "${candidate}" ]]; then
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+array_contains() {
+  local candidate="$1"
+  shift
+  local item
+
+  for item in "$@"; do
+    if [[ "${item}" == "${candidate}" ]]; then
+      return 0
+    fi
+  done
+
+  return 1
 }
 
 get_existing_value() {
@@ -21,91 +68,99 @@ get_existing_value() {
     return 0
   fi
 
-  grep "^${key}=" "${ENV_FILE}" | head -n 1 | cut -d= -f2- || true
+  grep "^${key}=" "${ENV_FILE}" | tail -n 1 | cut -d= -f2- || true
 }
 
-postgres_db="${POSTGRES_DB:-$(get_existing_value POSTGRES_DB)}"
-postgres_user="${POSTGRES_USER:-$(get_existing_value POSTGRES_USER)}"
-postgres_password="${POSTGRES_PASSWORD:-$(get_existing_value POSTGRES_PASSWORD)}"
-redis_password="${REDIS_PASSWORD:-$(get_existing_value REDIS_PASSWORD)}"
-app_secret="${APP_SECRET:-$(get_existing_value APP_SECRET)}"
-s3_access_key="${S3_ACCESS_KEY:-$(get_existing_value S3_ACCESS_KEY)}"
-s3_secret_key="${S3_SECRET_KEY:-$(get_existing_value S3_SECRET_KEY)}"
+pick_value() {
+  local key="$1"
+  local fallback="${2:-}"
+  local env_value="${!key-}"
+  local file_value
 
-postgres_db="${postgres_db:-ailyn}"
-postgres_user="${postgres_user:-ailyn}"
-postgres_password="${postgres_password:-$(openssl rand -hex 32)}"
-redis_password="${redis_password:-$(openssl rand -hex 32)}"
-app_secret="${app_secret:-$(openssl rand -hex 48)}"
-s3_access_key="${s3_access_key:-ailyn-s3}"
-s3_secret_key="${s3_secret_key:-$(openssl rand -hex 32)}"
-database_url="postgresql://${postgres_user}:${postgres_password}@postgres:5432/${postgres_db}?schema=public"
-redis_url="redis://:${redis_password}@redis:6379"
+  if [[ -n "${env_value}" ]]; then
+    printf '%s' "${env_value}"
+    return 0
+  fi
 
+  file_value="$(get_existing_value "${key}")"
+  if [[ -n "${file_value}" ]]; then
+    printf '%s' "${file_value}"
+    return 0
+  fi
+
+  printf '%s' "${fallback}"
+}
+
+postgres_db="$(pick_value POSTGRES_DB ailyn)"
+postgres_user="$(pick_value POSTGRES_USER ailyn)"
+postgres_password="$(pick_value POSTGRES_PASSWORD "$(openssl rand -hex 32)")"
+redis_password="$(pick_value REDIS_PASSWORD "$(openssl rand -hex 32)")"
+app_secret="$(pick_value APP_SECRET "$(openssl rand -hex 48)")"
+s3_access_key="$(pick_value S3_ACCESS_KEY ailyn-s3)"
+s3_secret_key="$(pick_value S3_SECRET_KEY "$(openssl rand -hex 32)")"
+database_url="$(pick_value DATABASE_URL "postgresql://${postgres_user}:${postgres_password}@postgres:5432/${postgres_db}?schema=public")"
+redis_url="$(pick_value REDIS_URL "redis://:${redis_password}@redis:6379")"
+
+extras=()
 if [[ -f "${ENV_FILE}" ]]; then
-  ensure_key "NODE_ENV" "production"
-  ensure_key "APP_VERSION" "0.1.0"
-  ensure_key "APP_SECRET" "${app_secret}"
-  ensure_key "API_PORT" "3001"
-  ensure_key "ADMIN_PORT" "3000"
-  ensure_key "POSTGRES_DB" "${postgres_db}"
-  ensure_key "POSTGRES_USER" "${postgres_user}"
-  ensure_key "POSTGRES_PASSWORD" "${postgres_password}"
-  ensure_key "REDIS_PASSWORD" "${redis_password}"
-  ensure_key "DATABASE_URL" "${database_url}"
-  ensure_key "REDIS_URL" "${redis_url}"
-  ensure_key "S3_ENDPOINT" "http://minio:9000"
-  ensure_key "S3_BUCKET" "ailyn-stage1"
-  ensure_key "S3_ACCESS_KEY" "${s3_access_key}"
-  ensure_key "S3_SECRET_KEY" "${s3_secret_key}"
-  ensure_key "AI_PROVIDER" "routerai"
-  ensure_key "ROUTERAI_API_KEY" ""
-  ensure_key "ROUTERAI_TEXT_MODEL" ""
-  ensure_key "ROUTERAI_VISION_MODEL" ""
-  ensure_key "ROUTERAI_EVAL_MODEL" ""
-  ensure_key "ROUTERAI_TIMEOUT_MS" "30000"
-  ensure_key "ROUTERAI_MAX_RETRIES" "2"
-  ensure_key "WHATSAPP_PROVIDER" "wazzup"
-  ensure_key "WAZZUP_API_KEY" ""
-  ensure_key "WAZZUP_BASE_URL" ""
-  ensure_key "WAZZUP_CHANNEL_ID" ""
-  ensure_key "WAZZUP_WEBHOOK_SECRET" ""
-  ensure_key "WAZZUP_PHONE_NUMBER" ""
-  chmod 600 "${ENV_FILE}"
-  echo "${ENV_FILE} already exists; missing keys were appended."
-  exit 0
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    [[ -z "${line}" || "${line}" == \#* ]] && continue
+    [[ "${line}" != *=* ]] && continue
+
+    key="${line%%=*}"
+    if is_managed_key "${key}"; then
+      continue
+    fi
+
+    if [[ "${#extras[*]}" -eq 0 ]] || ! array_contains "${key}" "${extras[@]}"; then
+      extras+=("${key}")
+    fi
+  done < "${ENV_FILE}"
 fi
 
-cat > "${ENV_FILE}" <<EOF
-NODE_ENV=production
-APP_VERSION=0.1.0
-APP_SECRET=${app_secret}
-API_PORT=3001
-ADMIN_PORT=3000
-POSTGRES_DB=ailyn
-POSTGRES_USER=ailyn
-POSTGRES_PASSWORD=${postgres_password}
-REDIS_PASSWORD=${redis_password}
-DATABASE_URL=${database_url}
-REDIS_URL=${redis_url}
-S3_ENDPOINT=http://minio:9000
-S3_BUCKET=ailyn-stage1
-S3_ACCESS_KEY=${s3_access_key}
-S3_SECRET_KEY=${s3_secret_key}
-AI_PROVIDER=routerai
-ROUTERAI_API_KEY=
-ROUTERAI_TEXT_MODEL=
-ROUTERAI_VISION_MODEL=
-ROUTERAI_EVAL_MODEL=
-ROUTERAI_TIMEOUT_MS=30000
-ROUTERAI_MAX_RETRIES=2
-WHATSAPP_PROVIDER=wazzup
-WAZZUP_API_KEY=
-WAZZUP_BASE_URL=
-WAZZUP_CHANNEL_ID=
-WAZZUP_WEBHOOK_SECRET=
-WAZZUP_PHONE_NUMBER=
-EOF
+tmpfile="$(mktemp "${ENV_FILE}.tmp.XXXXXX")"
 
-chmod 600 "${ENV_FILE}"
-echo "Created ${ENV_FILE}"
+write_key() {
+  local key="$1"
+  local value="$2"
+  printf '%s=%s\n' "${key}" "${value}" >> "${tmpfile}"
+}
+
+write_key "NODE_ENV" "$(pick_value NODE_ENV production)"
+write_key "APP_VERSION" "$(pick_value APP_VERSION 0.1.0)"
+write_key "APP_SECRET" "${app_secret}"
+write_key "API_PORT" "$(pick_value API_PORT 3001)"
+write_key "ADMIN_PORT" "$(pick_value ADMIN_PORT 3000)"
+write_key "POSTGRES_DB" "${postgres_db}"
+write_key "POSTGRES_USER" "${postgres_user}"
+write_key "POSTGRES_PASSWORD" "${postgres_password}"
+write_key "REDIS_PASSWORD" "${redis_password}"
+write_key "DATABASE_URL" "${database_url}"
+write_key "REDIS_URL" "${redis_url}"
+write_key "S3_ENDPOINT" "$(pick_value S3_ENDPOINT http://minio:9000)"
+write_key "S3_BUCKET" "$(pick_value S3_BUCKET ailyn-stage1)"
+write_key "S3_ACCESS_KEY" "${s3_access_key}"
+write_key "S3_SECRET_KEY" "${s3_secret_key}"
+write_key "AI_PROVIDER" "$(pick_value AI_PROVIDER routerai)"
+write_key "ROUTERAI_API_KEY" "$(pick_value ROUTERAI_API_KEY)"
+write_key "ROUTERAI_TEXT_MODEL" "$(pick_value ROUTERAI_TEXT_MODEL)"
+write_key "ROUTERAI_VISION_MODEL" "$(pick_value ROUTERAI_VISION_MODEL)"
+write_key "ROUTERAI_EVAL_MODEL" "$(pick_value ROUTERAI_EVAL_MODEL)"
+write_key "ROUTERAI_TIMEOUT_MS" "$(pick_value ROUTERAI_TIMEOUT_MS 30000)"
+write_key "ROUTERAI_MAX_RETRIES" "$(pick_value ROUTERAI_MAX_RETRIES 2)"
+write_key "WHATSAPP_PROVIDER" "$(pick_value WHATSAPP_PROVIDER wazzup)"
+write_key "WAZZUP_API_KEY" "$(pick_value WAZZUP_API_KEY)"
+write_key "WAZZUP_BASE_URL" "$(pick_value WAZZUP_BASE_URL)"
+write_key "WAZZUP_CHANNEL_ID" "$(pick_value WAZZUP_CHANNEL_ID)"
+write_key "WAZZUP_WEBHOOK_SECRET" "$(pick_value WAZZUP_WEBHOOK_SECRET)"
+write_key "WAZZUP_PHONE_NUMBER" "$(pick_value WAZZUP_PHONE_NUMBER)"
+
+if [[ "${#extras[@]}" -gt 0 ]]; then
+  for key in "${extras[@]}"; do
+    write_key "${key}" "$(get_existing_value "${key}")"
+  done
+fi
+
+install -m 600 "${tmpfile}" "${ENV_FILE}"
+rm -f "${tmpfile}"
+echo "Provisioned ${ENV_FILE}"
