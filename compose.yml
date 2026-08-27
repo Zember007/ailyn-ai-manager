@@ -53,7 +53,7 @@ services:
     logging: *default-logging
 
   minio-init:
-    image: minio/mc:RELEASE.2026-07-21T05-28-08Z
+    image: minio/mc:latest
     depends_on:
       minio:
         condition: service_healthy
