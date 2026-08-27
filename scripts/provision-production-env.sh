@@ -12,6 +12,8 @@ fi
 postgres_password="$(openssl rand -hex 32)"
 redis_password="$(openssl rand -hex 32)"
 app_secret="$(openssl rand -hex 48)"
+s3_access_key="ailyn-s3"
+s3_secret_key="$(openssl rand -hex 32)"
 
 cat > "${ENV_FILE}" <<EOF
 NODE_ENV=production
@@ -25,16 +27,23 @@ POSTGRES_PASSWORD=${postgres_password}
 REDIS_PASSWORD=${redis_password}
 DATABASE_URL=postgresql://ailyn:${postgres_password}@postgres:5432/ailyn?schema=public
 REDIS_URL=redis://:${redis_password}@redis:6379
-OPENAI_API_KEY=
-TELEGRAM_BOT_TOKEN=
-WHATSAPP_ACCESS_TOKEN=
-WHATSAPP_VERIFY_TOKEN=
-WHATSAPP_PHONE_NUMBER_ID=
-WHATSAPP_BUSINESS_ACCOUNT_ID=
-S3_ENDPOINT=
-S3_BUCKET=
-S3_ACCESS_KEY=
-S3_SECRET_KEY=
+S3_ENDPOINT=http://minio:9000
+S3_BUCKET=ailyn-stage1
+S3_ACCESS_KEY=${s3_access_key}
+S3_SECRET_KEY=${s3_secret_key}
+AI_PROVIDER=routerai
+ROUTERAI_API_KEY=
+ROUTERAI_TEXT_MODEL=
+ROUTERAI_VISION_MODEL=
+ROUTERAI_EVAL_MODEL=
+ROUTERAI_TIMEOUT_MS=30000
+ROUTERAI_MAX_RETRIES=2
+WHATSAPP_PROVIDER=wazzup
+WAZZUP_API_KEY=
+WAZZUP_BASE_URL=
+WAZZUP_CHANNEL_ID=
+WAZZUP_WEBHOOK_SECRET=
+WAZZUP_PHONE_NUMBER=
 EOF
 
 chmod 600 "${ENV_FILE}"

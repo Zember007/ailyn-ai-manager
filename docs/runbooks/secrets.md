@@ -19,10 +19,21 @@ Infrastructure secrets generated during bootstrap:
 - `POSTGRES_PASSWORD`
 - `REDIS_PASSWORD`
 - `APP_SECRET`
+- `S3_ACCESS_KEY`
+- `S3_SECRET_KEY`
 
 External application secrets to add later:
 
-- `OPENAI_API_KEY`
-- `TELEGRAM_BOT_TOKEN`
-- WhatsApp credentials
-- S3 credentials if external media storage is selected
+- `ROUTERAI_API_KEY`
+- RouterAI model/base URL settings
+- Wazzup credentials
+
+If you use bundled MinIO from `compose.production.yml`, set:
+
+- `S3_ENDPOINT=http://minio:9000`
+- `S3_BUCKET=ailyn-stage1`
+
+If you use external S3 instead of bundled MinIO, replace those values and provide the external bucket credentials in:
+
+- `S3_ACCESS_KEY`
+- `S3_SECRET_KEY`

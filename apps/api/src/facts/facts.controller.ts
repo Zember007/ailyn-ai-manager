@@ -1,10 +1,12 @@
 import { Controller, Get } from "@nestjs/common";
-import { placeholderItems, type PlaceholderItem } from "../domain-placeholder.js";
+import { Stage1StoreService } from "../dialogue/stage1-store.service.js";
 
 @Controller("facts")
 export class FactsController {
+  constructor(private readonly store: Stage1StoreService) {}
+
   @Get()
-  list(): PlaceholderItem[] {
-    return placeholderItems("facts");
+  list() {
+    return this.store.listFacts();
   }
 }

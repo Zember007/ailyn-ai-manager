@@ -14,7 +14,7 @@ Ailyn is a Stage 1 production-ready pnpm monorepo for an AI-assisted manager app
 ```bash
 pnpm install
 cp .env.example .env
-docker compose up -d postgres redis
+docker compose up -d postgres redis minio minio-init
 pnpm --filter @ailyn/api prisma:migrate:deploy
 pnpm dev
 ```
@@ -44,6 +44,10 @@ docker compose --env-file /opt/ailyn/.env.production -f compose.production.yml u
 ```
 
 PostgreSQL and Redis are internal services only. Do not publish ports `5432` or `6379`.
+Local S3-compatible storage is available through MinIO:
+
+- API endpoint: `http://localhost:9000`
+- MinIO console: `http://localhost:9001`
 
 ## Migrations
 

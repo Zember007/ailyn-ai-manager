@@ -19,12 +19,21 @@ export interface ApiHealthResponse {
 }
 
 export const APPLICATION_STATES = [
-  "draft",
-  "collecting_facts",
-  "ready_for_review",
-  "approved",
-  "refused",
-  "closed"
+  "NEW",
+  "COLLECTING_VEHICLE",
+  "COLLECTING_VALUE",
+  "COLLECTING_AMOUNT",
+  "COLLECTING_RESIDENCE",
+  "ELIGIBILITY_CHECK",
+  "COLLECTING_DOCUMENTS",
+  "COLLECTING_FAMILY_STATUS",
+  "CHECKING_GUARANTOR",
+  "SCHEDULING_VISIT",
+  "TARGET_REACHED_DOCUMENTS",
+  "TARGET_REACHED_VISIT",
+  "REFUSED",
+  "PAUSED",
+  "EXISTING_CONTRACT_REDIRECT"
 ] as const;
 
 export type ApplicationState = (typeof APPLICATION_STATES)[number];

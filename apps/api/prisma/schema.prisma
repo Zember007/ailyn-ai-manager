@@ -16,6 +16,8 @@ enum MessageAuthor {
 }
 
 enum MessageChannel {
+  web_test
+  wazzup
   admin
   whatsapp
   telegram
@@ -23,12 +25,27 @@ enum MessageChannel {
 }
 
 enum ApplicationState {
-  draft
-  collecting_facts
-  ready_for_review
-  approved
-  refused
-  closed
+  NEW
+  COLLECTING_VEHICLE
+  COLLECTING_VALUE
+  COLLECTING_AMOUNT
+  COLLECTING_RESIDENCE
+  ELIGIBILITY_CHECK
+  COLLECTING_DOCUMENTS
+  COLLECTING_FAMILY_STATUS
+  CHECKING_GUARANTOR
+  SCHEDULING_VISIT
+  TARGET_REACHED_DOCUMENTS
+  TARGET_REACHED_VISIT
+  REFUSED
+  PAUSED
+  EXISTING_CONTRACT_REDIRECT
+}
+
+enum ScenarioRunStatus {
+  PASS
+  FAIL
+  BLOCKED
 }
 
 model Contact {
@@ -70,12 +87,13 @@ model Application {
   id             String           @id @default(uuid())
   contactId      String?
   conversationId String?
-  state          ApplicationState @default(draft)
+  state          ApplicationState @default(NEW)
   idempotencyKey String?          @unique
   metadata       Json             @default("{}")
   contact        Contact?         @relation(fields: [contactId], references: [id])
   conversation   Conversation?    @relation(fields: [conversationId], references: [id])
   facts          ApplicationFact[]
+  factHistory    FactHistory[]
   reminders      Reminder[]
   notifications  ManagerNotification[]
   visits         Visit[]
@@ -147,6 +165,19 @@ model ApplicationFact {
   @@index([sourceMessageId])
 }
 
+model FactHistory {
+  id            String      @id @default(uuid())
+  applicationId String
+  key           String
+  previousValue Json?
+  newValue      Json
+  source        String
+  application   Application @relation(fields: [applicationId], references: [id])
+  createdAt     DateTime    @default(now())
+
+  @@index([applicationId, key])
+}
+
 model Visit {
   id            String       @id @default(uuid())
   contactId     String?
@@ -194,13 +225,56 @@ model Reminder {
 }
 
 model KnowledgeItem {
+  id         String   @id @default(uuid())
+  key        String   @unique
+  category   String
+  aliases    Json     @default("[]")
+  answerRu   String
+  answerKg   String?
+  conditions Json     @default("{}")
+  priority   Int      @default(0)
+  status     String   @default("draft")
+  version    Int      @default(1)
+  active     Boolean  @default(true)
+  source     String?
+  metadata   Json     @default("{}")
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
+
+model Setting {
   id        String   @id @default(uuid())
-  title     String
-  body      String
-  source    String?
-  metadata  Json     @default("{}")
+  key       String   @unique
+  value     Json
+  blocked   Boolean  @default(false)
+  updatedBy String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+model ScenarioRun {
+  id        String            @id @default(uuid())
+  status    ScenarioRunStatus
+  summary   Json             @default("{}")
+  results   ScenarioResult[]
+  createdAt DateTime          @default(now())
+  updatedAt DateTime          @updatedAt
+}
+
+model ScenarioResult {
+  id        String            @id @default(uuid())
+  runId     String
+  scenarioId String
+  status    ScenarioRunStatus
+  expected  String
+  actual    String
+  assertions Json             @default("[]")
+  error     String?
+  run       ScenarioRun       @relation(fields: [runId], references: [id])
+  createdAt DateTime          @default(now())
+
+  @@index([runId])
+  @@index([scenarioId, status])
 }
 
 model AuditEvent {

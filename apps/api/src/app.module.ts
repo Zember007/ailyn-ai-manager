@@ -12,6 +12,9 @@ import { HealthModule } from "./health/health.module.js";
 import { IntegrationsModule } from "./integrations/integrations.module.js";
 import { KnowledgeModule } from "./knowledge/knowledge.module.js";
 import { MessagesModule } from "./messages/messages.module.js";
+import { DialogueModule } from "./dialogue/dialogue.module.js";
+import { SettingsModule } from "./settings/settings.module.js";
+import { ScenariosModule } from "./scenarios/scenarios.module.js";
 
 @Module({
   imports: [
@@ -22,12 +25,15 @@ import { MessagesModule } from "./messages/messages.module.js";
     ApplicationsModule,
     MessagesModule,
     FactsModule,
+    DialogueModule,
     AttachmentsModule,
     BusinessRulesModule,
     AiModule,
     KnowledgeModule,
     AuditModule,
-    IntegrationsModule
+    IntegrationsModule,
+    SettingsModule,
+    ScenariosModule
   ]
 })
 export class AppModule {}
