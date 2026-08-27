@@ -12,6 +12,7 @@ RUN pnpm install --frozen-lockfile
 
 FROM node:22.21.1-slim AS builder
 WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends openssl && rm -rf /var/lib/apt/lists/*
 RUN corepack enable pnpm
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=deps /app/apps ./apps
