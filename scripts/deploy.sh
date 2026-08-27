@@ -34,15 +34,15 @@ echo "Deploying on VPS..."
   cd '${DEPLOY_PATH}'
   test -f /opt/ailyn/.env.production
   docker compose --env-file /opt/ailyn/.env.production -f compose.production.yml build
-  docker compose --env-file /opt/ailyn/.env.production -f compose.production.yml run -T --rm api sh -lc './apps/api/node_modules/.bin/prisma migrate deploy --schema apps/api/prisma/schema.prisma'
+  docker compose --env-file /opt/ailyn/.env.production -f compose.production.yml run -T --rm api sh -lc './apps/api/node_modules/.bin/prisma migrate deploy --schema apps/api/prisma/schema.prisma' < /dev/null
   docker compose --env-file /opt/ailyn/.env.production -f compose.production.yml up -d --force-recreate api admin nginx
   docker compose --env-file /opt/ailyn/.env.production -f compose.production.yml ps
 "
 
 echo "Waiting for health endpoint..."
 for attempt in {1..30}; do
-  if curl -fsS "${HEALTH_URL}" >/dev/null; then
-    curl -fsS "${HEALTH_URL}"
+  if response="$(curl -fsS "${HEALTH_URL}")" && [[ "${response}" == *'"stage":"stage-1"'* ]]; then
+    printf '%s\n' "${response}"
     echo
     exit 0
   fi
