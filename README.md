@@ -14,7 +14,7 @@ Ailyn is a Stage 1 production-ready pnpm monorepo for an AI-assisted manager app
 ```bash
 pnpm install
 cp .env.example .env
-docker compose up -d postgres redis minio minio-init
+docker compose up -d postgres redis minio
 pnpm --filter @ailyn/api prisma:migrate:deploy
 pnpm dev
 ```
@@ -48,6 +48,7 @@ Local S3-compatible storage is available through MinIO:
 
 - API endpoint: `http://localhost:9000`
 - MinIO console: `http://localhost:9001`
+- Bucket creation is currently manual if you need a pre-created bucket before wiring file uploads.
 
 ## Migrations
 

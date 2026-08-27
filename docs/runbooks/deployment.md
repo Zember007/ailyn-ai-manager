@@ -16,8 +16,11 @@ DEPLOY_HOST=62.60.217.110 DEPLOY_USER=ailyn scripts/deploy.sh
 The deploy path rebuilds images and force-recreates `api`, `admin`, and `nginx`
 so running containers always pick up the newly built image.
 
-Production compose also starts bundled MinIO for S3-compatible media storage and
-creates the configured bucket on first boot.
+Production compose also starts bundled MinIO for S3-compatible media storage.
+
+The current deploy path does not block application startup on bucket creation.
+If you need a bucket pre-created before attachment wiring is enabled, create it
+manually in MinIO or via `mc`.
 
 Production migrations must use:
 

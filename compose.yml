@@ -47,19 +47,6 @@ services:
       - "9001:9001"
     logging: *default-logging
 
-  minio-init:
-    image: minio/mc:latest
-    depends_on:
-      minio:
-        condition: service_started
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - >
-        until mc alias set local http://minio:9000 ailyn_local_s3_access_key ailyn_local_s3_secret_key; do sleep 2; done &&
-        (mc ls local/ailyn-stage1 >/dev/null 2>&1 || mc mb local/ailyn-stage1)
-    restart: "no"
-    logging: *default-logging
-
   api:
     build:
       context: .
@@ -78,10 +65,6 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      minio:
-        condition: service_started
-      minio-init:
-        condition: service_completed_successfully
     ports:
       - "3001:3001"
     healthcheck:
