@@ -11,5 +11,8 @@ export async function POST(request: Request) {
     status: String(form.get("status") ?? "draft"),
     active: form.get("active") === "on"
   }, null);
-  return Response.redirect(new URL("/knowledge", request.url), 303);
+  return new Response(null, {
+    status: 303,
+    headers: { Location: "/knowledge" }
+  });
 }

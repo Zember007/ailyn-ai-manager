@@ -9,5 +9,8 @@ export async function POST(request: Request) {
     patch[key] = type === "number" ? Number(value) : String(value);
   }
   await patchJson("/settings", patch, null);
-  return Response.redirect(new URL("/settings", request.url), 303);
+  return new Response(null, {
+    status: 303,
+    headers: { Location: "/settings" }
+  });
 }

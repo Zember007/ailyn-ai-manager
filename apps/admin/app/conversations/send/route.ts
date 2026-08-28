@@ -11,5 +11,8 @@ export async function POST(request: Request) {
     message,
     attachments: kindHint ? [{ kindHint, fileName: fileName || kindHint }] : []
   }, null);
-  return Response.redirect(new URL(`/conversations/${conversationId}`, request.url), 303);
+  return new Response(null, {
+    status: 303,
+    headers: { Location: `/conversations/${conversationId}` }
+  });
 }

@@ -8,11 +8,10 @@ export function middleware(request: { nextUrl: URL; url: string; cookies: { get(
   if (request.cookies.get(authCookie)?.value === "ok") {
     return undefined;
   }
-  const loginUrl = new URL("/login", request.url);
   return new Response(null, {
     status: 307,
     headers: {
-      Location: loginUrl.toString()
+      Location: "/login"
     }
   });
 }
