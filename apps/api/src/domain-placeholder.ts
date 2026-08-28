@@ -8,7 +8,7 @@ export function placeholderItems(domain: string): PlaceholderItem[] {
   return [
     {
       id: `${domain}-stage-1`,
-      label: `${domain} storage is ready for Stage 1 data wiring`,
+      label: `${domain} storage is ready for data wiring`,
       status: "empty"
     }
   ];

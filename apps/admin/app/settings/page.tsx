@@ -11,7 +11,7 @@ export default async function SettingsPage({ searchParams }: Readonly<{ searchPa
   return (
     <AdminShell title="Настройки">
       {feedback ? <Notice tone={feedback.tone}>{feedback.text}</Notice> : null}
-      <Panel title="Параметры Stage 1">
+      <Panel title="Параметры">
         <div className="stack helperText">
           <p>В этом разделе редактируются только подтвержденные параметры. Неподтвержденные бизнес-значения должны оставаться `BLOCKED`.</p>
           <p className="muted">Редактируемых полей: {editableCount}. BLOCKED-полей: {blockedCount}.</p>

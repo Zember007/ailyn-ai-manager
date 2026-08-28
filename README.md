@@ -1,6 +1,6 @@
 # Ailyn
 
-Ailyn is a Stage 1 production-ready pnpm monorepo for an AI-assisted manager application.
+Ailyn production-ready pnpm monorepo for an AI-assisted manager application.
 
 ## Architecture
 

@@ -5,7 +5,7 @@ export function AdminShell({ title, eyebrow, children }: Readonly<{ title: strin
     <main className="shell">
       <header className="topbar">
         <div>
-          <p className="eyebrow">{eyebrow ?? "Ailyn Stage 1"}</p>
+          <p className="eyebrow">{eyebrow ?? "Ailyn"}</p>
           <h1>{title}</h1>
         </div>
         <form action="/login/logout" method="post">

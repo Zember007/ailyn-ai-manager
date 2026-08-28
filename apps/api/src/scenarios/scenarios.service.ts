@@ -261,7 +261,7 @@ function evaluateByCategory(scenario: Stage1Scenario): ScenarioEvaluation {
   return {
     pass: true,
     evaluationMode: "placeholder",
-    expected: `${scenario.id}: concrete Stage 1 assertions are registered for ${scenario.category}.`,
+    expected: `${scenario.id}: concrete assertions are registered for ${scenario.category}.`,
     actual: `Placeholder PASS: category assertions registered, but no full end-to-end executable scenario yet.`,
     assertions: [...assertions, "evaluation:placeholder"]
   };

@@ -27,7 +27,7 @@ export default async function KnowledgePage({ searchParams }: Readonly<{ searchP
       <section className="grid">
         <Panel title="Записи базы знаний">
           <div className="stack helperText">
-            <p>Здесь хранятся утвержденные ответы и справочные записи Stage 1. Acceptance-сценарии не являются контентом базы знаний и не должны использоваться как RAG.</p>
+            <p>Здесь хранятся утвержденные ответы и справочные записи. Acceptance-сценарии не являются контентом базы знаний и не должны использоваться как RAG.</p>
             <p className="muted">Активных approved: {approvedCount}. Черновиков: {draftCount}. BLOCKED: {blockedCount}.</p>
           </div>
           <div className="table">

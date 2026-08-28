@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "build": "next build --webpack",
-    "dev": "next dev -p 3000",
-    "start": "next start -p 3000",
+    "dev": "set -a; if [ -f ../../.env ]; then . ../../.env; else . ../../.env.example; fi; set +a; next dev -p 3000",
+    "start": "set -a; if [ -f ../../.env ]; then . ../../.env; else . ../../.env.example; fi; set +a; next start -p 3000",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

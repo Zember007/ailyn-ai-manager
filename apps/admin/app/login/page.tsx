@@ -2,7 +2,7 @@ export default function LoginPage({ searchParams }: Readonly<{ searchParams?: { 
   return (
     <main className="loginShell">
       <section className="loginPanel">
-        <p className="eyebrow">Ailyn Stage 1</p>
+        <p className="eyebrow">Ailyn</p>
         <h1>Admin login</h1>
         {searchParams?.error ? <p className="errorText">Password is incorrect.</p> : null}
         <form className="stack" action="/login/auth" method="post">

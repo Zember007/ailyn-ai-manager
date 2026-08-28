@@ -21,7 +21,7 @@ export default async function ScenariosPage({ searchParams }: Readonly<{ searchP
         <Panel title="Запуск сценариев">
           <form className="stack" action="/scenarios/run" method="post">
             <select name="category" defaultValue="">
-              <option value="">Все сценарии Stage 1</option>
+              <option value="">Все сценарии</option>
               {categories.map((category) => <option key={category} value={category}>{category}</option>)}
             </select>
             <button type="submit">Запустить сценарии</button>

@@ -17,6 +17,6 @@ export class AiService {
     if (config.routerAiApiKey) {
       return { status: "ok", message: "RouterAI configured" };
     }
-    return { status: "unconfigured", message: "ROUTERAI_API_KEY is not set; local Stage 1 fallback is active" };
+    return { status: "unconfigured", message: "ROUTERAI_API_KEY is not set; local fallback is active" };
   }
 }

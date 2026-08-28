@@ -249,7 +249,7 @@ export function evaluateApplication(
       calculatedLimits,
       requiredFacts: ["guarantorAvailable"],
       nextAction: "check_guarantor",
-      requiredStatements: ["Требования к поручителю не подтверждены в Stage 1."],
+      requiredStatements: ["Требования к поручителю не подтверждены."],
       forbiddenStatements,
       blockedRules
     };

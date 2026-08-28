@@ -56,7 +56,7 @@ services:
       context: .
       dockerfile: infra/docker/api.Dockerfile
     env_file:
-      - .env.example
+      - .env
     environment:
       DATABASE_URL: postgresql://ailyn:ailyn_local_password@postgres:5432/ailyn?schema=public
       REDIS_URL: redis://:ailyn_local_redis_password@redis:6379
@@ -83,7 +83,7 @@ services:
       context: .
       dockerfile: infra/docker/admin.Dockerfile
     env_file:
-      - .env.example
+      - .env
     environment:
       API_INTERNAL_URL: http://api:3001/api
     depends_on:
