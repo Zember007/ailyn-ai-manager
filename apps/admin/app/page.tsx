@@ -9,7 +9,7 @@ export default async function DashboardPage({ searchParams }: Readonly<{ searchP
   ]);
   const health = healthResult.data;
   const conversations = conversationsResult.data;
-  const runs = runsResult.data;
+/*   const runs = runsResult.data; */
   const params = (await searchParams) ?? {};
   const feedback = toFeedbackMessage(
     getSearchParamValue(params.notice) ??
@@ -18,7 +18,7 @@ export default async function DashboardPage({ searchParams }: Readonly<{ searchP
       runsResult.error ??
       healthResult.error
   );
-  const latestRun = runs[0];
+/*   const latestRun = runs[0]; */
 
   return (
     <AdminShell title="Обзор">
