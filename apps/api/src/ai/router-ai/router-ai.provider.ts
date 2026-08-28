@@ -176,7 +176,10 @@ const currentFilePath = fileURLToPath(import.meta.url);
 const currentDirPath = dirname(currentFilePath);
 const promptDirectories = [
   resolve(currentDirPath, "../prompts"),
-  resolve(process.cwd(), "apps/api/src/ai/prompts")
+  resolve(process.cwd(), "src/ai/prompts"),
+  resolve(process.cwd(), "dist/apps/api/src/ai/prompts"),
+  resolve(process.cwd(), "apps/api/src/ai/prompts"),
+  resolve(process.cwd(), "apps/api/dist/apps/api/src/ai/prompts")
 ];
 
 function loadPrompt(fileName: string): string {
@@ -190,7 +193,7 @@ function loadPrompt(fileName: string): string {
     .find((candidate) => existsSync(candidate));
 
   if (!promptPath) {
-    throw new Error(`Prompt file not found: ${fileName}`);
+    throw new Error(`Prompt file not found: ${fileName}. Checked: ${promptDirectories.join(", ")}`);
   }
 
   const prompt = readFileSync(promptPath, "utf8").trim();
