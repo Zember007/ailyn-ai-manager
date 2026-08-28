@@ -34,8 +34,9 @@ echo "Deploying on VPS..."
   cd '${DEPLOY_PATH}'
   ENV_FILE=/opt/ailyn/.env.production ./scripts/provision-production-env.sh
   docker compose --env-file /opt/ailyn/.env.production -f compose.production.yml build
+  docker compose --env-file /opt/ailyn/.env.production -f compose.production.yml run -T --rm api sh -lc 'node -e \"new URL(process.env.DATABASE_URL); new URL(process.env.REDIS_URL)\"' < /dev/null
   docker compose --env-file /opt/ailyn/.env.production -f compose.production.yml run -T --rm api sh -lc './apps/api/node_modules/.bin/prisma migrate deploy --schema apps/api/prisma/schema.prisma' < /dev/null
-  docker compose --env-file /opt/ailyn/.env.production -f compose.production.yml up -d --force-recreate minio api admin nginx
+  docker compose --env-file /opt/ailyn/.env.production -f compose.production.yml up -d --remove-orphans --force-recreate minio api admin nginx
   docker compose --env-file /opt/ailyn/.env.production -f compose.production.yml ps
 "
 

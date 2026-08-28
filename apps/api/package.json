@@ -14,6 +14,7 @@
   "dependencies": {
     "@ailyn/business-rules": "workspace:*",
     "@ailyn/config": "workspace:*",
+    "@ailyn/schemas": "workspace:*",
     "@ailyn/shared": "workspace:*",
     "@nestjs/common": "^11.1.9",
     "@nestjs/core": "^11.1.9",

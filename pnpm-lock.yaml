@@ -60,6 +60,9 @@ importers:
       '@ailyn/config':
         specifier: workspace:*
         version: link:../../packages/config
+      '@ailyn/schemas':
+        specifier: workspace:*
+        version: link:../../packages/schemas
       '@ailyn/shared':
         specifier: workspace:*
         version: link:../../packages/shared

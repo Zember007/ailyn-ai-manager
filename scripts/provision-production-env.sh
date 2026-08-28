@@ -81,6 +81,40 @@ is_internal_redis_url() {
   [[ "${url}" =~ ^redis://:.*@redis:6379(/.*)?$ ]]
 }
 
+percent_encode() {
+  local value="${1-}"
+  local encoded=""
+  local char
+  local hex
+  local i
+
+  for ((i = 0; i < ${#value}; i++)); do
+    char="${value:i:1}"
+    case "${char}" in
+      [a-zA-Z0-9.~_-])
+        encoded+="${char}"
+        ;;
+      *)
+        printf -v hex '%02X' "'${char}"
+        encoded+="%${hex}"
+        ;;
+    esac
+  done
+
+  printf '%s' "${encoded}"
+}
+
+build_internal_database_url() {
+  printf 'postgresql://%s:%s@postgres:5432/%s?schema=public' \
+    "$(percent_encode "${postgres_user}")" \
+    "$(percent_encode "${postgres_password}")" \
+    "$(percent_encode "${postgres_db}")"
+}
+
+build_internal_redis_url() {
+  printf 'redis://:%s@redis:6379' "$(percent_encode "${redis_password}")"
+}
+
 pick_value() {
   local key="$1"
   local fallback="${2:-}"
@@ -116,7 +150,7 @@ if [[ -n "${DATABASE_URL-}" ]]; then
 elif [[ -n "${existing_database_url}" ]] && ! is_internal_database_url "${existing_database_url}"; then
   database_url="${existing_database_url}"
 else
-  database_url="postgresql://${postgres_user}:${postgres_password}@postgres:5432/${postgres_db}?schema=public"
+  database_url="$(build_internal_database_url)"
 fi
 
 if [[ -n "${REDIS_URL-}" ]]; then
@@ -124,7 +158,7 @@ if [[ -n "${REDIS_URL-}" ]]; then
 elif [[ -n "${existing_redis_url}" ]] && ! is_internal_redis_url "${existing_redis_url}"; then
   redis_url="${existing_redis_url}"
 else
-  redis_url="redis://:${redis_password}@redis:6379"
+  redis_url="$(build_internal_redis_url)"
 fi
 
 extras=()

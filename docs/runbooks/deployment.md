@@ -28,4 +28,6 @@ Production migrations must use:
 docker compose --env-file /opt/ailyn/.env.production -f compose.production.yml run -T --rm api sh -lc './apps/api/node_modules/.bin/prisma migrate deploy --schema apps/api/prisma/schema.prisma' < /dev/null
 ```
 
+Rule: if production uses bundled `postgres` and `redis` from `compose.production.yml`, never hand-edit internal `DATABASE_URL` or `REDIS_URL` credentials in `/opt/ailyn/.env.production`. Always regenerate the file via `ENV_FILE=/opt/ailyn/.env.production ./scripts/provision-production-env.sh`, let the deploy pipeline validate both URLs with `new URL(...)`, and only then run Prisma migrations.
+
 Never use `prisma migrate dev`, `prisma migrate reset`, or `docker compose down -v` on production.
