@@ -4,6 +4,12 @@
   "entryFile": "apps/api/src/main",
   "sourceRoot": "src",
   "compilerOptions": {
-    "deleteOutDir": true
+    "deleteOutDir": true,
+    "assets": [
+      {
+        "include": "src/ai/prompts/**/*",
+        "outDir": "dist/apps/api/src/ai/prompts"
+      }
+    ]
   }
 }

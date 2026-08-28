@@ -1,6 +1,7 @@
 import { Injectable } from "@nestjs/common";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { loadAppConfig } from "@ailyn/config";
 import type {
   AiProvider,
@@ -171,6 +172,12 @@ function parseValue(text: string): number | undefined {
 }
 
 const promptCache = new Map<string, string>();
+const currentFilePath = fileURLToPath(import.meta.url);
+const currentDirPath = dirname(currentFilePath);
+const promptDirectories = [
+  resolve(currentDirPath, "../prompts"),
+  resolve(process.cwd(), "apps/api/src/ai/prompts")
+];
 
 function loadPrompt(fileName: string): string {
   const cached = promptCache.get(fileName);
@@ -178,7 +185,15 @@ function loadPrompt(fileName: string): string {
     return cached;
   }
 
-  const prompt = readFileSync(resolve(process.cwd(), "apps/api/src/ai/prompts", fileName), "utf8").trim();
+  const promptPath = promptDirectories
+    .map((directory) => resolve(directory, fileName))
+    .find((candidate) => existsSync(candidate));
+
+  if (!promptPath) {
+    throw new Error(`Prompt file not found: ${fileName}`);
+  }
+
+  const prompt = readFileSync(promptPath, "utf8").trim();
   promptCache.set(fileName, prompt);
   return prompt;
 }
