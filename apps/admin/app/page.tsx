@@ -35,12 +35,12 @@ export default async function DashboardPage({ searchParams }: Readonly<{ searchP
           <Field label="Последнее обновление" value={conversations[0] ? formatDate(conversations[0].updatedAt) : "Пока нет"} />
           <a className="buttonLink" href="/conversations">Открыть диалоги</a>
         </Panel>
-        <Panel title="Приемочные сценарии">
+        {/* <Panel title="Приемочные сценарии">
           <Field label="Последний прогон" value={latestRun?.id} />
           <Field label="Статус" value={latestRun?.status ?? "not_run"} />
           <Field label="Сводка" value={latestRun?.summary} />
           <a className="buttonLink" href="/scenarios">Открыть сценарии</a>
-        </Panel>
+        </Panel> */}
       </section>
       <section className="panel">
         <h2>Последние диалоги</h2>

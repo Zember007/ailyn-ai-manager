@@ -21,7 +21,7 @@ export function AdminShell({
         <a href="/">Обзор</a>
         <a href="/conversations">Диалоги</a>
         <a href="/logs">Логи</a>
-        <a href="/scenarios">Сценарии</a>
+       {/*  <a href="/scenarios">Сценарии</a> */}
         <a href="/settings">Настройки</a>
        {/*  <a href="/knowledge">База знаний</a> */}
         <a href="/audit">Аудит</a>
