@@ -2,6 +2,7 @@ import { Injectable } from "@nestjs/common";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { ApplicationFacts } from "@ailyn/business-rules";
 import { loadAppConfig } from "@ailyn/config";
 import type {
   AiProvider,
@@ -37,7 +38,7 @@ export class RouterAiProvider implements AiProvider {
         { role: "user", content: JSON.stringify(input) }
       ]
     });
-    return JSON.parse(response.choices?.[0]?.message?.content ?? "{}") as ExtractionResult;
+    return normalizeExtractionResult(JSON.parse(response.choices?.[0]?.message?.content ?? "{}"));
   }
 
   async generateResponse(input: ResponseGenerationInput): Promise<GeneratedResponse> {
@@ -154,6 +155,21 @@ function localExtract(input: ExtractionInput): ExtractionResult {
   };
 }
 
+function normalizeExtractionResult(payload: unknown): ExtractionResult {
+  const source = isRecord(payload) ? payload : {};
+
+  return {
+    language: normalizeLanguage(source.language),
+    intents: normalizeStringArray(source.intents),
+    questions: normalizeQuestions(source.questions),
+    facts: normalizeFacts(source.facts),
+    changedFacts: normalizeChangedFacts(source.changedFacts),
+    attachments: normalizeAttachments(source.attachments),
+    promptInjectionDetected: source.promptInjectionDetected === true,
+    clarificationNeeded: source.clarificationNeeded === true
+  };
+}
+
 function buildLocalResponse(input: ResponseGenerationInput): string {
   const exact = input.responsePlan.answers.map((answer) => answer.exactText).filter(Boolean).join(" ");
   const questions = input.responsePlan.nextQuestions.join(" ");
@@ -169,6 +185,97 @@ function parseMoney(text: string): number | undefined {
 function parseValue(text: string): number | undefined {
   const match = text.match(/(?:стоимость|стоит|оцен[каить]*)\D{0,20}(\d[\d\s]{1,12})/);
   return match ? Number(match[1].replace(/\s/g, "")) : undefined;
+}
+
+function normalizeLanguage(value: unknown): ExtractionResult["language"] {
+  return value === "ru" || value === "kg" || value === "mixed" || value === "unknown" ? value : "unknown";
+}
+
+function normalizeStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+}
+
+function normalizeQuestions(value: unknown): ExtractionResult["questions"] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.flatMap((item) => {
+    if (!isRecord(item) || typeof item.text !== "string" || typeof item.topic !== "string") {
+      return [];
+    }
+    return [{ text: item.text, topic: item.topic }];
+  });
+}
+
+function normalizeFacts(value: unknown): ExtractionResult["facts"] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.flatMap((item) => {
+    if (!isRecord(item) || typeof item.key !== "string" || !("value" in item)) {
+      return [];
+    }
+    const key = item.key as keyof ApplicationFacts;
+    return [
+      {
+        key,
+        value: item.value,
+        confidence: typeof item.confidence === "number" ? item.confidence : 0
+      }
+    ];
+  });
+}
+
+function normalizeChangedFacts(value: unknown): ExtractionResult["changedFacts"] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.flatMap((item) => {
+    if (!isRecord(item) || typeof item.key !== "string" || !("newValue" in item)) {
+      return [];
+    }
+    return [{ key: item.key as keyof ApplicationFacts, newValue: item.newValue }];
+  });
+}
+
+function normalizeAttachments(value: unknown): ExtractionResult["attachments"] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.flatMap((item) => {
+    if (!isRecord(item) || typeof item.attachmentId !== "string" || typeof item.type !== "string") {
+      return [];
+    }
+    if (!isAttachmentType(item.type)) {
+      return [];
+    }
+    return [
+      {
+        attachmentId: item.attachmentId,
+        type: item.type,
+        confidence: typeof item.confidence === "number" ? item.confidence : 0
+      }
+    ];
+  });
+}
+
+function isAttachmentType(value: string): value is ExtractionResult["attachments"][number]["type"] {
+  return (
+    value === "id_front" ||
+    value === "id_back" ||
+    value === "vehicle_registration_front" ||
+    value === "vehicle_registration_back" ||
+    value === "car" ||
+    value === "unknown" ||
+    value === "poor_quality"
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
 
 const promptCache = new Map<string, string>();
