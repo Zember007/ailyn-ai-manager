@@ -1,8 +1,13 @@
-import { displayValue, formatDate, type Stage1Application } from "./lib/api";
+import { displayValue, formatDate, type Stage1Application, type Stage1Attachment } from "./lib/api";
 
-export function AdminShell({ title, eyebrow, children }: Readonly<{ title: string; eyebrow?: string; children: React.ReactNode }>) {
+export function AdminShell({
+  title,
+  eyebrow,
+  children,
+  fullWidth = false
+}: Readonly<{ title: string; eyebrow?: string; children: React.ReactNode; fullWidth?: boolean }>) {
   return (
-    <main className="shell">
+    <main className={`shell${fullWidth ? " shellFullWidth" : ""}`}>
       <header className="topbar">
         <div>
           <p className="eyebrow">{eyebrow ?? "Ailyn"}</p>
@@ -15,10 +20,10 @@ export function AdminShell({ title, eyebrow, children }: Readonly<{ title: strin
       <nav className="tabs">
         <a href="/">Обзор</a>
         <a href="/conversations">Диалоги</a>
-{/*         <a href="/scenarios">Сценарии</a>
-        <a href="/settings">Настройки</a> */}
-        {/* <a href="/knowledge">База знаний</a>
-        <a href="/audit">Аудит</a> */}
+        <a href="/scenarios">Сценарии</a>
+        <a href="/settings">Настройки</a>
+       {/*  <a href="/knowledge">База знаний</a> */}
+        <a href="/audit">Аудит</a>
       </nav>
       {children}
     </main>
@@ -74,7 +79,11 @@ export function Field({ label, value }: Readonly<{ label: string; value: unknown
   );
 }
 
-export function MessageList({ messages }: Readonly<{ messages: { id: string; author: string; body: string; createdAt: string; attachmentIds?: string[] }[] }>) {
+export function MessageList({
+  messages
+}: Readonly<{
+  messages: { id: string; author: string; body: string; createdAt: string; attachmentIds?: string[]; attachments?: Stage1Attachment[] }[];
+}>) {
   return (
     <div className="messages">
       {messages.length === 0 ? <p className="muted">Сообщений пока нет.</p> : null}
@@ -82,7 +91,16 @@ export function MessageList({ messages }: Readonly<{ messages: { id: string; aut
         <article className={`message ${message.author}`} key={message.id}>
           <p className="messageAuthor">{translateAuthor(message.author)}</p>
           <p>{message.body || "[вложение]"}</p>
-          {message.attachmentIds?.length ? <p className="muted">Вложений: {message.attachmentIds.length}</p> : null}
+          {message.attachments?.length ? (
+            <div className="attachmentPills">
+              {message.attachments.map((attachment) => (
+                <span className="attachmentPill" key={attachment.id}>
+                  <strong>{translateAttachmentType(attachment.type)}</strong>
+                  <span>{attachment.fileName || "Файл"}</span>
+                </span>
+              ))}
+            </div>
+          ) : message.attachmentIds?.length ? <p className="muted">Вложений: {message.attachmentIds.length}</p> : null}
           <time>{formatDate(message.createdAt)}</time>
         </article>
       ))}

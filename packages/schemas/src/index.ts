@@ -24,12 +24,14 @@ export const testChatAttachmentSchema = z.object({
   id: z.string().optional(),
   fileName: z.string().optional(),
   mimeType: z.string().optional(),
-  kindHint: z.string().optional()
+  byteSize: z.number().int().nonnegative().optional(),
+  storageKey: z.string().optional()
 });
 
 export const sendTestChatMessageSchema = z.object({
   conversationId: z.string().min(1).optional(),
   externalContactId: z.string().min(1).optional(),
+  externalConversationId: z.string().min(1).optional(),
   message: z.string().optional(),
   attachments: z.array(testChatAttachmentSchema).default([])
 });

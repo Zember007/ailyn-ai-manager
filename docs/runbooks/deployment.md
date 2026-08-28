@@ -13,8 +13,15 @@ Manual deployment:
 DEPLOY_HOST=62.60.217.110 DEPLOY_USER=ailyn scripts/deploy.sh
 ```
 
-The deploy path rebuilds images and force-recreates `api`, `admin`, and `nginx`
-so running containers always pick up the newly built image.
+The deploy path rebuilds only the application images and recreates the
+containers only when Docker sees a changed image or config. `minio` is no longer
+force-recreated on every deploy.
+
+If you want a full local preflight before a manual deploy, run:
+
+```bash
+DEPLOY_VALIDATE=1 DEPLOY_HOST=62.60.217.110 DEPLOY_USER=ailyn scripts/deploy.sh
+```
 
 Production compose also starts bundled MinIO for S3-compatible media storage.
 

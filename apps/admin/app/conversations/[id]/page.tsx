@@ -1,5 +1,6 @@
 import { AdminShell, Field, JsonPreview, LeadCard, MessageList, Notice, Panel } from "../../components";
-import { getSearchParamValue, readQuery, toFeedbackMessage, type Stage1Conversation } from "../../lib/api";
+import { getSearchParamValue, readQuery, toFeedbackMessage, type Stage1Attachment, type Stage1Conversation } from "../../lib/api";
+import { ConversationComposer } from "./conversation-composer";
 
 export default async function ConversationDetailPage({
   params,
@@ -10,7 +11,7 @@ export default async function ConversationDetailPage({
 }>) {
   const resolvedParams = await params;
   const conversationResult = await readQuery<Stage1Conversation | { error: string }>(`/conversations/${resolvedParams.id}`, { error: "not_found" });
-  const attachmentsResult = await readQuery<any[]>("/attachments", []);
+  const attachmentsResult = await readQuery<Stage1Attachment[]>("/attachments", []);
   const conversation = conversationResult.data;
   const attachments = attachmentsResult.data;
   const query = (await searchParams) ?? {};
@@ -31,27 +32,24 @@ export default async function ConversationDetailPage({
   const latestAi = [...conversation.messages].reverse().find((message) => message.author === "ai");
 
   return (
-    <AdminShell title="Диалог" eyebrow={conversation.externalContactId || conversation.id}>
+    <AdminShell fullWidth title="Диалог" eyebrow={conversation.externalContactId || conversation.id}>
       {feedback ? <Notice tone={feedback.tone}>{feedback.text}</Notice> : null}
-      <section className="workspace">
-        <section className="conversationPane">
-          <div className="toolbar">
+      <section className="conversationWorkspace">
+        <section className="conversationStage">
+          <div className="conversationHeader">
             <div>
               <h2>Тестовый веб-диалог</h2>
               <p className="muted">{conversation.id}</p>
             </div>
-            <span className="status">{application?.stage ?? "NEW"}</span>
+            <div className="conversationMeta">
+              <span className="status">{application?.stage ?? "NEW"}</span>
+              <span className="muted">External chat: {conversation.externalConversationId || "Не задан"}</span>
+            </div>
           </div>
           <MessageList messages={conversation.messages} />
-          <form className="composer" action="/conversations/send" method="post">
-            <input type="hidden" name="conversationId" value={conversation.id} />
-            <textarea name="message" placeholder="Сообщение клиента" />
-            <input name="kindHint" placeholder="Подсказка вложения: id-front, car, poor" />
-            <input name="fileName" placeholder="Имя файла" />
-            <button type="submit">Отправить</button>
-          </form>
+          <ConversationComposer conversationId={conversation.id} />
         </section>
-        <aside className="leadPane">
+        <aside className="conversationSidebar">
           <Panel title="Карточка лида">
             <LeadCard application={application} attachments={conversationAttachments} />
           </Panel>
@@ -60,9 +58,12 @@ export default async function ConversationDetailPage({
             <Field label="Версия prompt" value={latestAi?.metadata?.promptVersion} />
             <Field label="Валидация" value={latestAi?.metadata?.validation} />
           </Panel>
+          <Panel title="Вложения">
+            <JsonPreview value={conversationAttachments} />
+          </Panel>
         </aside>
       </section>
-      <section className="grid">
+      <section className="conversationDiagnostics">
         <Panel title="Факты">
           <JsonPreview value={application?.facts ?? {}} />
         </Panel>
@@ -71,9 +72,6 @@ export default async function ConversationDetailPage({
         </Panel>
         <Panel title="История фактов">
           <JsonPreview value={application?.factHistory ?? []} />
-        </Panel>
-        <Panel title="Вложения">
-          <JsonPreview value={conversationAttachments} />
         </Panel>
       </section>
     </AdminShell>

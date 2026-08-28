@@ -39,6 +39,7 @@ export class DialogueOrchestratorService {
       author: "client",
       body: message.text ?? "",
       attachmentIds: message.attachments.map((attachment) => attachment.id),
+      attachments: [],
       metadata: {
         externalMessageId: message.externalMessageId,
         channel: message.channel
@@ -67,7 +68,7 @@ export class DialogueOrchestratorService {
       application = await this.store.createNewApplication(conversation, application.facts);
     }
 
-    const documentFacts = await this.processAttachments(conversation.id, message.attachments);
+    const documentFacts = await this.processAttachments(conversation.id, inbound.id, message.attachments);
     await this.store.updateFacts(application, mergeFacts(incomingFacts, documentFacts));
     application = (await this.store.getApplication(application.id)) ?? application;
 
@@ -92,6 +93,7 @@ export class DialogueOrchestratorService {
       author: "ai",
       body: validation.finalMessage,
       attachmentIds: [],
+      attachments: [],
       metadata: {
         sourceMessageId: inbound.id,
         routerAiModel: generated.model,
@@ -112,6 +114,7 @@ export class DialogueOrchestratorService {
 
   private async processAttachments(
     conversationId: string,
+    messageId: string,
     attachments: InboundMessage["attachments"]
   ): Promise<Partial<ApplicationFacts>> {
     const documents: ApplicationFacts["documents"] = {};
@@ -123,9 +126,13 @@ export class DialogueOrchestratorService {
       }
       await this.store.addAttachment({
         conversationId,
+        messageId,
         type: vision.type,
         status: vision.quality === "poor" ? "poor_quality" : "received",
-        fileName: attachment.fileName
+        fileName: attachment.fileName,
+        mimeType: attachment.mimeType,
+        byteSize: typeof attachment.metadata?.byteSize === "number" ? attachment.metadata.byteSize : undefined,
+        storageKey: typeof attachment.metadata?.storageKey === "string" ? attachment.metadata.storageKey : undefined
       });
     }
     return Object.keys(documents).length > 0 ? { documents } : {};

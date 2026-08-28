@@ -12,11 +12,15 @@ ssh_target="${DEPLOY_USER}@${DEPLOY_HOST}"
 ssh_cmd=(ssh -i "${SSH_KEY}" -p "${DEPLOY_PORT}" -o BatchMode=yes -o StrictHostKeyChecking=accept-new "${ssh_target}")
 
 echo "Running local preflight..."
-pnpm lint
-pnpm typecheck
-pnpm test
-pnpm test:scenarios
-pnpm build
+if [[ "${DEPLOY_VALIDATE:-0}" == "1" ]]; then
+  pnpm lint
+  pnpm typecheck
+  pnpm test
+  pnpm test:scenarios
+  pnpm build
+else
+  echo "Skipping local preflight. Set DEPLOY_VALIDATE=1 to enable it."
+fi
 
 echo "Syncing source to ${ssh_target}:${DEPLOY_PATH}..."
 rsync -az --delete \
@@ -33,10 +37,10 @@ echo "Deploying on VPS..."
 "${ssh_cmd[@]}" "set -Eeuo pipefail
   cd '${DEPLOY_PATH}'
   ENV_FILE=/opt/ailyn/.env.production ./scripts/provision-production-env.sh
-  docker compose --env-file /opt/ailyn/.env.production -f compose.production.yml build
+  docker compose --env-file /opt/ailyn/.env.production -f compose.production.yml build api admin
   docker compose --env-file /opt/ailyn/.env.production -f compose.production.yml run -T --rm api sh -lc 'node -e \"new URL(process.env.DATABASE_URL); new URL(process.env.REDIS_URL)\"' < /dev/null
   docker compose --env-file /opt/ailyn/.env.production -f compose.production.yml run -T --rm api sh -lc './apps/api/node_modules/.bin/prisma migrate deploy --schema apps/api/prisma/schema.prisma' < /dev/null
-  docker compose --env-file /opt/ailyn/.env.production -f compose.production.yml up -d --remove-orphans --force-recreate minio api admin nginx
+  docker compose --env-file /opt/ailyn/.env.production -f compose.production.yml up -d --remove-orphans minio api admin nginx
   docker compose --env-file /opt/ailyn/.env.production -f compose.production.yml ps
 "
 

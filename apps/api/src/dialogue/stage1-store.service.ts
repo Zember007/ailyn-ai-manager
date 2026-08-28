@@ -3,22 +3,27 @@ import type { ApplicationFacts, ApplicationStage, DecisionResult } from "@ailyn/
 import type { ApplicationState, MessageAuthor, MessageChannel, Prisma } from "@prisma/client";
 import { PrismaService } from "../database/prisma.service.js";
 
+export interface Stage1Attachment {
+  id: string;
+  messageId?: string;
+  conversationId: string;
+  type: string;
+  status: string;
+  fileName?: string;
+  mimeType?: string;
+  byteSize?: number;
+  storageKey?: string;
+  createdAt: string;
+}
+
 export interface Stage1Message {
   id: string;
   author: "client" | "ai" | "system" | "manager";
   body: string;
   attachmentIds: string[];
+  attachments: Stage1Attachment[];
   createdAt: string;
   metadata?: Record<string, unknown>;
-}
-
-export interface Stage1Attachment {
-  id: string;
-  conversationId: string;
-  type: string;
-  status: string;
-  fileName?: string;
-  createdAt: string;
 }
 
 export interface Stage1Application {
@@ -38,6 +43,7 @@ export interface Stage1Conversation {
   id: string;
   contactId: string;
   externalContactId: string;
+  externalConversationId: string;
   channel: "web-test" | "wazzup";
   messages: Stage1Message[];
   applicationId: string;
@@ -89,6 +95,7 @@ export class Stage1StoreService {
       author: message.author,
       body: message.body,
       attachmentIds: message.attachments.map((attachment) => attachment.id),
+      attachments: message.attachments.map((attachment) => this.mapAttachment(attachment)),
       createdAt: message.createdAt.toISOString(),
       metadata: {
         ...asRecord(message.metadata),
@@ -111,14 +118,7 @@ export class Stage1StoreService {
       orderBy: { createdAt: "desc" },
       include: { message: true }
     });
-    return attachments.map((attachment) => ({
-      id: attachment.id,
-      conversationId: attachment.message?.conversationId ?? String(asRecord(attachment.metadata).conversationId ?? ""),
-      type: String(asRecord(attachment.metadata).type ?? "unknown"),
-      status: String(asRecord(attachment.metadata).status ?? "received"),
-      fileName: String(asRecord(attachment.metadata).fileName ?? attachment.storageKey),
-      createdAt: attachment.createdAt.toISOString()
-    }));
+    return attachments.map((attachment) => this.mapAttachment(attachment));
   }
 
   async listAudit(): Promise<AuditEntry[]> {
@@ -135,6 +135,17 @@ export class Stage1StoreService {
 
   async getConversation(id: string): Promise<Stage1Conversation | undefined> {
     const conversation = await this.loadConversation(id);
+    return conversation ? this.mapConversation(conversation) : undefined;
+  }
+
+  async getConversationByIdForChannel(id: string, channel: "web-test" | "wazzup"): Promise<Stage1Conversation | undefined> {
+    const conversation = await this.prisma.conversation.findFirst({
+      where: {
+        id,
+        channel: toPrismaChannel(channel)
+      },
+      include: conversationInclude()
+    });
     return conversation ? this.mapConversation(conversation) : undefined;
   }
 
@@ -255,6 +266,7 @@ export class Stage1StoreService {
       author: saved.author,
       body: saved.body,
       attachmentIds: message.attachmentIds,
+      attachments: message.attachments,
       createdAt: saved.createdAt.toISOString(),
       metadata: asRecord(saved.metadata)
     };
@@ -264,23 +276,30 @@ export class Stage1StoreService {
     const saved = await this.prisma.attachment.create({
       data: {
         messageId: attachment.messageId,
-        storageKey: attachment.fileName ?? `web-test/${crypto.randomUUID()}`,
-        mimeType: "application/octet-stream",
+        storageKey: attachment.storageKey ?? attachment.fileName ?? `web-test/${crypto.randomUUID()}`,
+        mimeType: attachment.mimeType ?? "application/octet-stream",
+        byteSize: attachment.byteSize,
         metadata: toJson({
           conversationId: attachment.conversationId,
           type: attachment.type,
           status: attachment.status,
-          fileName: attachment.fileName
+          fileName: attachment.fileName,
+          mimeType: attachment.mimeType,
+          byteSize: attachment.byteSize
         })
       }
     });
     await this.recordAudit("attachment.created", "Attachment", saved.id, { type: attachment.type, status: attachment.status });
     return {
       id: saved.id,
+      messageId: saved.messageId ?? undefined,
       conversationId: attachment.conversationId,
       type: attachment.type,
       status: attachment.status,
       fileName: attachment.fileName,
+      mimeType: saved.mimeType ?? undefined,
+      byteSize: saved.byteSize ?? undefined,
+      storageKey: saved.storageKey,
       createdAt: saved.createdAt.toISOString()
     };
   }
@@ -388,6 +407,7 @@ export class Stage1StoreService {
       id: conversation.id,
       contactId: conversation.contactId ?? "",
       externalContactId: conversation.contact?.externalContactId ?? "",
+      externalConversationId: conversation.externalConversationId ?? "",
       channel: fromPrismaChannel(conversation.channel),
       status: conversation.status,
       messages: conversation.messages.map((message) => ({
@@ -395,6 +415,7 @@ export class Stage1StoreService {
         author: message.author,
         body: message.body,
         attachmentIds: message.attachments.map((attachment) => attachment.id),
+        attachments: message.attachments.map((attachment) => this.mapAttachment(attachment)),
         createdAt: message.createdAt.toISOString(),
         metadata: asRecord(message.metadata)
       })),
@@ -423,6 +444,33 @@ export class Stage1StoreService {
       decision: metadata.decision as DecisionResult | undefined,
       createdAt: application.createdAt.toISOString(),
       updatedAt: application.updatedAt.toISOString()
+    };
+  }
+
+  private mapAttachment(
+    attachment: {
+      id: string;
+      messageId: string | null;
+      storageKey: string;
+      mimeType: string | null;
+      byteSize: number | null;
+      metadata: unknown;
+      createdAt: Date;
+      message?: { conversationId: string } | null;
+    }
+  ): Stage1Attachment {
+    const metadata = asRecord(attachment.metadata);
+    return {
+      id: attachment.id,
+      messageId: attachment.messageId ?? undefined,
+      conversationId: attachment.message?.conversationId ?? String(metadata.conversationId ?? ""),
+      type: String(metadata.type ?? "unknown"),
+      status: String(metadata.status ?? "received"),
+      fileName: typeof metadata.fileName === "string" ? metadata.fileName : attachment.storageKey,
+      mimeType: attachment.mimeType ?? (typeof metadata.mimeType === "string" ? metadata.mimeType : undefined),
+      byteSize: attachment.byteSize ?? (typeof metadata.byteSize === "number" ? metadata.byteSize : undefined),
+      storageKey: attachment.storageKey,
+      createdAt: attachment.createdAt.toISOString()
     };
   }
 }

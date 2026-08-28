@@ -1,4 +1,5 @@
-import { Body, Controller, Get, Post } from "@nestjs/common";
+import { BadRequestException, Body, Controller, Get, NotFoundException, Post, UploadedFiles, UseInterceptors } from "@nestjs/common";
+import { FilesInterceptor } from "@nestjs/platform-express";
 import { sendTestChatMessageSchema } from "@ailyn/schemas";
 import { DialogueOrchestratorService } from "../dialogue/dialogue-orchestrator.service.js";
 import { Stage1StoreService } from "../dialogue/stage1-store.service.js";
@@ -7,7 +8,10 @@ interface TestChatBody {
   message?: string;
   conversationId?: string;
   externalContactId?: string;
-  attachments?: { id?: string; fileName?: string; mimeType?: string; kindHint?: string }[];
+  externalConversationId?: string;
+  attachments?:
+    | { id?: string; fileName?: string; mimeType?: string; byteSize?: number; storageKey?: string }[]
+    | string;
 }
 
 @Controller("messages")
@@ -23,19 +27,53 @@ export class MessagesController {
   }
 
   @Post("test-chat")
-  async testChat(@Body() body: TestChatBody) {
-    const parsed = sendTestChatMessageSchema.parse(body);
+  @UseInterceptors(FilesInterceptor("files"))
+  async testChat(@Body() body: TestChatBody, @UploadedFiles() files: Array<{ originalname: string; mimetype: string; size: number; buffer: Buffer }> = []) {
+    const parsed = sendTestChatMessageSchema.parse(normalizeBody(body));
+    if (!parsed.message?.trim() && parsed.attachments.length === 0 && files.length === 0) {
+      throw new BadRequestException("message_empty");
+    }
+
+    let targetConversation = undefined;
+    if (parsed.conversationId) {
+      targetConversation = await this.store.getConversationByIdForChannel(parsed.conversationId, "web-test");
+      if (!targetConversation) {
+        throw new NotFoundException("conversation_not_found");
+      }
+    }
+
+    const resolvedConversationId = targetConversation?.id;
+    const resolvedExternalConversationId = targetConversation?.externalConversationId || parsed.externalConversationId;
     const result = await this.orchestrator.receive({
       externalMessageId: `web-in-${crypto.randomUUID()}`,
       channel: "web-test",
-      externalContactId: parsed.externalContactId ?? "stage1-web-client",
-      externalConversationId: parsed.conversationId ?? "stage1-web-conversation",
-      text: parsed.message,
-      attachments: parsed.attachments.map((attachment) => ({
+      externalContactId: targetConversation?.externalContactId || parsed.externalContactId || "stage1-web-client",
+      externalConversationId: resolvedExternalConversationId ?? "stage1-web-conversation",
+      text: parsed.message?.trim(),
+      attachments: [
+        ...parsed.attachments.map((attachment) => ({
+          id: attachment.id ?? `upload-${crypto.randomUUID()}`,
+          fileName: attachment.fileName,
+          mimeType: attachment.mimeType,
+          metadata: {
+            byteSize: attachment.byteSize,
+            storageKey: attachment.storageKey
+          }
+        })),
+        ...files.map((file) => ({
+          id: `upload-${crypto.randomUUID()}`,
+          fileName: file.originalname,
+          mimeType: file.mimetype,
+          metadata: {
+            byteSize: file.size,
+            storageKey: `web-test/${Date.now()}-${sanitizeFileName(file.originalname)}`
+          }
+        }))
+      ].map((attachment) => ({
         id: attachment.id ?? `upload-${crypto.randomUUID()}`,
         fileName: attachment.fileName,
         mimeType: attachment.mimeType,
-        kindHint: attachment.kindHint
+        metadata: attachment.metadata
       })),
       timestamp: new Date()
     });
@@ -44,10 +82,28 @@ export class MessagesController {
       reply: result.reply,
       persisted: true,
       conversation: result.conversation,
+      conversationId: resolvedConversationId ?? result.conversation.id,
       application: result.application,
       validation: result.validation,
       routerAiModel: result.routerAiModel,
       promptVersion: result.promptVersion
     };
   }
+}
+
+function normalizeBody(body: TestChatBody): TestChatBody {
+  const attachments = Array.isArray(body.attachments)
+    ? body.attachments
+    : typeof body.attachments === "string" && body.attachments.trim()
+      ? JSON.parse(body.attachments) as TestChatBody["attachments"]
+      : [];
+  return {
+    ...body,
+    attachments
+  };
+}
+
+function sanitizeFileName(fileName: string): string {
+  const normalized = fileName.trim().replace(/\s+/g, "-");
+  return normalized.replace(/[^a-zA-Z0-9._-]/g, "").slice(0, 120) || "upload.bin";
 }

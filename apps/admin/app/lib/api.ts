@@ -27,8 +27,22 @@ export interface Stage1Message {
   author: string;
   body: string;
   attachmentIds: string[];
+  attachments: Stage1Attachment[];
   createdAt: string;
   metadata?: Record<string, unknown>;
+}
+
+export interface Stage1Attachment {
+  id: string;
+  messageId?: string;
+  conversationId: string;
+  type: string;
+  status: string;
+  fileName?: string;
+  mimeType?: string;
+  byteSize?: number;
+  storageKey?: string;
+  createdAt: string;
 }
 
 export interface Stage1Application {
@@ -48,6 +62,7 @@ export interface Stage1Conversation {
   id: string;
   contactId: string;
   externalContactId: string;
+  externalConversationId: string;
   channel: string;
   status: string;
   messages: Stage1Message[];
@@ -182,6 +197,38 @@ export function postAction<T>(path: string, body: unknown): Promise<ApiMutationR
   return mutateJson<T>("POST", path, body);
 }
 
+export async function postMultipartAction<T>(path: string, body: FormData): Promise<ApiMutationResult<T>> {
+  try {
+    const response = await fetch(`${apiBaseUrl}${path}`, {
+      method: "POST",
+      body,
+      cache: "no-store"
+    });
+    const payload = response.status === 204 ? null : ((await parsePayload(response)) as T | null);
+    if (!response.ok) {
+      return {
+        ok: false,
+        status: response.status,
+        data: payload,
+        error: extractApiError(payload) ?? `request_failed_${response.status}`
+      };
+    }
+
+    return {
+      ok: true,
+      status: response.status,
+      data: payload
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      status: 0,
+      data: null,
+      error: error instanceof Error ? error.message : "api_unavailable"
+    };
+  }
+}
+
 export function patchAction<T>(path: string, body: unknown): Promise<ApiMutationResult<T>> {
   return mutateJson<T>("PATCH", path, body);
 }
@@ -219,6 +266,10 @@ export function toFeedbackMessage(code?: string): { tone: "success" | "error" | 
       return { tone: "error", text: "Не удалось создать тестовый диалог." };
     case "message_send_failed":
       return { tone: "error", text: "Не удалось отправить сообщение в тестовый чат." };
+    case "conversation_not_found":
+      return { tone: "error", text: "Текущий диалог не найден. Возможно, он был удален или устарел." };
+    case "message_empty":
+      return { tone: "warning", text: "Введите сообщение или прикрепите хотя бы один файл." };
     case "settings_save_failed":
       return { tone: "error", text: "Не удалось сохранить настройки." };
     case "knowledge_save_failed":
@@ -239,5 +290,7 @@ function extractApiError(payload: unknown): string | undefined {
   const value = (payload as { message?: unknown; error?: unknown }).message ?? (payload as { error?: unknown }).error;
   if (typeof value !== "string") return undefined;
   if (value.startsWith("database_schema_missing")) return "database_schema_missing";
+  if (value.startsWith("conversation_not_found")) return "conversation_not_found";
+  if (value.startsWith("message_empty")) return "message_empty";
   return value;
 }

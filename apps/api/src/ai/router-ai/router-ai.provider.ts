@@ -69,31 +69,34 @@ export class RouterAiProvider implements AiProvider {
   }
 
   async analyzeImage(input: VisionInput): Promise<VisionResult> {
-    if (!this.client.isConfigured()) {
-      const type = String(input.attachment.kindHint ?? input.attachment.fileName ?? "").toLowerCase();
-      if (type.includes("id-front")) {
-        return { type: "id_front", extractedFacts: [], quality: "good" };
-      }
-      if (type.includes("id-back")) {
-        return { type: "id_back", extractedFacts: [], quality: "good" };
-      }
-      if (type.includes("registration-front") || type.includes("sts-front")) {
-        return { type: "vehicle_registration_front", extractedFacts: [], quality: "good" };
-      }
-      if (type.includes("registration-back") || type.includes("sts-back")) {
-        return { type: "vehicle_registration_back", extractedFacts: [], quality: "good" };
-      }
-      if (type.includes("car")) {
-        return { type: "car", extractedFacts: [], quality: "good" };
-      }
-      if (type.includes("poor")) {
-        return { type: "poor_quality", extractedFacts: [], quality: "poor" };
-      }
-      return { type: "unknown", extractedFacts: [], quality: "unknown" };
-    }
-
-    return { type: "unknown", extractedFacts: [], quality: "unknown" };
+    return inferAttachmentVision(input);
   }
+}
+
+function inferAttachmentVision(input: VisionInput): VisionResult {
+  const name = String(input.attachment.fileName ?? "").toLowerCase();
+  const mimeType = String(input.attachment.mimeType ?? "").toLowerCase();
+  const hint = [name, mimeType].join(" ");
+
+  if (hint.includes("poor") || hint.includes("blur") || hint.includes("low-quality")) {
+    return { type: "poor_quality", extractedFacts: [], quality: "poor" };
+  }
+  if (hint.includes("id-front") || hint.includes("passport-front") || hint.includes("idcard-front")) {
+    return { type: "id_front", extractedFacts: [], quality: "good" };
+  }
+  if (hint.includes("id-back") || hint.includes("passport-back") || hint.includes("idcard-back")) {
+    return { type: "id_back", extractedFacts: [], quality: "good" };
+  }
+  if (hint.includes("registration-front") || hint.includes("sts-front") || hint.includes("registration-front")) {
+    return { type: "vehicle_registration_front", extractedFacts: [], quality: "good" };
+  }
+  if (hint.includes("registration-back") || hint.includes("sts-back")) {
+    return { type: "vehicle_registration_back", extractedFacts: [], quality: "good" };
+  }
+  if (hint.includes("car") || hint.includes("vehicle") || mimeType.startsWith("image/")) {
+    return { type: "car", extractedFacts: [], quality: "good" };
+  }
+  return { type: "unknown", extractedFacts: [], quality: "unknown" };
 }
 
 function localExtract(input: ExtractionInput): ExtractionResult {

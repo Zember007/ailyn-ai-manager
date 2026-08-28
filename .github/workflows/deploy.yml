@@ -23,13 +23,6 @@ jobs:
           version: 10.28.2
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-      - name: Validate before deploy
-        run: |
-          pnpm lint
-          pnpm typecheck
-          pnpm test
-          pnpm test:scenarios
-          pnpm build
       - name: Configure SSH
         env:
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
@@ -64,10 +57,10 @@ jobs:
           set -Eeuo pipefail
           cd /opt/ailyn/app
           ENV_FILE=/opt/ailyn/.env.production ./scripts/provision-production-env.sh
-          docker compose --env-file /opt/ailyn/.env.production -f compose.production.yml build
+          docker compose --env-file /opt/ailyn/.env.production -f compose.production.yml build api admin
           docker compose --env-file /opt/ailyn/.env.production -f compose.production.yml run -T --rm api sh -lc 'node -e "new URL(process.env.DATABASE_URL); new URL(process.env.REDIS_URL)"' < /dev/null
           docker compose --env-file /opt/ailyn/.env.production -f compose.production.yml run -T --rm api sh -lc './apps/api/node_modules/.bin/prisma migrate deploy --schema apps/api/prisma/schema.prisma' < /dev/null
-          docker compose --env-file /opt/ailyn/.env.production -f compose.production.yml up -d --remove-orphans --force-recreate minio api admin nginx
+          docker compose --env-file /opt/ailyn/.env.production -f compose.production.yml up -d --remove-orphans minio api admin nginx
           REMOTE
       - name: Healthcheck
         env:

@@ -29,6 +29,11 @@ select {
   padding: 22px 0 40px;
 }
 
+.shellFullWidth {
+  width: calc(100% - 28px);
+  max-width: none;
+}
+
 .notice {
   margin-bottom: 14px;
   border-radius: 10px;
@@ -173,6 +178,41 @@ button {
   margin-bottom: 14px;
 }
 
+.conversationWorkspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1.55fr) minmax(340px, 0.85fr);
+  gap: 16px;
+  min-height: calc(100vh - 180px);
+  margin-bottom: 16px;
+}
+
+.conversationStage,
+.conversationSidebar {
+  border: 1px solid #d1dae5;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.96);
+  backdrop-filter: blur(10px);
+}
+
+.conversationStage {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  min-height: 0;
+  padding: 16px;
+}
+
+.conversationSidebar {
+  display: grid;
+  gap: 12px;
+  align-content: start;
+  padding: 12px;
+  max-height: calc(100vh - 180px);
+  overflow: auto;
+  align-self: start;
+  position: sticky;
+  top: 12px;
+}
+
 .conversationPane,
 .leadPane,
 .panel {
@@ -204,6 +244,29 @@ button {
   max-height: 520px;
   overflow: auto;
   padding: 14px 0;
+}
+
+.conversationStage .messages {
+  min-height: 0;
+  max-height: none;
+  height: 100%;
+}
+
+.conversationHeader,
+.conversationMeta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.conversationHeader {
+  margin-bottom: 6px;
+}
+
+.conversationMeta {
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .message {
@@ -243,6 +306,64 @@ button {
   align-items: stretch;
 }
 
+.composerCard {
+  border-top: 1px solid #edf1f5;
+  padding-top: 12px;
+}
+
+.composerInputRow {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.composerAttach {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: center;
+  min-width: 96px;
+}
+
+.composerAttachments {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.attachmentPills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.attachmentPill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  border: 1px solid #d8e0e9;
+  border-radius: 999px;
+  padding: 8px 10px;
+  background: #f8fafc;
+  overflow-wrap: anywhere;
+}
+
+.attachmentPill strong {
+  font-size: 12px;
+}
+
+.attachmentPill.pending {
+  background: #eef6fb;
+  border-color: #bfd7e6;
+}
+
+.attachmentPill button {
+  padding: 4px 8px;
+  font-size: 12px;
+}
+
 input,
 textarea,
 select {
@@ -261,6 +382,12 @@ textarea {
 .grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.conversationDiagnostics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 14px;
 }
 
@@ -418,9 +545,12 @@ pre {
 
 @media (max-width: 980px) {
   .workspace,
+  .conversationWorkspace,
+  .conversationDiagnostics,
   .grid,
   .summaryGrid,
   .composer,
+  .composerInputRow,
   .settingRow,
   .tableRow,
   .compact .tableRow,
@@ -430,5 +560,10 @@ pre {
 
   .message {
     width: 100%;
+  }
+
+  .conversationSidebar {
+    max-height: none;
+    overflow: visible;
   }
 }
