@@ -22,5 +22,15 @@ export default tseslint.config(
         { "argsIgnorePattern": "^_", "varsIgnorePattern": "^_" }
       ]
     }
+  },
+  {
+    files: ["scripts/**/*.mjs"],
+    languageOptions: {
+      globals: {
+        console: "readonly",
+        process: "readonly",
+        setTimeout: "readonly"
+      }
+    }
   }
 );
