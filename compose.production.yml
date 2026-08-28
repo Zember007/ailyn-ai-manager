@@ -73,6 +73,8 @@ services:
       context: .
       dockerfile: infra/docker/admin.Dockerfile
     restart: unless-stopped
+    env_file:
+      - ${PRODUCTION_ENV_FILE:-/opt/ailyn/.env.production}
     environment:
       API_INTERNAL_URL: http://api:3001/api
     depends_on:

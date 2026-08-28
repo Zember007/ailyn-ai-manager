@@ -78,6 +78,8 @@ services:
     build:
       context: .
       dockerfile: infra/docker/admin.Dockerfile
+    env_file:
+      - .env.example
     environment:
       API_INTERNAL_URL: http://api:3001/api
     depends_on:
