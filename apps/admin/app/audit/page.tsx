@@ -1,5 +1,5 @@
-import { AdminShell, JsonPreview, Panel } from "../components.js";
-import { formatDate, readJson } from "../lib/api.js";
+import { AdminShell, JsonPreview, Panel } from "../components";
+import { formatDate, readJson } from "../lib/api";
 
 interface AuditEntry {
   id: string;

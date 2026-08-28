@@ -1,5 +1,5 @@
-import { AdminShell, Panel, StatusBadge } from "../components.js";
-import { formatDate, readJson, type Stage1Conversation } from "../lib/api.js";
+import { AdminShell, Panel, StatusBadge } from "../components";
+import { formatDate, readJson, type Stage1Conversation } from "../lib/api";
 
 export default async function ConversationsPage() {
   const conversations = await readJson<Stage1Conversation[]>("/conversations", []);

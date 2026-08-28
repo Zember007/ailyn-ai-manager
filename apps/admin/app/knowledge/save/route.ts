@@ -1,4 +1,4 @@
-import { postJson } from "../../lib/api.js";
+import { postJson } from "../../lib/api";
 
 export async function POST(request: Request) {
   const form = await request.formData();

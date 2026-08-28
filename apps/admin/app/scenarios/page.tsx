@@ -1,5 +1,5 @@
-import { AdminShell, Panel, StatusBadge } from "../components.js";
-import { formatDate, readJson, type Scenario, type ScenarioRun } from "../lib/api.js";
+import { AdminShell, Panel, StatusBadge } from "../components";
+import { formatDate, readJson, type Scenario, type ScenarioRun } from "../lib/api";
 
 export default async function ScenariosPage() {
   const [scenarios, runs] = await Promise.all([

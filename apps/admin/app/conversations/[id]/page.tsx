@@ -1,5 +1,5 @@
-import { AdminShell, Field, JsonPreview, LeadCard, MessageList, Panel } from "../../components.js";
-import { readJson, type Stage1Conversation } from "../../lib/api.js";
+import { AdminShell, Field, JsonPreview, LeadCard, MessageList, Panel } from "../../components";
+import { readJson, type Stage1Conversation } from "../../lib/api";
 
 export default async function ConversationDetailPage({ params }: Readonly<{ params: { id: string } }>) {
   const conversation = await readJson<Stage1Conversation | { error: string }>(`/conversations/${params.id}`, { error: "not_found" });

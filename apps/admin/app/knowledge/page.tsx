@@ -1,5 +1,5 @@
-import { AdminShell, Panel } from "../components.js";
-import { readJson } from "../lib/api.js";
+import { AdminShell, Panel } from "../components";
+import { readJson } from "../lib/api";
 
 interface KnowledgeItem {
   id: string;

@@ -1,5 +1,5 @@
-import { AdminShell, Field, Panel, StatusBadge } from "../../../components.js";
-import { formatDate, readJson, type ScenarioRun } from "../../../lib/api.js";
+import { AdminShell, Field, Panel, StatusBadge } from "../../../components";
+import { formatDate, readJson, type ScenarioRun } from "../../../lib/api";
 
 export default async function ScenarioRunPage({ params }: Readonly<{ params: { id: string } }>) {
   const run = await readJson<ScenarioRun | { error: string }>(`/scenarios/runs/${params.id}`, { error: "not_found" });

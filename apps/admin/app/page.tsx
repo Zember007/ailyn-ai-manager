@@ -1,5 +1,5 @@
-import { AdminShell, Field, Panel, StatusBadge } from "./components.js";
-import { formatDate, readJson, type HealthResponse, type ScenarioRun, type Stage1Conversation } from "./lib/api.js";
+import { AdminShell, Field, Panel, StatusBadge } from "./components";
+import { formatDate, readJson, type HealthResponse, type ScenarioRun, type Stage1Conversation } from "./lib/api";
 
 export default async function DashboardPage() {
   const [health, conversations, runs] = await Promise.all([

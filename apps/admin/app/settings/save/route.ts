@@ -1,4 +1,4 @@
-import { patchJson } from "../../lib/api.js";
+import { patchJson } from "../../lib/api";
 
 export async function POST(request: Request) {
   const form = await request.formData();

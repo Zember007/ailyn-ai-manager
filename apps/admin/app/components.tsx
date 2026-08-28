@@ -1,4 +1,4 @@
-import { displayValue, formatDate, type Stage1Application } from "./lib/api.js";
+import { displayValue, formatDate, type Stage1Application } from "./lib/api";
 
 export function AdminShell({ title, eyebrow, children }: Readonly<{ title: string; eyebrow?: string; children: React.ReactNode }>) {
   return (

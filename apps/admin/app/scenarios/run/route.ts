@@ -1,4 +1,4 @@
-import { postJson, type ScenarioRun } from "../../lib/api.js";
+import { postJson, type ScenarioRun } from "../../lib/api";
 
 export async function POST(request: Request) {
   const form = await request.formData();

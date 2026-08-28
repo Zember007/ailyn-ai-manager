@@ -1,5 +1,5 @@
-import { AdminShell, Panel } from "../components.js";
-import { readJson, type SettingsResponse } from "../lib/api.js";
+import { AdminShell, Panel } from "../components";
+import { readJson, type SettingsResponse } from "../lib/api";
 
 export default async function SettingsPage() {
   const settings = await readJson<SettingsResponse>("/settings", { values: {}, fields: [] });
