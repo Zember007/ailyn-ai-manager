@@ -15,10 +15,10 @@ export function AdminShell({ title, eyebrow, children }: Readonly<{ title: strin
       <nav className="tabs">
         <a href="/">Обзор</a>
         <a href="/conversations">Диалоги</a>
-        <a href="/scenarios">Сценарии</a>
-        <a href="/settings">Настройки</a>
-        <a href="/knowledge">База знаний</a>
-        <a href="/audit">Аудит</a>
+{/*         <a href="/scenarios">Сценарии</a>
+        <a href="/settings">Настройки</a> */}
+        {/* <a href="/knowledge">База знаний</a>
+        <a href="/audit">Аудит</a> */}
       </nav>
       {children}
     </main>

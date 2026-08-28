@@ -339,7 +339,7 @@ function evaluateContractScenario(scenario: Stage1Scenario): ScenarioEvaluation 
     memory: () => ({
       pass:
         contracts.store.includes("supersededAt") &&
-        contracts.store.includes("FactHistory") &&
+        contracts.store.includes("this.prisma.factHistory.create") &&
         contracts.orchestrator.includes("await this.store.updateFacts"),
       assertions: ["fact_supersession_present", "fact_history_persistence_present", "conversation_resume_update_present"],
       actual: "Проверены superseded facts, history и обновление текущих фактов."
