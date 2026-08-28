@@ -51,6 +51,14 @@ export class DialogueOrchestratorService {
       conversationId = conversation.id;
       let application = originalApplication;
 
+      await this.logs.debug("dialogue.receive", "Conversation resolved", {
+        conversationId,
+        metadata: {
+          applicationId: application.id,
+          isNew
+        }
+      });
+
       const inbound = await this.store.addMessage(conversation, {
         author: "client",
         body: message.text ?? "",
@@ -62,10 +70,32 @@ export class DialogueOrchestratorService {
         }
       });
 
+      await this.logs.debug("dialogue.receive", "Inbound message persisted", {
+        conversationId,
+        metadata: {
+          inboundMessageId: inbound.id
+        }
+      });
+
+      await this.logs.debug("dialogue.receive", "Starting extraction", {
+        conversationId,
+        metadata: {
+          attachments: message.attachments.length
+        }
+      });
       const extraction = await this.ai.getProvider().extract({
         text: message.text,
         attachments: message.attachments,
         facts: application.facts
+      });
+
+      await this.logs.debug("dialogue.receive", "Extraction completed", {
+        conversationId,
+        metadata: {
+          factsExtracted: extraction.facts.length,
+          questionsDetected: extraction.questions.length,
+          promptInjectionDetected: extraction.promptInjectionDetected
+        }
       });
 
       const incomingFacts: Partial<ApplicationFacts> = {};
@@ -82,15 +112,48 @@ export class DialogueOrchestratorService {
 
       if (incomingFacts.ownerChanged || incomingFacts.plateChanged) {
         application = await this.store.createNewApplication(conversation, application.facts);
+        await this.logs.debug("dialogue.receive", "Created new application after owner/plate change", {
+          conversationId,
+          metadata: {
+            applicationId: application.id
+          }
+        });
       }
 
       const documentFacts = await this.processAttachments(conversation.id, inbound.id, message.attachments);
       await this.store.updateFacts(application, mergeFacts(incomingFacts, documentFacts));
       application = (await this.store.getApplication(application.id)) ?? application;
 
-      const decision = evaluateApplication(application.facts, await this.settings.getBusinessRuleSettings());
+      await this.logs.debug("dialogue.receive", "Facts updated", {
+        conversationId,
+        metadata: {
+          applicationId: application.id,
+          factKeys: Object.keys(application.facts)
+        }
+      });
+
+      const businessRuleSettings = await this.settings.getBusinessRuleSettings();
+      await this.logs.debug("dialogue.receive", "Business rule settings loaded", {
+        conversationId,
+        metadata: {
+          minimumLoan: businessRuleSettings.minimumLoan,
+          latestArrivalTime: businessRuleSettings.latestArrivalTime
+        }
+      });
+
+      const decision = evaluateApplication(application.facts, businessRuleSettings);
       await this.store.saveDecision(application, decision);
       application = (await this.store.getApplication(application.id)) ?? { ...application, decision, status: decision.status, stage: decision.stage };
+
+      await this.logs.debug("dialogue.receive", "Decision evaluated", {
+        conversationId,
+        metadata: {
+          applicationId: application.id,
+          status: decision.status,
+          stage: decision.stage,
+          nextAction: decision.nextAction
+        }
+      });
 
       const plan = this.responsePlan.build({
         facts: application.facts,
@@ -98,12 +161,38 @@ export class DialogueOrchestratorService {
         isFirstMessage: isNew,
         questions: extraction.questions
       });
+
+      await this.logs.debug("dialogue.receive", "Response plan prepared", {
+        conversationId,
+        metadata: {
+          nextQuestions: plan.nextQuestions.length,
+          requiredStatements: plan.requiredStatements.length,
+          answers: plan.answers.length
+        }
+      });
+
+      await this.logs.debug("dialogue.receive", "Starting response generation", {
+        conversationId,
+        metadata: {
+          applicationId: application.id
+        }
+      });
       const generated = await this.ai.getProvider().generateResponse({
         userText: message.text,
         facts: application.facts,
         decision,
         responsePlan: plan
       });
+
+      await this.logs.debug("dialogue.receive", "Response generated", {
+        conversationId,
+        metadata: {
+          routerAiModel: generated.model,
+          promptVersion: generated.promptVersion,
+          messageLength: generated.message.length
+        }
+      });
+
       const validation = this.validator.validate({ message: generated.message, decision });
       await this.store.addMessage(conversation, {
         author: "ai",
@@ -143,7 +232,8 @@ export class DialogueOrchestratorService {
         metadata: {
           channel: message.channel,
           externalConversationId: message.externalConversationId,
-          externalContactId: message.externalContactId
+          externalContactId: message.externalContactId,
+          errorMessage: error instanceof Error ? error.message : String(error)
         },
         stack: error instanceof Error ? error.stack : undefined
       });
