@@ -7,6 +7,7 @@ import { ResponsePlanService } from "./response-plan.service.js";
 import { ResponseValidatorService } from "./response-validator.service.js";
 import { Stage1StoreService, type Stage1Application, type Stage1Conversation } from "./stage1-store.service.js";
 import { SettingsService } from "../settings/settings.service.js";
+import { BackendLogsService } from "../logs/backend-logs.service.js";
 
 export interface DialogueResult {
   conversation: Stage1Conversation;
@@ -24,92 +25,130 @@ export class DialogueOrchestratorService {
     private readonly store: Stage1StoreService,
     private readonly responsePlan: ResponsePlanService,
     private readonly validator: ResponseValidatorService,
-    private readonly settings: SettingsService
+    private readonly settings: SettingsService,
+    private readonly logs: BackendLogsService
   ) {}
 
   async receive(message: InboundMessage): Promise<DialogueResult> {
-    const { conversation, application: originalApplication, isNew } = await this.store.getOrCreateConversation({
-      externalContactId: message.externalContactId,
-      externalConversationId: message.externalConversationId,
-      channel: message.channel
-    });
-    let application = originalApplication;
-
-    const inbound = await this.store.addMessage(conversation, {
-      author: "client",
-      body: message.text ?? "",
-      attachmentIds: message.attachments.map((attachment) => attachment.id),
-      attachments: [],
+    await this.logs.log("dialogue.receive", "Started processing inbound message", {
       metadata: {
-        externalMessageId: message.externalMessageId,
+        channel: message.channel,
+        externalConversationId: message.externalConversationId,
+        externalContactId: message.externalContactId,
+        hasText: Boolean(message.text?.trim()),
+        attachments: message.attachments.length
+      }
+    });
+
+    let conversationId: string | undefined;
+
+    try {
+      const { conversation, application: originalApplication, isNew } = await this.store.getOrCreateConversation({
+        externalContactId: message.externalContactId,
+        externalConversationId: message.externalConversationId,
         channel: message.channel
+      });
+      conversationId = conversation.id;
+      let application = originalApplication;
+
+      const inbound = await this.store.addMessage(conversation, {
+        author: "client",
+        body: message.text ?? "",
+        attachmentIds: message.attachments.map((attachment) => attachment.id),
+        attachments: [],
+        metadata: {
+          externalMessageId: message.externalMessageId,
+          channel: message.channel
+        }
+      });
+
+      const extraction = await this.ai.getProvider().extract({
+        text: message.text,
+        attachments: message.attachments,
+        facts: application.facts
+      });
+
+      const incomingFacts: Partial<ApplicationFacts> = {};
+      for (const fact of extraction.facts) {
+        (incomingFacts as Record<string, unknown>)[fact.key] = fact.value;
       }
-    });
+      const text = (message.text ?? "").toLowerCase();
+      if (text.includes("сменился собственник") || text.includes("другой собственник")) {
+        incomingFacts.ownerChanged = true;
+      }
+      if (text.includes("сменился номер") || text.includes("другой госномер") || text.includes("новый госномер")) {
+        incomingFacts.plateChanged = true;
+      }
 
-    const extraction = await this.ai.getProvider().extract({
-      text: message.text,
-      attachments: message.attachments,
-      facts: application.facts
-    });
+      if (incomingFacts.ownerChanged || incomingFacts.plateChanged) {
+        application = await this.store.createNewApplication(conversation, application.facts);
+      }
 
-    const incomingFacts: Partial<ApplicationFacts> = {};
-    for (const fact of extraction.facts) {
-      (incomingFacts as Record<string, unknown>)[fact.key] = fact.value;
-    }
-    const text = (message.text ?? "").toLowerCase();
-    if (text.includes("сменился собственник") || text.includes("другой собственник")) {
-      incomingFacts.ownerChanged = true;
-    }
-    if (text.includes("сменился номер") || text.includes("другой госномер") || text.includes("новый госномер")) {
-      incomingFacts.plateChanged = true;
-    }
+      const documentFacts = await this.processAttachments(conversation.id, inbound.id, message.attachments);
+      await this.store.updateFacts(application, mergeFacts(incomingFacts, documentFacts));
+      application = (await this.store.getApplication(application.id)) ?? application;
 
-    if (incomingFacts.ownerChanged || incomingFacts.plateChanged) {
-      application = await this.store.createNewApplication(conversation, application.facts);
-    }
+      const decision = evaluateApplication(application.facts, await this.settings.getBusinessRuleSettings());
+      await this.store.saveDecision(application, decision);
+      application = (await this.store.getApplication(application.id)) ?? { ...application, decision, status: decision.status, stage: decision.stage };
 
-    const documentFacts = await this.processAttachments(conversation.id, inbound.id, message.attachments);
-    await this.store.updateFacts(application, mergeFacts(incomingFacts, documentFacts));
-    application = (await this.store.getApplication(application.id)) ?? application;
+      const plan = this.responsePlan.build({
+        facts: application.facts,
+        decision,
+        isFirstMessage: isNew,
+        questions: extraction.questions
+      });
+      const generated = await this.ai.getProvider().generateResponse({
+        userText: message.text,
+        facts: application.facts,
+        decision,
+        responsePlan: plan
+      });
+      const validation = this.validator.validate({ message: generated.message, decision });
+      await this.store.addMessage(conversation, {
+        author: "ai",
+        body: validation.finalMessage,
+        attachmentIds: [],
+        attachments: [],
+        metadata: {
+          sourceMessageId: inbound.id,
+          routerAiModel: generated.model,
+          promptVersion: generated.promptVersion,
+          validation
+        }
+      });
 
-    const decision = evaluateApplication(application.facts, await this.settings.getBusinessRuleSettings());
-    await this.store.saveDecision(application, decision);
-    application = (await this.store.getApplication(application.id)) ?? { ...application, decision, status: decision.status, stage: decision.stage };
+      await this.logs.log("dialogue.receive", "Finished processing inbound message", {
+        conversationId: conversation.id,
+        metadata: {
+          applicationId: application.id,
+          stage: application.stage,
+          status: application.status,
+          validationPassed: validation.passed,
+          routerAiModel: generated.model
+        }
+      });
 
-    const plan = this.responsePlan.build({
-      facts: application.facts,
-      decision,
-      isFirstMessage: isNew,
-      questions: extraction.questions
-    });
-    const generated = await this.ai.getProvider().generateResponse({
-      userText: message.text,
-      facts: application.facts,
-      decision,
-      responsePlan: plan
-    });
-    const validation = this.validator.validate({ message: generated.message, decision });
-    await this.store.addMessage(conversation, {
-      author: "ai",
-      body: validation.finalMessage,
-      attachmentIds: [],
-      attachments: [],
-      metadata: {
-        sourceMessageId: inbound.id,
+      return {
+        conversation,
+        application,
+        reply: validation.finalMessage,
+        validation: { passed: validation.passed, errors: validation.errors },
         routerAiModel: generated.model,
-        promptVersion: generated.promptVersion,
-        validation
-      }
-    });
-
-    return {
-      conversation,
-      application,
-      reply: validation.finalMessage,
-      validation: { passed: validation.passed, errors: validation.errors },
-      routerAiModel: generated.model,
-      promptVersion: generated.promptVersion
-    };
+        promptVersion: generated.promptVersion
+      };
+    } catch (error) {
+      await this.logs.error("dialogue.receive", "Failed to process inbound message", {
+        conversationId,
+        metadata: {
+          channel: message.channel,
+          externalConversationId: message.externalConversationId,
+          externalContactId: message.externalContactId
+        },
+        stack: error instanceof Error ? error.stack : undefined
+      });
+      throw error;
+    }
   }
 
   private async processAttachments(

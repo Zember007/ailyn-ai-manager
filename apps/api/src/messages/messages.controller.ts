@@ -3,6 +3,7 @@ import { FilesInterceptor } from "@nestjs/platform-express";
 import { sendTestChatMessageSchema } from "@ailyn/schemas";
 import { DialogueOrchestratorService } from "../dialogue/dialogue-orchestrator.service.js";
 import { Stage1StoreService } from "../dialogue/stage1-store.service.js";
+import { BackendLogsService } from "../logs/backend-logs.service.js";
 
 interface TestChatBody {
   message?: string;
@@ -18,7 +19,8 @@ interface TestChatBody {
 export class MessagesController {
   constructor(
     private readonly orchestrator: DialogueOrchestratorService,
-    private readonly store: Stage1StoreService
+    private readonly store: Stage1StoreService,
+    private readonly logs: BackendLogsService
   ) {}
 
   @Get()
@@ -44,9 +46,9 @@ export class MessagesController {
 
     const resolvedConversationId = targetConversation?.id;
     const resolvedExternalConversationId = targetConversation?.externalConversationId || parsed.externalConversationId;
-    const result = await this.orchestrator.receive({
+    const input = {
       externalMessageId: `web-in-${crypto.randomUUID()}`,
-      channel: "web-test",
+      channel: "web-test" as const,
       externalContactId: targetConversation?.externalContactId || parsed.externalContactId || "stage1-web-client",
       externalConversationId: resolvedExternalConversationId ?? "stage1-web-conversation",
       text: parsed.message?.trim(),
@@ -76,7 +78,18 @@ export class MessagesController {
         metadata: attachment.metadata
       })),
       timestamp: new Date()
+    };
+
+    await this.logs.log("messages.test-chat", "Received test chat message", {
+      conversationId: resolvedConversationId,
+      metadata: {
+        textLength: input.text?.length ?? 0,
+        attachments: input.attachments.length,
+        hasKnownConversation: Boolean(targetConversation)
+      }
     });
+
+    const result = await this.orchestrator.receive(input);
 
     return {
       reply: result.reply,

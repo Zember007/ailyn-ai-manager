@@ -72,6 +72,20 @@ export interface Stage1Conversation {
   updatedAt: string;
 }
 
+export interface BackendLogEntry {
+  id: string;
+  level: string;
+  context: string;
+  message: string;
+  requestId?: string;
+  method?: string;
+  path?: string;
+  conversationId?: string;
+  metadata?: Record<string, unknown>;
+  stack?: string;
+  createdAt: string;
+}
+
 export interface ScenarioRun {
   id: string;
   status: "PASS" | "FAIL" | "BLOCKED";
@@ -281,7 +295,7 @@ export function toFeedbackMessage(code?: string): { tone: "success" | "error" | 
     case "scenario_contract_mode":
       return { tone: "warning", text: "Часть сценариев сейчас автоматизирована как contract-check, а не как полный admin -> api E2E-прогон." };
     default:
-      return null;
+      return code ? { tone: "error", text: `Backend вернул ошибку: ${code}` } : null;
   }
 }
 

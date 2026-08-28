@@ -293,3 +293,21 @@ model AuditEvent {
   @@index([entityType, entityId])
   @@index([messageId])
 }
+
+model BackendLog {
+  id             String   @id @default(uuid())
+  level          String
+  context        String
+  message        String
+  requestId      String?
+  method         String?
+  path           String?
+  conversationId String?
+  metadata       Json     @default("{}")
+  stack          String?
+  createdAt      DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([level, createdAt])
+  @@index([conversationId, createdAt])
+}

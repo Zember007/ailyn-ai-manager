@@ -3,6 +3,7 @@ import { MessagesController } from "./messages.controller.js";
 
 describe("MessagesController", () => {
   it("routes a test-chat message into the existing conversation by internal id", async () => {
+    const logs = { log: vi.fn() } as any;
     const store = {
       getConversationByIdForChannel: vi.fn().mockResolvedValue({
         id: "conv-internal-1",
@@ -20,7 +21,7 @@ describe("MessagesController", () => {
         promptVersion: "stage1-local-v1"
       })
     } as any;
-    const controller = new MessagesController(orchestrator, store);
+    const controller = new MessagesController(orchestrator, store, logs);
 
     const result = await controller.testChat({
       conversationId: "conv-internal-1",
@@ -42,7 +43,7 @@ describe("MessagesController", () => {
     const store = {
       getConversationByIdForChannel: vi.fn().mockResolvedValue(undefined)
     } as any;
-    const controller = new MessagesController({ receive: vi.fn() } as any, store);
+    const controller = new MessagesController({ receive: vi.fn() } as any, store, { log: vi.fn() } as any);
 
     await expect(controller.testChat({ conversationId: "missing-conversation", message: "test" })).rejects.toMatchObject({
       message: "conversation_not_found"
@@ -50,6 +51,7 @@ describe("MessagesController", () => {
   });
 
   it("includes uploaded files in the orchestrator payload", async () => {
+    const logs = { log: vi.fn() } as any;
     const store = {
       getConversationByIdForChannel: vi.fn().mockResolvedValue({
         id: "conv-internal-1",
@@ -67,7 +69,7 @@ describe("MessagesController", () => {
         promptVersion: "stage1-local-v1"
       })
     } as any;
-    const controller = new MessagesController(orchestrator, store);
+    const controller = new MessagesController(orchestrator, store, logs);
 
     await controller.testChat(
       {

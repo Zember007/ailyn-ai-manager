@@ -57,6 +57,7 @@ export default async function ConversationDetailPage({
             <Field label="Модель RouterAI" value={latestAi?.metadata?.routerAiModel} />
             <Field label="Версия prompt" value={latestAi?.metadata?.promptVersion} />
             <Field label="Валидация" value={latestAi?.metadata?.validation} />
+            <p><a href={`/logs?conversationId=${conversation.id}`}>Открыть backend-логи по этому диалогу</a></p>
           </Panel>
           <Panel title="Вложения">
             <JsonPreview value={conversationAttachments} />
