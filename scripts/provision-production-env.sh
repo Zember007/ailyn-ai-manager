@@ -71,6 +71,16 @@ get_existing_value() {
   grep "^${key}=" "${ENV_FILE}" | tail -n 1 | cut -d= -f2- || true
 }
 
+is_internal_database_url() {
+  local url="$1"
+  [[ "${url}" =~ ^postgres(ql)?://[^@]+@postgres:5432/ ]]
+}
+
+is_internal_redis_url() {
+  local url="$1"
+  [[ "${url}" =~ ^redis://:.*@redis:6379(/.*)?$ ]]
+}
+
 pick_value() {
   local key="$1"
   local fallback="${2:-}"
@@ -98,8 +108,24 @@ redis_password="$(pick_value REDIS_PASSWORD "$(openssl rand -hex 32)")"
 app_secret="$(pick_value APP_SECRET "$(openssl rand -hex 48)")"
 s3_access_key="$(pick_value S3_ACCESS_KEY ailyn-s3)"
 s3_secret_key="$(pick_value S3_SECRET_KEY "$(openssl rand -hex 32)")"
-database_url="$(pick_value DATABASE_URL "postgresql://${postgres_user}:${postgres_password}@postgres:5432/${postgres_db}?schema=public")"
-redis_url="$(pick_value REDIS_URL "redis://:${redis_password}@redis:6379")"
+existing_database_url="$(get_existing_value DATABASE_URL)"
+existing_redis_url="$(get_existing_value REDIS_URL)"
+
+if [[ -n "${DATABASE_URL-}" ]]; then
+  database_url="${DATABASE_URL}"
+elif [[ -n "${existing_database_url}" ]] && ! is_internal_database_url "${existing_database_url}"; then
+  database_url="${existing_database_url}"
+else
+  database_url="postgresql://${postgres_user}:${postgres_password}@postgres:5432/${postgres_db}?schema=public"
+fi
+
+if [[ -n "${REDIS_URL-}" ]]; then
+  redis_url="${REDIS_URL}"
+elif [[ -n "${existing_redis_url}" ]] && ! is_internal_redis_url "${existing_redis_url}"; then
+  redis_url="${existing_redis_url}"
+else
+  redis_url="redis://:${redis_password}@redis:6379"
+fi
 
 extras=()
 if [[ -f "${ENV_FILE}" ]]; then

@@ -22,6 +22,8 @@ Infrastructure secrets generated during bootstrap:
 - `S3_ACCESS_KEY`
 - `S3_SECRET_KEY`
 
+For bundled PostgreSQL and Redis in `compose.production.yml`, keep `DATABASE_URL` pointed at `postgres` and `REDIS_URL` pointed at `redis`. The provisioning script now refreshes those internal URLs from the current managed credentials so `api` does not keep stale connection strings after secret rotation or env cleanup.
+
 External application secrets to add later:
 
 - `ROUTERAI_API_KEY`
