@@ -131,25 +131,25 @@ function toJson(value: unknown): Prisma.InputJsonValue {
 
 function settingLabel(key: keyof Stage1Settings): string {
   const labels: Record<keyof Stage1Settings, string> = {
-    companyName: "Company name",
-    assistantName: "Assistant name",
-    phone: "Phone",
-    whatsAppPhone: "WhatsApp phone",
-    address: "Office address",
-    twoGisUrl: "2GIS URL",
-    googleMapsUrl: "Google Maps URL",
-    timezone: "Timezone",
-    schedule: "Schedule",
-    latestArrivalTime: "Latest arrival time",
-    withoutStoragePercent: "Without-storage percent",
-    parkingPercent: "Parking percent",
-    withoutStorageLimitBishkekChuy: "Bishkek/Chuy without-storage limit",
-    withoutStorageLimitOtherRegion: "Other-region without-storage limit",
-    parkingLimit: "Parking limit",
-    minimumLoan: "Minimum loan",
-    parkingInterestRate: "Parking interest rate",
-    parkingDailyFee: "Parking daily fee",
-    otherRegionMinVehicleValue: "Other-region minimum vehicle value"
+    companyName: "Название компании",
+    assistantName: "Имя ассистента",
+    phone: "Основной телефон",
+    whatsAppPhone: "Телефон WhatsApp",
+    address: "Адрес офиса",
+    twoGisUrl: "Ссылка 2GIS",
+    googleMapsUrl: "Ссылка Google Maps",
+    timezone: "Часовой пояс",
+    schedule: "График работы",
+    latestArrivalTime: "Крайнее время приезда",
+    withoutStoragePercent: "Процент без изъятия",
+    parkingPercent: "Процент по стоянке",
+    withoutStorageLimitBishkekChuy: "Лимит без изъятия для Бишкек/Чуй",
+    withoutStorageLimitOtherRegion: "Лимит без изъятия для других регионов",
+    parkingLimit: "Максимальный лимит по стоянке",
+    minimumLoan: "Минимальная сумма займа",
+    parkingInterestRate: "Ставка по стоянке",
+    parkingDailyFee: "Суточная плата за стоянку",
+    otherRegionMinVehicleValue: "Минимальная стоимость авто для другого региона"
   };
   return labels[key];
 }

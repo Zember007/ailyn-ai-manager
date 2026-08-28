@@ -1,5 +1,12 @@
 export const apiBaseUrl = process.env.API_INTERNAL_URL ?? "http://localhost:3001/api";
 
+export interface ApiMutationResult<T> {
+  ok: boolean;
+  status: number;
+  data: T | null;
+  error?: string;
+}
+
 export interface HealthResponse {
   status: string;
   version: string;
@@ -50,6 +57,7 @@ export interface ScenarioRun {
   results: {
     id: string;
     status: "PASS" | "FAIL" | "BLOCKED";
+    evaluationMode?: "deterministic" | "placeholder" | "blocked";
     expected: string;
     actual: string;
     assertions: string[];
@@ -89,34 +97,55 @@ export async function readJson<T>(path: string, fallback: T): Promise<T> {
   }
 }
 
-export async function postJson<T>(path: string, body: unknown, fallback: T): Promise<T> {
+async function mutateJson<T>(method: "POST" | "PATCH", path: string, body: unknown): Promise<ApiMutationResult<T>> {
   try {
     const response = await fetch(`${apiBaseUrl}${path}`, {
-      method: "POST",
+      method,
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
       cache: "no-store"
     });
-    if (!response.ok) return fallback;
-    return (await response.json()) as T;
-  } catch {
-    return fallback;
+    const payload = response.status === 204 ? null : ((await response.json().catch(() => null)) as T | null);
+    if (!response.ok) {
+      return {
+        ok: false,
+        status: response.status,
+        data: payload,
+        error: extractApiError(payload) ?? `request_failed_${response.status}`
+      };
+    }
+
+    return {
+      ok: true,
+      status: response.status,
+      data: payload
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      status: 0,
+      data: null,
+      error: error instanceof Error ? error.message : "api_unavailable"
+    };
   }
 }
 
+export async function postJson<T>(path: string, body: unknown, fallback: T): Promise<T> {
+  const result = await mutateJson<T>("POST", path, body);
+  return result.ok && result.data !== null ? result.data : fallback;
+}
+
 export async function patchJson<T>(path: string, body: unknown, fallback: T): Promise<T> {
-  try {
-    const response = await fetch(`${apiBaseUrl}${path}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-      cache: "no-store"
-    });
-    if (!response.ok) return fallback;
-    return (await response.json()) as T;
-  } catch {
-    return fallback;
-  }
+  const result = await mutateJson<T>("PATCH", path, body);
+  return result.ok && result.data !== null ? result.data : fallback;
+}
+
+export function postAction<T>(path: string, body: unknown): Promise<ApiMutationResult<T>> {
+  return mutateJson<T>("POST", path, body);
+}
+
+export function patchAction<T>(path: string, body: unknown): Promise<ApiMutationResult<T>> {
+  return mutateJson<T>("PATCH", path, body);
 }
 
 export function formatDate(value: string): string {
@@ -124,7 +153,49 @@ export function formatDate(value: string): string {
 }
 
 export function displayValue(value: unknown): string {
-  if (value === undefined || value === null || value === "") return "unknown";
+  if (value === undefined || value === null || value === "") return "Не указано";
   if (typeof value === "object") return JSON.stringify(value);
   return String(value);
+}
+
+export function getSearchParamValue(value: string | string[] | undefined): string | undefined {
+  if (Array.isArray(value)) return value[0];
+  return value;
+}
+
+export function toFeedbackMessage(code?: string): { tone: "success" | "error" | "warning"; text: string } | null {
+  switch (code) {
+    case "conversation_created":
+      return { tone: "success", text: "Тестовый диалог создан." };
+    case "message_sent":
+      return { tone: "success", text: "Сообщение отправлено в оркестратор диалога." };
+    case "settings_saved":
+      return { tone: "success", text: "Настройки сохранены." };
+    case "knowledge_saved":
+      return { tone: "success", text: "Запись базы знаний сохранена." };
+    case "scenarios_started":
+      return { tone: "success", text: "Прогон сценариев запущен." };
+    case "api_unavailable":
+      return { tone: "error", text: "API недоступен. Проверьте, что backend запущен и подключен к базе данных." };
+    case "conversation_create_failed":
+      return { tone: "error", text: "Не удалось создать тестовый диалог." };
+    case "message_send_failed":
+      return { tone: "error", text: "Не удалось отправить сообщение в тестовый чат." };
+    case "settings_save_failed":
+      return { tone: "error", text: "Не удалось сохранить настройки." };
+    case "knowledge_save_failed":
+      return { tone: "error", text: "Не удалось сохранить запись базы знаний." };
+    case "scenario_run_failed":
+      return { tone: "error", text: "Не удалось запустить сценарии." };
+    case "scenario_placeholder":
+      return { tone: "warning", text: "Часть сценариев пока проверяется не полноценным E2E-прогоном, а зарегистрированными placeholder-assertions." };
+    default:
+      return null;
+  }
+}
+
+function extractApiError(payload: unknown): string | undefined {
+  if (!payload || typeof payload !== "object") return undefined;
+  const value = (payload as { message?: unknown; error?: unknown }).message ?? (payload as { error?: unknown }).error;
+  return typeof value === "string" ? value : undefined;
 }

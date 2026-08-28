@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "build": "prisma generate && tsc -p tsconfig.json",
-    "dev": "nest start --watch",
-    "start": "node dist/apps/api/src/main.js",
+    "dev": "set -a && . ../../.env && set +a && nest start --watch",
+    "start": "set -a && . ../../.env && set +a && node dist/apps/api/src/main.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "prisma:generate": "prisma generate --schema prisma/schema.prisma",
     "prisma:migrate:deploy": "prisma migrate deploy --schema prisma/schema.prisma"

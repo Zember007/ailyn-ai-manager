@@ -1,18 +1,27 @@
-import { AdminShell, Panel } from "../components";
-import { readJson, type SettingsResponse } from "../lib/api";
+import { AdminShell, Notice, Panel } from "../components";
+import { getSearchParamValue, readJson, toFeedbackMessage, type SettingsResponse } from "../lib/api";
 
-export default async function SettingsPage() {
+export default async function SettingsPage({ searchParams }: Readonly<{ searchParams?: Promise<Record<string, string | string[] | undefined>> }>) {
   const settings = await readJson<SettingsResponse>("/settings", { values: {}, fields: [] });
+  const params = (await searchParams) ?? {};
+  const feedback = toFeedbackMessage(getSearchParamValue(params.notice) ?? getSearchParamValue(params.error));
+  const editableCount = settings.fields.filter((field) => field.editable).length;
+  const blockedCount = settings.fields.filter((field) => field.blocked).length;
 
   return (
-    <AdminShell title="Settings">
-      <Panel title="Editable Stage 1 Parameters">
+    <AdminShell title="Настройки">
+      {feedback ? <Notice tone={feedback.tone}>{feedback.text}</Notice> : null}
+      <Panel title="Параметры Stage 1">
+        <div className="stack helperText">
+          <p>В этом разделе редактируются только подтвержденные параметры. Неподтвержденные бизнес-значения должны оставаться `BLOCKED`.</p>
+          <p className="muted">Редактируемых полей: {editableCount}. BLOCKED-полей: {blockedCount}.</p>
+        </div>
         <form className="settingsForm" action="/settings/save" method="post">
           {settings.fields.map((field) => (
             <label className="settingRow" key={field.key}>
               <span>
                 <strong>{field.label}</strong>
-                {field.reason ? <small>{field.reason}</small> : null}
+                <small>{field.blocked ? field.reason : field.editable ? "Поле можно изменить в админке." : "Поле недоступно для редактирования."}</small>
               </span>
               <input type="hidden" name={`__type:${field.key}`} value={field.type === "number" ? "number" : "text"} />
               <input
@@ -24,7 +33,8 @@ export default async function SettingsPage() {
               />
             </label>
           ))}
-          <button type="submit">Save settings</button>
+          {settings.fields.length === 0 ? <p className="muted">Настройки не загрузились из API.</p> : null}
+          <button type="submit">Сохранить настройки</button>
         </form>
       </Panel>
     </AdminShell>

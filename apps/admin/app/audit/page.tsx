@@ -14,8 +14,8 @@ export default async function AuditPage() {
   const audit = await readJson<AuditEntry[]>("/audit", []);
 
   return (
-    <AdminShell title="Audit">
-      <Panel title="Recent Events">
+    <AdminShell title="Аудит">
+      <Panel title="Последние события">
         <div className="table compact">
           {audit.map((event) => (
             <details className="resultRow" key={event.id}>
@@ -28,7 +28,7 @@ export default async function AuditPage() {
               <JsonPreview value={event.metadata ?? {}} />
             </details>
           ))}
-          {audit.length === 0 ? <p className="muted">No audit events yet.</p> : null}
+          {audit.length === 0 ? <p className="muted">Событий аудита пока нет.</p> : null}
         </div>
       </Panel>
     </AdminShell>

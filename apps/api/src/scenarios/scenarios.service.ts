@@ -17,6 +17,7 @@ export interface Stage1Scenario {
 export interface ScenarioRunResult {
   id: string;
   status: ScenarioStatus;
+  evaluationMode: "deterministic" | "placeholder" | "blocked";
   expected: string;
   actual: string;
   assertions: string[];
@@ -117,9 +118,10 @@ export function runScenario(scenario: Stage1Scenario): ScenarioRunResult {
     return {
       id: scenario.id,
       status: "BLOCKED",
+      evaluationMode: "blocked",
       expected: "Scenario is marked BLOCKED in acceptance source.",
       actual: "Blocked scenario was not forced to PASS.",
-      assertions: ["blocked_source_preserved"]
+      assertions: ["blocked_source_preserved", "evaluation:blocked"]
     };
   }
 
@@ -128,6 +130,7 @@ export function runScenario(scenario: Stage1Scenario): ScenarioRunResult {
     return {
       id: scenario.id,
       status: actual.pass ? "PASS" : "FAIL",
+      evaluationMode: actual.evaluationMode,
       expected: actual.expected,
       actual: actual.actual,
       assertions: actual.assertions,
@@ -137,16 +140,25 @@ export function runScenario(scenario: Stage1Scenario): ScenarioRunResult {
     return {
       id: scenario.id,
       status: "FAIL",
+      evaluationMode: "deterministic",
       expected: "Scenario runner executes without exception.",
       actual: error instanceof Error ? error.message : "Unknown error",
-      assertions: []
+      assertions: ["evaluation:deterministic"]
     };
   }
 }
 
-function evaluateScenario(scenario: Stage1Scenario): { pass: boolean; expected: string; actual: string; assertions: string[] } {
+type ScenarioEvaluation = {
+  pass: boolean;
+  evaluationMode: "deterministic" | "placeholder";
+  expected: string;
+  actual: string;
+  assertions: string[];
+};
+
+function evaluateScenario(scenario: Stage1Scenario): ScenarioEvaluation {
   const id = scenario.id;
-  const exact: Record<string, () => { pass: boolean; expected: string; actual: string; assertions: string[] }> = {
+  const exact: Record<string, () => ScenarioEvaluation> = {
     "S1-CAR-004": () => assertDecision(id, { vehicleMake: "Toyota", vehicleModel: "Camry", vehicleYear: 2099 }, "refuse", "future_vehicle_year"),
     "S1-CAR-007": () => assertDecision(id, { vehicleType: "truck" }, "refuse", "unsupported_vehicle_type"),
     "S1-CAR-008": () => assertDecision(id, { vehicleRegistrationRegion: "10" }, "refuse", "region_10_refusal"),
@@ -190,9 +202,10 @@ function assertDecision(id: string, facts: ApplicationFacts, status: string, rul
   const pass = decision.status === status && decision.rulesApplied.includes(rule);
   return {
     pass,
+    evaluationMode: "deterministic" as const,
     expected: `${id}: status=${status}, rule=${rule}`,
     actual: `status=${decision.status}, rules=${decision.rulesApplied.join(",")}`,
-    assertions: [`status:${status}`, `rule:${rule}`]
+    assertions: [`status:${status}`, `rule:${rule}`, "evaluation:deterministic"]
   };
 }
 
@@ -206,9 +219,10 @@ function assertLimit(
   const actualValue = decision.calculatedLimits[key];
   return {
     pass: actualValue === expectedValue,
+    evaluationMode: "deterministic" as const,
     expected: `${id}: ${key}=${expectedValue}`,
     actual: `${key}=${actualValue}`,
-    assertions: [`limit:${key}`]
+    assertions: [`limit:${key}`, "evaluation:deterministic"]
   };
 }
 
@@ -226,7 +240,7 @@ function summarize(scenarios: Stage1Scenario[], results: ScenarioRunResult[]): S
   };
 }
 
-function evaluateByCategory(scenario: Stage1Scenario): { pass: boolean; expected: string; actual: string; assertions: string[] } {
+function evaluateByCategory(scenario: Stage1Scenario): ScenarioEvaluation {
   const assertionsByCategory: Record<string, string[]> = {
     application: ["conversation_state_persistent", "application_identity_rule_checked", "fact_history_required"],
     vehicle: ["vehicle_extraction_boundary", "vehicle_rule_assertions", "no_unapproved_vehicle_inference"],
@@ -246,9 +260,10 @@ function evaluateByCategory(scenario: Stage1Scenario): { pass: boolean; expected
   const assertions = assertionsByCategory[scenario.category] ?? ["acceptance_row_parsed", "manual_trace_required"];
   return {
     pass: true,
+    evaluationMode: "placeholder",
     expected: `${scenario.id}: concrete Stage 1 assertions are registered for ${scenario.category}.`,
-    actual: `PASS assertions=${assertions.join(",")}`,
-    assertions
+    actual: `Placeholder PASS: category assertions registered, but no full end-to-end executable scenario yet.`,
+    assertions: [...assertions, "evaluation:placeholder"]
   };
 }
 
@@ -288,9 +303,22 @@ function mapResult(result: {
   return {
     id: result.scenarioId,
     status: result.status,
+    evaluationMode: inferEvaluationMode((result as { evaluationMode?: ScenarioRunResult["evaluationMode"] }).evaluationMode, result.assertions, result.status),
     expected: result.expected,
     actual: result.actual,
-    assertions: Array.isArray(result.assertions) ? result.assertions.map(String) : [],
+    assertions: Array.isArray(result.assertions) ? result.assertions.map(String).filter((assertion) => !assertion.startsWith("evaluation:")) : [],
     error: result.error ?? undefined
   };
+}
+
+function inferEvaluationMode(
+  value: ScenarioRunResult["evaluationMode"] | undefined,
+  assertions: unknown,
+  status: ScenarioStatus
+): ScenarioRunResult["evaluationMode"] {
+  if (value) return value;
+  const normalized = Array.isArray(assertions) ? assertions.map(String) : [];
+  if (normalized.includes("evaluation:placeholder")) return "placeholder";
+  if (status === "BLOCKED" || normalized.includes("evaluation:blocked")) return "blocked";
+  return "deterministic";
 }

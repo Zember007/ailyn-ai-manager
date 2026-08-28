@@ -19,6 +19,8 @@ pnpm --filter @ailyn/api prisma:migrate:deploy
 pnpm dev
 ```
 
+Local `pnpm dev` runs `api` and `admin` on your host machine, so `.env` should use `localhost` for PostgreSQL, Redis, and MinIO. Docker service names like `postgres` and `redis` are only for containers talking to each other inside Compose.
+
 ## Commands
 
 ```bash

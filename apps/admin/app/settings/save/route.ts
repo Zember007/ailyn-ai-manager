@@ -1,4 +1,4 @@
-import { patchJson } from "../../lib/api";
+import { patchAction } from "../../lib/api";
 
 export async function POST(request: Request) {
   const form = await request.formData();
@@ -8,9 +8,13 @@ export async function POST(request: Request) {
     const type = String(form.get(`__type:${key}`) ?? "text");
     patch[key] = type === "number" ? Number(value) : String(value);
   }
-  await patchJson("/settings", patch, null);
+  const result = await patchAction("/settings", patch);
   return new Response(null, {
     status: 303,
-    headers: { Location: "/settings" }
+    headers: {
+      Location: result.ok
+        ? "/settings?notice=settings_saved"
+        : `/settings?error=${result.status === 0 ? "api_unavailable" : "settings_save_failed"}`
+    }
   });
 }
