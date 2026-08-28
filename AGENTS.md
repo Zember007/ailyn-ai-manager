@@ -99,3 +99,12 @@ Never commit secrets, `.env` files other than `.env.example`, deploy private key
 ## Definition Of Done
 
 Stage 1 is done only when RouterAI provider abstraction is in place, OpenAI/OpenRouter are not used, Web Test Channel works, Wazzup boundary exists, orchestrator works, structured extraction and output validation work, state persistence contracts exist, deterministic business rules pass tests, lead card/settings/knowledge/attachments/audit/scenario runner work in admin, all non-blocked critical scenarios PASS, all non-blocked Stage 1 scenarios PASS, blocked scenarios display BLOCKED, regression passes, typecheck/build pass, and required env/deployment notes are documented.
+
+## Delivery Workflow
+
+For every substantial implementation block:
+
+1. Verify locally before reporting completion. Minimum checks: targeted validation plus `pnpm typecheck`, `pnpm test`, and `pnpm build` when the change can affect them.
+2. Commit the finished work to git with a clear non-interactive commit message.
+3. Push the commit to GitHub.
+4. Check that CI and deployment complete successfully after the push. If they fail, continue until the failure is understood and either fixed or clearly reported.
