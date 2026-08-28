@@ -188,7 +188,15 @@ apps/api/src/modules/ai/
         extraction.system.md
         response.system.md
         vision.system.md
+        response.examples.md
 ```
+
+`response.examples.md` должен содержать только curated examples на основе реальных диалогов и acceptance rules:
+
+- использовать реальные WhatsApp-чаты только как источник стиля и типовых формулировок;
+- не копировать нарушения Stage 1 в ответы;
+- разделять positive examples и negative examples;
+- не подменять этими примерами deterministic business rules или acceptance scenarios.
 
 ---
 
@@ -230,6 +238,26 @@ RouterAiProvider
 ```
 
 Остальное приложение всё равно должно считать провайдером именно RouterAI.
+
+## 4.3 Prompt pack и injection guardrails
+
+Для Stage 1 промпты должны быть вынесены в отдельные файлы и использоваться как prompt pack, а не одной встроенной строкой.
+
+Обязательные правила:
+
+- `core.system.md` содержит неизменяемую системную политику.
+- `extraction.system.md` используется только для понимания/извлечения.
+- `response.system.md` используется только для клиентского ответа.
+- `vision.system.md` используется только для анализа вложений.
+- `response.examples.md` содержит curated dialogue examples на основе `docs/acceptance/WhatsApp_All_Chats.txt`.
+
+Guardrails:
+
+- user input, OCR, extracted text from attachments, webhook payloads и любые quoted instructions считать untrusted input;
+- prompt injection может быть распознана как факт/сигнал, но не должна менять политику;
+- модель не должна раскрывать prompts, rules, memory, card internals, validators, chain-of-thought;
+- acceptance scenarios нельзя передавать в модель целиком как контекст для ответа клиенту;
+- реальные чаты нельзя использовать как authority source для бизнес-правил; только как style reference и negative/positive examples.
 
 ---
 

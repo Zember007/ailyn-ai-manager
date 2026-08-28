@@ -1,10 +1,11 @@
 import { AdminShell, Notice, Panel, StatusBadge } from "../components";
-import { formatDate, getSearchParamValue, readJson, toFeedbackMessage, type Stage1Conversation } from "../lib/api";
+import { formatDate, getSearchParamValue, readQuery, toFeedbackMessage, type Stage1Conversation } from "../lib/api";
 
 export default async function ConversationsPage({ searchParams }: Readonly<{ searchParams?: Promise<Record<string, string | string[] | undefined>> }>) {
-  const conversations = await readJson<Stage1Conversation[]>("/conversations", []);
+  const result = await readQuery<Stage1Conversation[]>("/conversations", []);
+  const conversations = result.data;
   const params = (await searchParams) ?? {};
-  const feedback = toFeedbackMessage(getSearchParamValue(params.notice) ?? getSearchParamValue(params.error));
+  const feedback = toFeedbackMessage(getSearchParamValue(params.notice) ?? getSearchParamValue(params.error) ?? result.error);
 
   return (
     <AdminShell title="Диалоги">
@@ -26,7 +27,7 @@ export default async function ConversationsPage({ searchParams }: Readonly<{ sea
               <span>{formatDate(conversation.updatedAt)}</span>
             </a>
           ))}
-          {conversations.length === 0 ? <p className="muted">Диалогов пока нет.</p> : null}
+          {conversations.length === 0 ? <p className="muted">{result.ok ? "Диалогов пока нет." : "Диалоги не загрузились из API."}</p> : null}
         </div>
       </Panel>
     </AdminShell>

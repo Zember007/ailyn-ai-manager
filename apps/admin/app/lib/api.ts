@@ -7,6 +7,13 @@ export interface ApiMutationResult<T> {
   error?: string;
 }
 
+export interface ApiReadResult<T> {
+  ok: boolean;
+  status: number;
+  data: T;
+  error?: string;
+}
+
 export interface HealthResponse {
   status: string;
   version: string;
@@ -57,7 +64,7 @@ export interface ScenarioRun {
   results: {
     id: string;
     status: "PASS" | "FAIL" | "BLOCKED";
-    evaluationMode?: "deterministic" | "placeholder" | "blocked";
+    evaluationMode?: "deterministic" | "contract" | "blocked";
     expected: string;
     actual: string;
     assertions: string[];
@@ -87,14 +94,37 @@ export interface SettingsResponse {
   }[];
 }
 
-export async function readJson<T>(path: string, fallback: T): Promise<T> {
+export async function readQuery<T>(path: string, fallback: T): Promise<ApiReadResult<T>> {
   try {
     const response = await fetch(`${apiBaseUrl}${path}`, { cache: "no-store" });
-    if (!response.ok) return fallback;
-    return (await response.json()) as T;
-  } catch {
-    return fallback;
+    const payload = response.status === 204 ? null : await parsePayload(response);
+    if (!response.ok) {
+      return {
+        ok: false,
+        status: response.status,
+        data: fallback,
+        error: extractApiError(payload) ?? `request_failed_${response.status}`
+      };
+    }
+
+    return {
+      ok: true,
+      status: response.status,
+      data: (payload as T | null) ?? fallback
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      status: 0,
+      data: fallback,
+      error: error instanceof Error ? error.message : "api_unavailable"
+    };
   }
+}
+
+export async function readJson<T>(path: string, fallback: T): Promise<T> {
+  const result = await readQuery(path, fallback);
+  return result.data;
 }
 
 async function mutateJson<T>(method: "POST" | "PATCH", path: string, body: unknown): Promise<ApiMutationResult<T>> {
@@ -105,7 +135,7 @@ async function mutateJson<T>(method: "POST" | "PATCH", path: string, body: unkno
       body: JSON.stringify(body),
       cache: "no-store"
     });
-    const payload = response.status === 204 ? null : ((await response.json().catch(() => null)) as T | null);
+    const payload = response.status === 204 ? null : ((await parsePayload(response)) as T | null);
     if (!response.ok) {
       return {
         ok: false,
@@ -128,6 +158,14 @@ async function mutateJson<T>(method: "POST" | "PATCH", path: string, body: unkno
       error: error instanceof Error ? error.message : "api_unavailable"
     };
   }
+}
+
+async function parsePayload(response: Response): Promise<unknown> {
+  const contentType = response.headers.get("content-type") ?? "";
+  if (contentType.includes("application/json")) {
+    return response.json().catch(() => null);
+  }
+  return response.text().catch(() => null);
 }
 
 export async function postJson<T>(path: string, body: unknown, fallback: T): Promise<T> {
@@ -187,8 +225,10 @@ export function toFeedbackMessage(code?: string): { tone: "success" | "error" | 
       return { tone: "error", text: "Не удалось сохранить запись базы знаний." };
     case "scenario_run_failed":
       return { tone: "error", text: "Не удалось запустить сценарии." };
-    case "scenario_placeholder":
-      return { tone: "warning", text: "Часть сценариев пока проверяется не полноценным E2E-прогоном, а зарегистрированными placeholder-assertions." };
+    case "database_schema_missing":
+      return { tone: "error", text: "Схема PostgreSQL не инициализирована. Примените Prisma-миграции и повторите действие." };
+    case "scenario_contract_mode":
+      return { tone: "warning", text: "Часть сценариев сейчас автоматизирована как contract-check, а не как полный admin -> api E2E-прогон." };
     default:
       return null;
   }
@@ -197,5 +237,7 @@ export function toFeedbackMessage(code?: string): { tone: "success" | "error" | 
 function extractApiError(payload: unknown): string | undefined {
   if (!payload || typeof payload !== "object") return undefined;
   const value = (payload as { message?: unknown; error?: unknown }).message ?? (payload as { error?: unknown }).error;
-  return typeof value === "string" ? value : undefined;
+  if (typeof value !== "string") return undefined;
+  if (value.startsWith("database_schema_missing")) return "database_schema_missing";
+  return value;
 }

@@ -1,14 +1,23 @@
 import { AdminShell, Field, Notice, Panel, StatusBadge } from "./components";
-import { formatDate, getSearchParamValue, readJson, toFeedbackMessage, type HealthResponse, type ScenarioRun, type Stage1Conversation } from "./lib/api";
+import { formatDate, getSearchParamValue, readQuery, toFeedbackMessage, type HealthResponse, type ScenarioRun, type Stage1Conversation } from "./lib/api";
 
 export default async function DashboardPage({ searchParams }: Readonly<{ searchParams?: Promise<Record<string, string | string[] | undefined>> }>) {
-  const [health, conversations, runs] = await Promise.all([
-    readJson<HealthResponse | null>("/health", null),
-    readJson<Stage1Conversation[]>("/conversations", []),
-    readJson<ScenarioRun[]>("/scenarios/runs", [])
+  const [healthResult, conversationsResult, runsResult] = await Promise.all([
+    readQuery<HealthResponse | null>("/health", null),
+    readQuery<Stage1Conversation[]>("/conversations", []),
+    readQuery<ScenarioRun[]>("/scenarios/runs", [])
   ]);
+  const health = healthResult.data;
+  const conversations = conversationsResult.data;
+  const runs = runsResult.data;
   const params = (await searchParams) ?? {};
-  const feedback = toFeedbackMessage(getSearchParamValue(params.notice) ?? getSearchParamValue(params.error));
+  const feedback = toFeedbackMessage(
+    getSearchParamValue(params.notice) ??
+      getSearchParamValue(params.error) ??
+      conversationsResult.error ??
+      runsResult.error ??
+      healthResult.error
+  );
   const latestRun = runs[0];
 
   return (

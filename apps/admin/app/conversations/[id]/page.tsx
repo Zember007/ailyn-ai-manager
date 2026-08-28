@@ -1,5 +1,5 @@
 import { AdminShell, Field, JsonPreview, LeadCard, MessageList, Notice, Panel } from "../../components";
-import { getSearchParamValue, readJson, toFeedbackMessage, type Stage1Conversation } from "../../lib/api";
+import { getSearchParamValue, readQuery, toFeedbackMessage, type Stage1Conversation } from "../../lib/api";
 
 export default async function ConversationDetailPage({
   params,
@@ -9,10 +9,14 @@ export default async function ConversationDetailPage({
   searchParams?: Promise<Record<string, string | string[] | undefined>>;
 }>) {
   const resolvedParams = await params;
-  const conversation = await readJson<Stage1Conversation | { error: string }>(`/conversations/${resolvedParams.id}`, { error: "not_found" });
-  const attachments = await readJson<any[]>("/attachments", []);
+  const conversationResult = await readQuery<Stage1Conversation | { error: string }>(`/conversations/${resolvedParams.id}`, { error: "not_found" });
+  const attachmentsResult = await readQuery<any[]>("/attachments", []);
+  const conversation = conversationResult.data;
+  const attachments = attachmentsResult.data;
   const query = (await searchParams) ?? {};
-  const feedback = toFeedbackMessage(getSearchParamValue(query.notice) ?? getSearchParamValue(query.error));
+  const feedback = toFeedbackMessage(
+    getSearchParamValue(query.notice) ?? getSearchParamValue(query.error) ?? conversationResult.error ?? attachmentsResult.error
+  );
   if ("error" in conversation) {
     return (
       <AdminShell title="Диалог не найден">

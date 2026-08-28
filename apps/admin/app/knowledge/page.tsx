@@ -1,5 +1,5 @@
 import { AdminShell, Notice, Panel, StatusBadge } from "../components";
-import { getSearchParamValue, readJson, toFeedbackMessage } from "../lib/api";
+import { getSearchParamValue, readQuery, toFeedbackMessage } from "../lib/api";
 
 interface KnowledgeItem {
   id: string;
@@ -14,9 +14,10 @@ interface KnowledgeItem {
 }
 
 export default async function KnowledgePage({ searchParams }: Readonly<{ searchParams?: Promise<Record<string, string | string[] | undefined>> }>) {
-  const items = await readJson<KnowledgeItem[]>("/knowledge", []);
+  const result = await readQuery<KnowledgeItem[]>("/knowledge", []);
+  const items = result.data;
   const params = (await searchParams) ?? {};
-  const feedback = toFeedbackMessage(getSearchParamValue(params.notice) ?? getSearchParamValue(params.error));
+  const feedback = toFeedbackMessage(getSearchParamValue(params.notice) ?? getSearchParamValue(params.error) ?? result.error);
   const approvedCount = items.filter((item) => item.status === "approved" && item.active).length;
   const draftCount = items.filter((item) => item.status === "draft").length;
   const blockedCount = items.filter((item) => item.status === "blocked").length;
@@ -40,7 +41,7 @@ export default async function KnowledgePage({ searchParams }: Readonly<{ searchP
                 <span>{item.active ? "Активна" : "Выключена"}</span>
               </div>
             ))}
-            {items.length === 0 ? <p className="muted">В базе знаний пока нет записей.</p> : null}
+            {items.length === 0 ? <p className="muted">{result.ok ? "В базе знаний пока нет записей." : "База знаний не загрузилась из API."}</p> : null}
           </div>
         </Panel>
         <Panel title="Добавить или обновить запись">

@@ -1,22 +1,26 @@
 import { AdminShell, Notice, Panel, StatusBadge } from "../components";
-import { formatDate, getSearchParamValue, readJson, toFeedbackMessage, type Scenario, type ScenarioRun } from "../lib/api";
+import { formatDate, getSearchParamValue, readQuery, toFeedbackMessage, type Scenario, type ScenarioRun } from "../lib/api";
 
 export default async function ScenariosPage({ searchParams }: Readonly<{ searchParams?: Promise<Record<string, string | string[] | undefined>> }>) {
-  const [scenarios, runs] = await Promise.all([
-    readJson<Scenario[]>("/scenarios", []),
-    readJson<ScenarioRun[]>("/scenarios/runs", [])
+  const [scenariosResult, runsResult] = await Promise.all([
+    readQuery<Scenario[]>("/scenarios", []),
+    readQuery<ScenarioRun[]>("/scenarios/runs", [])
   ]);
+  const scenarios = scenariosResult.data;
+  const runs = runsResult.data;
   const params = (await searchParams) ?? {};
-  const externalFeedback = toFeedbackMessage(getSearchParamValue(params.notice) ?? getSearchParamValue(params.error));
+  const externalFeedback = toFeedbackMessage(
+    getSearchParamValue(params.notice) ?? getSearchParamValue(params.error) ?? scenariosResult.error ?? runsResult.error
+  );
   const categories = [...new Set(scenarios.map((scenario) => scenario.category))].sort();
   const latest = runs[0];
-  const hasPlaceholderResults = runs.some((run) => run.results.some((result) => result.evaluationMode === "placeholder"));
-  const placeholderFeedback = hasPlaceholderResults ? toFeedbackMessage("scenario_placeholder") : null;
+  const hasContractResults = runs.some((run) => run.results.some((result) => result.evaluationMode === "contract"));
+  const contractFeedback = hasContractResults ? toFeedbackMessage("scenario_contract_mode") : null;
 
   return (
     <AdminShell title="Сценарии">
       {externalFeedback ? <Notice tone={externalFeedback.tone}>{externalFeedback.text}</Notice> : null}
-      {placeholderFeedback ? <Notice tone={placeholderFeedback.tone}>{placeholderFeedback.text}</Notice> : null}
+      {contractFeedback ? <Notice tone={contractFeedback.tone}>{contractFeedback.text}</Notice> : null}
       <section className="summaryGrid">
         <Panel title="Запуск сценариев">
           <form className="stack" action="/scenarios/run" method="post">
@@ -56,6 +60,7 @@ export default async function ScenariosPage({ searchParams }: Readonly<{ searchP
                 <span>{run.summary.pass ?? 0} pass</span>
                 <span>{run.summary.fail ?? 0} fail</span>
                 <span>{run.summary.blocked ?? 0} blocked</span>
+                <span>{run.summary.contract ?? 0} contract</span>
                 <span>{formatDate(run.createdAt)}</span>
               </a>
             ))}

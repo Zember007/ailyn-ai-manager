@@ -1,10 +1,11 @@
 import { AdminShell, Notice, Panel } from "../components";
-import { getSearchParamValue, readJson, toFeedbackMessage, type SettingsResponse } from "../lib/api";
+import { getSearchParamValue, readQuery, toFeedbackMessage, type SettingsResponse } from "../lib/api";
 
 export default async function SettingsPage({ searchParams }: Readonly<{ searchParams?: Promise<Record<string, string | string[] | undefined>> }>) {
-  const settings = await readJson<SettingsResponse>("/settings", { values: {}, fields: [] });
+  const result = await readQuery<SettingsResponse>("/settings", { values: {}, fields: [] });
+  const settings = result.data;
   const params = (await searchParams) ?? {};
-  const feedback = toFeedbackMessage(getSearchParamValue(params.notice) ?? getSearchParamValue(params.error));
+  const feedback = toFeedbackMessage(getSearchParamValue(params.notice) ?? getSearchParamValue(params.error) ?? result.error);
   const editableCount = settings.fields.filter((field) => field.editable).length;
   const blockedCount = settings.fields.filter((field) => field.blocked).length;
 
@@ -33,7 +34,7 @@ export default async function SettingsPage({ searchParams }: Readonly<{ searchPa
               />
             </label>
           ))}
-          {settings.fields.length === 0 ? <p className="muted">Настройки не загрузились из API.</p> : null}
+          {settings.fields.length === 0 ? <p className="muted">{result.ok ? "Настройки пока пусты." : "Настройки не загрузились из API."}</p> : null}
           <button type="submit">Сохранить настройки</button>
         </form>
       </Panel>

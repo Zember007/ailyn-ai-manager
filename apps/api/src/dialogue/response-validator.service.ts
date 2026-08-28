@@ -27,6 +27,9 @@ export class ResponseValidatorService {
     if (/проверка пройдена|условия соблюдены|заявка продолжается|stage|nextaction|rulesapplied/i.test(input.message)) {
       errors.push("internal_status_leak");
     }
+    if (/я\s+ии|я\s+искусственный интеллект|язык(?:овая)? модель|chatgpt|openai/i.test(lower)) {
+      errors.push("ai_identity_leak");
+    }
 
     if (errors.length === 0) {
       return { passed: true, errors, finalMessage: input.message };

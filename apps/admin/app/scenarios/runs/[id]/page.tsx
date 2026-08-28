@@ -1,5 +1,5 @@
 import { AdminShell, Field, Notice, Panel, StatusBadge } from "../../../components";
-import { formatDate, getSearchParamValue, readJson, toFeedbackMessage, type ScenarioRun } from "../../../lib/api";
+import { formatDate, getSearchParamValue, readQuery, toFeedbackMessage, type ScenarioRun } from "../../../lib/api";
 
 export default async function ScenarioRunPage({
   params,
@@ -9,9 +9,10 @@ export default async function ScenarioRunPage({
   searchParams?: Promise<Record<string, string | string[] | undefined>>;
 }>) {
   const resolvedParams = await params;
-  const run = await readJson<ScenarioRun | { error: string }>(`/scenarios/runs/${resolvedParams.id}`, { error: "not_found" });
+  const runResult = await readQuery<ScenarioRun | { error: string }>(`/scenarios/runs/${resolvedParams.id}`, { error: "not_found" });
+  const run = runResult.data;
   const query = (await searchParams) ?? {};
-  const feedback = toFeedbackMessage(getSearchParamValue(query.notice) ?? getSearchParamValue(query.error));
+  const feedback = toFeedbackMessage(getSearchParamValue(query.notice) ?? getSearchParamValue(query.error) ?? runResult.error);
   if ("error" in run) {
     return (
       <AdminShell title="Прогон не найден">
@@ -41,7 +42,7 @@ export default async function ScenarioRunPage({
                 <StatusBadge status={result.status} />
                 <span>{result.expected}</span>
               </summary>
-              <p><strong>Режим проверки:</strong> {result.evaluationMode === "placeholder" ? "placeholder assertions" : result.evaluationMode === "blocked" ? "blocked by source" : "детерминированная проверка"}</p>
+              <p><strong>Режим проверки:</strong> {result.evaluationMode === "contract" ? "контрактная автоматизация" : result.evaluationMode === "blocked" ? "blocked по acceptance source" : "детерминированная проверка"}</p>
               <p><strong>Факт:</strong> {result.actual}</p>
               <p><strong>Проверки:</strong> {result.assertions.join(", ")}</p>
               {result.error ? <p className="errorText">{result.error}</p> : null}
