@@ -5,6 +5,8 @@ export interface InboundAttachment {
   mimeType?: string;
   fileName?: string;
   kindHint?: string;
+  contentBase64?: string;
+  textContent?: string;
   metadata?: Record<string, unknown>;
 }
 

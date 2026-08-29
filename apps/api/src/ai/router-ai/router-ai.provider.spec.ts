@@ -57,6 +57,68 @@ describe("RouterAiProvider", () => {
     );
   });
 
+  it("treats a short numeric reply as vehicle value when that fact is still missing", async () => {
+    process.env.DATABASE_URL ??= "postgresql://test:test@localhost:5432/ailyn";
+    process.env.REDIS_URL ??= "redis://localhost:6379";
+
+    const client = {
+      isConfigured: vi.fn().mockReturnValue(true),
+      createChatCompletion: vi.fn().mockRejectedValue(new DOMException("This operation was aborted", "AbortError"))
+    } as any;
+
+    const provider = new RouterAiProvider(client);
+    const result = await provider.extract({
+      text: "2 000 000 руб",
+      attachments: [],
+      facts: {
+        vehicleMake: "Toyota",
+        vehicleModel: "Camry",
+        vehicleYear: 2018
+      }
+    } as any);
+
+    expect(result.facts).toEqual(expect.arrayContaining([expect.objectContaining({ key: "vehicleValue", value: 2_000_000 })]));
+    expect(result.facts).not.toEqual(expect.arrayContaining([expect.objectContaining({ key: "requestedAmount" })]));
+  });
+
+  it("does not mistake a vehicle year inside the first message for vehicle value", async () => {
+    process.env.DATABASE_URL ??= "postgresql://test:test@localhost:5432/ailyn";
+    process.env.REDIS_URL ??= "redis://localhost:6379";
+
+    const client = {
+      isConfigured: vi.fn().mockReturnValue(true),
+      createChatCompletion: vi.fn().mockRejectedValue(new DOMException("This operation was aborted", "AbortError"))
+    } as any;
+
+    const provider = new RouterAiProvider(client);
+    const result = await provider.extract({
+      text: "Toyota Camry 2018",
+      attachments: [],
+      facts: {}
+    } as any);
+
+    expect(result.facts).toEqual(expect.arrayContaining([expect.objectContaining({ key: "vehicleYear", value: 2018 })]));
+    expect(result.facts).not.toEqual(expect.arrayContaining([expect.objectContaining({ key: "vehicleValue" })]));
+  });
+
+  it("extracts attachment facts from text documents and classifies them conservatively", async () => {
+    process.env.DATABASE_URL ??= "postgresql://test:test@localhost:5432/ailyn";
+    process.env.REDIS_URL ??= "redis://localhost:6379";
+
+    const provider = new RouterAiProvider({ isConfigured: vi.fn().mockReturnValue(false) } as any);
+    const result = await provider.analyzeImage({
+      attachment: {
+        id: "att-1",
+        fileName: "passport-front.txt",
+        mimeType: "text/plain",
+        textContent: "ID FRONT\nФИО: Иванов Иван Иванович"
+      }
+    });
+
+    expect(result.type).toBe("id_front");
+    expect(result.extractedFacts).toEqual(expect.arrayContaining([expect.objectContaining({ key: "fullName", value: "Иванов Иван Иванович" })]));
+  });
+
   it("falls back to local response when RouterAI errors", async () => {
     process.env.DATABASE_URL ??= "postgresql://test:test@localhost:5432/ailyn";
     process.env.REDIS_URL ??= "redis://localhost:6379";

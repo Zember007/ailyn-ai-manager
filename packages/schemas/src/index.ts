@@ -25,7 +25,9 @@ export const testChatAttachmentSchema = z.object({
   fileName: z.string().optional(),
   mimeType: z.string().optional(),
   byteSize: z.number().int().nonnegative().optional(),
-  storageKey: z.string().optional()
+  storageKey: z.string().optional(),
+  contentBase64: z.string().optional(),
+  textContent: z.string().optional()
 });
 
 export const sendTestChatMessageSchema = z.object({

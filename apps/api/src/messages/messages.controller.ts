@@ -65,6 +65,8 @@ export class MessagesController {
           id: attachment.id ?? `upload-${crypto.randomUUID()}`,
           fileName: attachment.fileName,
           mimeType: attachment.mimeType,
+          contentBase64: attachment.contentBase64,
+          textContent: attachment.textContent,
           metadata: {
             byteSize: attachment.byteSize,
             storageKey: attachment.storageKey
@@ -74,6 +76,8 @@ export class MessagesController {
           id: `upload-${crypto.randomUUID()}`,
           fileName: file.originalname,
           mimeType: file.mimetype,
+          contentBase64: file.buffer.toString("base64"),
+          textContent: extractTextContent(file.mimetype, file.buffer),
           metadata: {
             byteSize: file.size,
             storageKey: `web-test/${Date.now()}-${sanitizeFileName(file.originalname)}`
@@ -83,6 +87,8 @@ export class MessagesController {
         id: attachment.id ?? `upload-${crypto.randomUUID()}`,
         fileName: attachment.fileName,
         mimeType: attachment.mimeType,
+        contentBase64: attachment.contentBase64,
+        textContent: attachment.textContent,
         metadata: attachment.metadata
       })),
       timestamp: new Date()
@@ -127,4 +133,19 @@ function normalizeBody(body: TestChatBody): TestChatBody {
 function sanitizeFileName(fileName: string): string {
   const normalized = fileName.trim().replace(/\s+/g, "-");
   return normalized.replace(/[^a-zA-Z0-9._-]/g, "").slice(0, 120) || "upload.bin";
+}
+
+function extractTextContent(mimeType: string, buffer: Buffer): string | undefined {
+  const normalizedMimeType = mimeType.toLowerCase();
+  if (
+    normalizedMimeType.startsWith("text/") ||
+    normalizedMimeType === "application/json" ||
+    normalizedMimeType === "application/xml" ||
+    normalizedMimeType === "text/xml" ||
+    normalizedMimeType === "application/csv"
+  ) {
+    return buffer.toString("utf8", 0, Math.min(buffer.length, 24_000));
+  }
+
+  return undefined;
 }

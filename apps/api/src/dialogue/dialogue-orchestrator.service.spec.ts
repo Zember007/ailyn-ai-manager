@@ -127,4 +127,139 @@ describe("DialogueOrchestratorService", () => {
     expect(result.application.stage).toBe("COLLECTING_VEHICLE");
     expect(result.conversation.application?.id).toBe("app-1");
   });
+
+  it("merges facts extracted from attachments into the application update payload", async () => {
+    const initialConversation = {
+      id: "conv-1",
+      externalContactId: "web-client-1",
+      externalConversationId: "web-conversation-1",
+      channel: "web-test",
+      messages: [],
+      application: undefined
+    };
+    const application = {
+      id: "app-1",
+      stage: "COLLECTING_DOCUMENTS",
+      status: "need_more_data",
+      facts: {},
+      factHistory: [],
+      contactId: "contact-1",
+      conversationId: "conv-1"
+    };
+    const ai = {
+      getProvider: () => ({
+        extract: vi.fn().mockResolvedValue({
+          language: "ru",
+          intents: [],
+          questions: [],
+          facts: [],
+          changedFacts: [],
+          attachments: [],
+          promptInjectionDetected: false,
+          clarificationNeeded: false
+        }),
+        generateResponse: vi.fn().mockResolvedValue({
+          message: "Пришлите, пожалуйста, обратную сторону ID.",
+          model: "local-stage1-fallback",
+          promptVersion: "stage1-local-v1"
+        }),
+        analyzeImage: vi.fn().mockResolvedValue({
+          type: "id_front",
+          quality: "good",
+          extractedFacts: [{ key: "fullName", value: "Иванов Иван Иванович", confidence: 0.8 }]
+        })
+      })
+    } as any;
+    const store = {
+      getOrCreateConversation: vi.fn().mockResolvedValue({
+        conversation: initialConversation,
+        application,
+        isNew: false
+      }),
+      addMessage: vi
+        .fn()
+        .mockResolvedValueOnce({ id: "msg-client-1", createdAt: "2026-08-29T00:00:00.000Z" })
+        .mockResolvedValueOnce({ id: "msg-ai-1", createdAt: "2026-08-29T00:00:01.000Z" }),
+      createNewApplication: vi.fn(),
+      updateFacts: vi.fn(),
+      getApplication: vi
+        .fn()
+        .mockResolvedValueOnce({
+          ...application,
+          stage: "COLLECTING_DOCUMENTS",
+          status: "need_more_data"
+        })
+        .mockResolvedValueOnce({
+          ...application,
+          stage: "COLLECTING_DOCUMENTS",
+          status: "need_more_data",
+          facts: {
+            documents: { id_front: "received" },
+            fullName: "Иванов Иван Иванович"
+          }
+        }),
+      saveDecision: vi.fn(),
+      addAttachment: vi.fn(),
+      getConversation: vi.fn().mockResolvedValue({
+        ...initialConversation,
+        application: {
+          ...application,
+          facts: {
+            documents: { id_front: "received" },
+            fullName: "Иванов Иван Иванович"
+          }
+        }
+      })
+    } as any;
+    const responsePlan = {
+      build: vi.fn().mockReturnValue({
+        answers: [],
+        nextAction: "collect_documents",
+        nextQuestions: ["Пришлите, пожалуйста, обратную сторону ID."],
+        allowedFacts: {},
+        allowedFinancialValues: [],
+        requiredStatements: [],
+        forbiddenStatements: [],
+        language: "ru"
+      })
+    } as any;
+    const validator = {
+      validate: vi.fn().mockReturnValue({
+        passed: true,
+        errors: [],
+        finalMessage: "Пришлите, пожалуйста, обратную сторону ID."
+      })
+    } as any;
+    const settings = {
+      getBusinessRuleSettings: vi.fn().mockResolvedValue({
+        latestArrivalTime: "18:00",
+        minimumLoan: 50000
+      })
+    } as any;
+    const logs = {
+      log: vi.fn(),
+      debug: vi.fn(),
+      error: vi.fn()
+    } as any;
+
+    const service = new DialogueOrchestratorService(ai, store, responsePlan, validator, settings, logs);
+
+    await service.receive({
+      externalMessageId: "web-in-1",
+      channel: "web-test",
+      externalContactId: "web-client-1",
+      externalConversationId: "web-conversation-1",
+      text: "",
+      attachments: [{ id: "att-1", fileName: "passport-front.txt", mimeType: "text/plain", textContent: "ФИО: Иванов Иван Иванович" }],
+      timestamp: new Date("2026-08-29T00:00:00.000Z")
+    });
+
+    expect(store.updateFacts).toHaveBeenCalledWith(
+      application,
+      expect.objectContaining({
+        fullName: "Иванов Иван Иванович",
+        documents: expect.objectContaining({ id_front: "received" })
+      })
+    );
+  });
 });

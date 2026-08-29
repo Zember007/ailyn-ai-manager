@@ -265,11 +265,15 @@ export class DialogueOrchestratorService {
     attachments: InboundMessage["attachments"]
   ): Promise<Partial<ApplicationFacts>> {
     const documents: ApplicationFacts["documents"] = {};
+    const extractedFacts: Partial<ApplicationFacts> = {};
     for (const attachment of attachments) {
       const vision = await this.ai.getProvider().analyzeImage({ attachment });
       const docCode = mapVisionTypeToDocument(vision.type);
       if (docCode) {
         documents[docCode] = vision.quality === "poor" ? "poor_quality" : "received";
+      }
+      for (const fact of vision.extractedFacts) {
+        (extractedFacts as Record<string, unknown>)[fact.key] = fact.value;
       }
       await this.store.addAttachment({
         conversationId,
@@ -282,7 +286,7 @@ export class DialogueOrchestratorService {
         storageKey: typeof attachment.metadata?.storageKey === "string" ? attachment.metadata.storageKey : undefined
       });
     }
-    return Object.keys(documents).length > 0 ? { documents } : {};
+    return mergeFacts(Object.keys(documents).length > 0 ? { documents } : {}, extractedFacts);
   }
 }
 

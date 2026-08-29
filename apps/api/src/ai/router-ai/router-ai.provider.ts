@@ -99,27 +99,29 @@ export class RouterAiProvider implements AiProvider {
 function inferAttachmentVision(input: VisionInput): VisionResult {
   const name = String(input.attachment.fileName ?? "").toLowerCase();
   const mimeType = String(input.attachment.mimeType ?? "").toLowerCase();
-  const hint = [name, mimeType].join(" ");
+  const attachmentText = readAttachmentText(input.attachment);
+  const hint = [name, mimeType, attachmentText.toLowerCase()].join(" ");
+  const extractedFacts = extractFactsFromAttachmentText(attachmentText);
 
   if (hint.includes("poor") || hint.includes("blur") || hint.includes("low-quality")) {
-    return { type: "poor_quality", extractedFacts: [], quality: "poor" };
+    return { type: "poor_quality", extractedFacts, quality: "poor" };
   }
-  if (hint.includes("id-front") || hint.includes("passport-front") || hint.includes("idcard-front")) {
-    return { type: "id_front", extractedFacts: [], quality: "good" };
+  if (hint.includes("id-front") || hint.includes("passport-front") || hint.includes("idcard-front") || looksLikeIdFront(hint)) {
+    return { type: "id_front", extractedFacts, quality: "good" };
   }
-  if (hint.includes("id-back") || hint.includes("passport-back") || hint.includes("idcard-back")) {
-    return { type: "id_back", extractedFacts: [], quality: "good" };
+  if (hint.includes("id-back") || hint.includes("passport-back") || hint.includes("idcard-back") || looksLikeIdBack(hint)) {
+    return { type: "id_back", extractedFacts, quality: "good" };
   }
-  if (hint.includes("registration-front") || hint.includes("sts-front") || hint.includes("registration-front")) {
-    return { type: "vehicle_registration_front", extractedFacts: [], quality: "good" };
+  if (hint.includes("registration-front") || hint.includes("sts-front") || looksLikeRegistrationFront(hint)) {
+    return { type: "vehicle_registration_front", extractedFacts, quality: "good" };
   }
-  if (hint.includes("registration-back") || hint.includes("sts-back")) {
-    return { type: "vehicle_registration_back", extractedFacts: [], quality: "good" };
+  if (hint.includes("registration-back") || hint.includes("sts-back") || looksLikeRegistrationBack(hint)) {
+    return { type: "vehicle_registration_back", extractedFacts, quality: "good" };
   }
-  if (hint.includes("car") || hint.includes("vehicle") || mimeType.startsWith("image/")) {
-    return { type: "car", extractedFacts: [], quality: "good" };
+  if (hint.includes("car") || hint.includes("vehicle") || hint.includes("авто") || mimeType.startsWith("image/") || isImageBase64(input.attachment.contentBase64)) {
+    return { type: "car", extractedFacts, quality: "good" };
   }
-  return { type: "unknown", extractedFacts: [], quality: "unknown" };
+  return { type: "unknown", extractedFacts, quality: "unknown" };
 }
 
 function localExtract(input: ExtractionInput): ExtractionResult {
@@ -128,10 +130,9 @@ function localExtract(input: ExtractionInput): ExtractionResult {
   const intents: string[] = [];
   const questions: ExtractionResult["questions"] = [];
 
-  const amount = parseMoney(text);
-  if (amount) facts.push({ key: "requestedAmount", value: amount, confidence: 0.8 });
-  const value = parseValue(text);
-  if (value) facts.push({ key: "vehicleValue", value, confidence: 0.8 });
+  const money = parseMoneyCandidates(text, input.facts);
+  if (money.requestedAmount !== undefined) facts.push({ key: "requestedAmount", value: money.requestedAmount, confidence: money.requestedAmountConfidence });
+  if (money.vehicleValue !== undefined) facts.push({ key: "vehicleValue", value: money.vehicleValue, confidence: money.vehicleValueConfidence });
   const year = text.match(/\b(19\d{2}|20\d{2})\b/);
   if (year) facts.push({ key: "vehicleYear", value: Number(year[1]), confidence: 0.9 });
 
@@ -209,14 +210,163 @@ function formatError(error: unknown): string {
   return String(error);
 }
 
-function parseMoney(text: string): number | undefined {
-  const match = text.match(/(?:нужно|хочу|займ|сумм[ауые]?|дай(?:те)?|получить)\D{0,20}(\d[\d\s]{1,12})/);
-  return match ? Number(match[1].replace(/\s/g, "")) : undefined;
+function parseMoneyCandidates(
+  text: string,
+  currentFacts: ApplicationFacts
+): {
+  requestedAmount?: number;
+  requestedAmountConfidence: number;
+  vehicleValue?: number;
+  vehicleValueConfidence: number;
+} {
+  const explicitRequestedAmount = matchMoney(text, /(?:нужно|хочу|займ|сумм[ауые]?|дай(?:те)?|получить|оформить)\D{0,20}(\d[\d\s.,]{1,15})/);
+  const explicitVehicleValue = matchMoney(text, /(?:стоимость|стоит|оцен[каить]*|цена|цена машины|ориентировочно|примерно)\D{0,20}(\d[\d\s.,]{1,15})/);
+  const fallbackNumber = isStandaloneMoneyReply(text)
+    ? matchMoney(text, /(?:^|\D)(\d[\d\s.,]{1,15})(?:\s*(?:сом|сома|сомов|руб|рублей|kgs|kgs\.|kzt|тенге|usd|eur|\$|€|₽))?(?:\D|$)/)
+    : undefined;
+
+  const result = {
+    requestedAmount: explicitRequestedAmount,
+    requestedAmountConfidence: explicitRequestedAmount !== undefined ? 0.9 : 0,
+    vehicleValue: explicitVehicleValue,
+    vehicleValueConfidence: explicitVehicleValue !== undefined ? 0.9 : 0
+  };
+
+  if (result.requestedAmount !== undefined || result.vehicleValue !== undefined || fallbackNumber === undefined) {
+    return result;
+  }
+
+  if (currentFacts.vehicleValue === undefined) {
+    result.vehicleValue = fallbackNumber;
+    result.vehicleValueConfidence = 0.85;
+    return result;
+  }
+
+  if (currentFacts.requestedAmount === undefined) {
+    result.requestedAmount = fallbackNumber;
+    result.requestedAmountConfidence = 0.85;
+  }
+
+  return result;
 }
 
-function parseValue(text: string): number | undefined {
-  const match = text.match(/(?:стоимость|стоит|оцен[каить]*)\D{0,20}(\d[\d\s]{1,12})/);
-  return match ? Number(match[1].replace(/\s/g, "")) : undefined;
+function matchMoney(text: string, pattern: RegExp): number | undefined {
+  const match = text.match(pattern);
+  if (!match?.[1]) {
+    return undefined;
+  }
+
+  const normalized = match[1].replace(/[^\d]/g, "");
+  if (!normalized) {
+    return undefined;
+  }
+
+  const value = Number(normalized);
+  return Number.isFinite(value) ? value : undefined;
+}
+
+function isStandaloneMoneyReply(text: string): boolean {
+  const normalized = text
+    .toLowerCase()
+    .replace(/(?:ориентировочно|примерно|около|где-то|это|она|он|машина|авто|стоит|стоимость|цена|сом|сома|сомов|руб|рублей|kgs|kgs\.|kzt|тенге|usd|eur|\$|€|₽)/g, " ")
+    .replace(/[.,:;!?()\-+]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return normalized.length > 0 && /^[\d\s]+$/.test(normalized);
+}
+
+function readAttachmentText(attachment: ExtractionInput["attachments"][number]): string {
+  if (typeof attachment.textContent === "string" && attachment.textContent.trim()) {
+    return attachment.textContent.slice(0, 24_000);
+  }
+
+  const mimeType = String(attachment.mimeType ?? "").toLowerCase();
+  const buffer = decodeAttachmentContent(attachment.contentBase64);
+  if (!buffer) {
+    return "";
+  }
+
+  if (
+    mimeType.startsWith("text/") ||
+    mimeType === "application/json" ||
+    mimeType === "application/xml" ||
+    mimeType === "text/xml" ||
+    looksMostlyText(buffer)
+  ) {
+    return buffer.toString("utf8", 0, Math.min(buffer.length, 24_000));
+  }
+
+  return "";
+}
+
+function extractFactsFromAttachmentText(text: string): VisionResult["extractedFacts"] {
+  if (!text.trim()) {
+    return [];
+  }
+
+  const facts: VisionResult["extractedFacts"] = [];
+  const normalizedText = text.replace(/\s+/g, " ").trim();
+  const fullName =
+    normalizedText.match(/(?:фио|full\s*name|name)[:\s]+([A-ZА-ЯЁ][A-ZА-ЯЁa-zа-яё'-]+(?:\s+[A-ZА-ЯЁ][A-ZА-ЯЁa-zа-яё'-]+){1,2})/i)?.[1] ??
+    normalizedText.match(/\b([A-ZА-ЯЁ][A-ZА-ЯЁa-zа-яё'-]+(?:\s+[A-ZА-ЯЁ][A-ZА-ЯЁa-zа-яё'-]+){2})\b/)?.[1];
+
+  if (fullName) {
+    facts.push({ key: "fullName", value: fullName.trim(), confidence: 0.8 });
+  }
+
+  return facts;
+}
+
+function looksLikeIdFront(hint: string): boolean {
+  return hint.includes("паспорт") || hint.includes("id card") || hint.includes("личн");
+}
+
+function looksLikeIdBack(hint: string): boolean {
+  return hint.includes("паспорт") && hint.includes("обрат") || hint.includes("id back");
+}
+
+function looksLikeRegistrationFront(hint: string): boolean {
+  return hint.includes("свидетельств") || hint.includes("регистрац") || hint.includes("техпаспорт");
+}
+
+function looksLikeRegistrationBack(hint: string): boolean {
+  return (hint.includes("свидетельств") || hint.includes("регистрац") || hint.includes("техпаспорт")) && hint.includes("обрат");
+}
+
+function decodeAttachmentContent(contentBase64: string | undefined): Buffer | undefined {
+  if (!contentBase64) {
+    return undefined;
+  }
+
+  try {
+    return Buffer.from(contentBase64, "base64");
+  } catch {
+    return undefined;
+  }
+}
+
+function looksMostlyText(buffer: Buffer): boolean {
+  const sample = buffer.subarray(0, Math.min(buffer.length, 256));
+  let printable = 0;
+  for (const byte of sample) {
+    if (byte === 9 || byte === 10 || byte === 13 || (byte >= 32 && byte <= 126) || byte >= 192) {
+      printable += 1;
+    }
+  }
+  return sample.length > 0 && printable / sample.length > 0.85;
+}
+
+function isImageBase64(contentBase64: string | undefined): boolean {
+  const buffer = decodeAttachmentContent(contentBase64);
+  if (!buffer || buffer.length < 4) {
+    return false;
+  }
+
+  return (
+    (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) ||
+    (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47)
+  );
 }
 
 function normalizeLanguage(value: unknown): ExtractionResult["language"] {

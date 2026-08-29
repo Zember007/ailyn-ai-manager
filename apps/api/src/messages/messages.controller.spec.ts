@@ -92,9 +92,51 @@ describe("MessagesController", () => {
           expect.objectContaining({
             fileName: "car-photo.jpg",
             mimeType: "image/jpeg",
+            contentBase64: Buffer.from("image").toString("base64"),
             metadata: expect.objectContaining({
               byteSize: 2048
             })
+          })
+        ]
+      })
+    );
+  });
+
+  it("extracts text content from uploaded text files for downstream scanning", async () => {
+    const logs = { log: vi.fn(), debug: vi.fn() } as any;
+    const store = {
+      getConversationByIdForChannel: vi.fn().mockResolvedValue({
+        id: "conv-internal-1",
+        externalConversationId: "web-conversation-1",
+        externalContactId: "web-client-1"
+      })
+    } as any;
+    const orchestrator = {
+      receive: vi.fn().mockResolvedValue({
+        reply: "ok",
+        conversation: { id: "conv-internal-1", application: { id: "app-1" } },
+        application: { id: "app-1" },
+        validation: { passed: true, errors: [] },
+        routerAiModel: "local-stage1-fallback",
+        promptVersion: "stage1-local-v1"
+      })
+    } as any;
+    const controller = new MessagesController(orchestrator, store, logs);
+
+    await controller.testChat(
+      {
+        conversationId: "conv-internal-1",
+        message: ""
+      },
+      [{ originalname: "passport-front.txt", mimetype: "text/plain", size: 64, buffer: Buffer.from("ФИО: Иванов Иван Иванович", "utf8") }]
+    );
+
+    expect(orchestrator.receive).toHaveBeenCalledWith(
+      expect.objectContaining({
+        attachments: [
+          expect.objectContaining({
+            fileName: "passport-front.txt",
+            textContent: "ФИО: Иванов Иван Иванович"
           })
         ]
       })
