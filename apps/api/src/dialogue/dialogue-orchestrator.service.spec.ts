@@ -126,6 +126,7 @@ describe("DialogueOrchestratorService", () => {
     expect(result.conversation.messages[1]?.author).toBe("ai");
     expect(result.application.stage).toBe("COLLECTING_VEHICLE");
     expect(result.conversation.application?.id).toBe("app-1");
+    expect(responsePlan.build).toHaveBeenCalledWith(expect.objectContaining({ isFirstMessage: true }));
   });
 
   it("merges facts extracted from attachments into the application update payload", async () => {

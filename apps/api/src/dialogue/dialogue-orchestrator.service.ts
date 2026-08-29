@@ -52,6 +52,9 @@ export class DialogueOrchestratorService {
       });
       conversationId = conversation.id;
       let application = originalApplication;
+      // Web Admin may pre-create an empty conversation. A first contact is defined
+      // by the absence of prior messages, not by whether the DB row already exists.
+      const isFirstClientTurn = conversation.messages.length === 0;
 
       await this.logs.debug("dialogue.receive", "Conversation resolved", {
         conversationId,
@@ -187,7 +190,7 @@ export class DialogueOrchestratorService {
       const plan = this.responsePlan.build({
         facts: application.facts,
         decision,
-        isFirstMessage: isNew,
+        isFirstMessage: isFirstClientTurn,
         questions: extraction.questions,
         knowledgeAnswers: this.knowledge ? await this.knowledge.resolve(extraction.questions, extraction.language === "kg" ? "kg" : "ru") : []
       });
