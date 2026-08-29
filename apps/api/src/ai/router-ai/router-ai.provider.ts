@@ -151,6 +151,8 @@ function localExtract(input: ExtractionInput): ExtractionResult {
   if (text.includes("чуй")) facts.push({ key: "residenceRegion", value: "Чуй", confidence: 0.9 });
   if (text.includes(" ош") || text === "ош") facts.push({ key: "residenceRegion", value: "Ош", confidence: 0.8 });
   if (text.includes("регион 10")) facts.push({ key: "vehicleRegistrationRegion", value: "10", confidence: 0.9 });
+  if (text.includes("без изъятия") || text.includes("без изятия")) facts.push({ key: "requestedProgram", value: "without_storage", confidence: 0.9 });
+  if (text.includes("стоянк") || text.includes("на парковк")) facts.push({ key: "requestedProgram", value: "parking", confidence: 0.9 });
   if (text.includes("груз") || text.includes("автобус") || text.includes("мото")) facts.push({ key: "vehicleType", value: "truck", confidence: 0.8 });
   if (text.includes("минивэн")) facts.push({ key: "vehicleType", value: "minivan", confidence: 0.8 });
   if (text.includes("легков")) facts.push({ key: "vehicleType", value: "passenger_car", confidence: 0.8 });
@@ -199,7 +201,7 @@ function normalizeExtractionResult(payload: unknown): ExtractionResult {
 function buildLocalResponse(input: ResponseGenerationInput): string {
   const exact = input.responsePlan.answers.map((answer) => answer.exactText).filter(Boolean).join(" ");
   const questions = input.responsePlan.nextQuestions.join(" ");
-  const required = input.responsePlan.requiredStatements.join(" ");
+  const required = input.responsePlan.requiredStatements.filter((statement) => !statement.startsWith("Попросить")).join(" ");
   return [exact, required, questions].filter(Boolean).join(" ").trim() || "Уточните, пожалуйста, модель, год автомобиля, ориентировочную стоимость и нужную сумму.";
 }
 

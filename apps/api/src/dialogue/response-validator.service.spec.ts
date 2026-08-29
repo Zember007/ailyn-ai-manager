@@ -17,4 +17,10 @@ describe("ResponseValidatorService", () => {
     const result = service.validate({ message: "Я ИИ, пришли мне фото.", decision });
     expect(result.errors).toEqual(expect.arrayContaining(["ai_identity_leak", "informal_you"]));
   });
+
+  it("allows polite imperative forms addressed to Вы", () => {
+    const service = new ResponseValidatorService();
+    const result = service.validate({ message: "Пришлите, пожалуйста, фото ID.", decision });
+    expect(result.errors).not.toContain("informal_you");
+  });
 });

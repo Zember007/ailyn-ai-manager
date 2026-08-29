@@ -11,7 +11,7 @@ export class ResponseValidatorService {
     const lower = input.message.toLowerCase();
     for (const forbidden of input.decision.forbiddenStatements) if (lower.includes(forbidden.toLowerCase())) errors.push(`forbidden_statement:${forbidden}`);
     if (/[😀-🙏🌀-🗿🚀-🛿🇦-🇿]/u.test(input.message)) errors.push("emoji");
-    if (/(^|\s)ты(\s|$)|тебе|твой|твоя|пришли|отправь|укажи/i.test(input.message)) errors.push("informal_you");
+    if (/(^|\s)ты(\s|$)|(?:^|[\s,.!?])(?:тебе|твой|твоя|пришли|отправь|укажи)(?:$|[\s,.!?])/i.test(input.message)) errors.push("informal_you");
     if (/проверка пройдена|условия соблюдены|stage|nextaction|rulesapplied|prompt injection/i.test(input.message)) errors.push("internal_status_leak");
     if (/я\s+ии|я\s+искусственный интеллект|язык(?:овая)? модель|chatgpt|openai/i.test(lower)) errors.push("ai_identity_leak");
     if (input.plan?.validation.requiresPreliminaryDisclaimer && !lower.includes("окончательная сумма определяется после осмотра автомобиля и проверки документов")) errors.push("missing_preliminary_disclaimer");

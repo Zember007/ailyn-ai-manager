@@ -101,6 +101,15 @@ describe("RouterAiProvider", () => {
     expect(result.facts).not.toEqual(expect.arrayContaining([expect.objectContaining({ key: "vehicleValue" })]));
   });
 
+  it("extracts the requested programme from a short follow-up", async () => {
+    const provider = new RouterAiProvider({ isConfigured: vi.fn().mockReturnValue(false) } as any);
+    const result = await provider.extract({ text: "Без изъятия, Бишкек", attachments: [], facts: {} });
+    expect(result.facts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: "requestedProgram", value: "without_storage" }),
+      expect.objectContaining({ key: "residenceRegion", value: "Бишкек" })
+    ]));
+  });
+
   it("extracts attachment facts from text documents and classifies them conservatively", async () => {
     process.env.DATABASE_URL ??= "postgresql://test:test@localhost:5432/ailyn";
     process.env.REDIS_URL ??= "redis://localhost:6379";
@@ -156,5 +165,14 @@ describe("RouterAiProvider", () => {
       model: "routerai-local-fallback",
       promptVersion: "stage1-local-v1"
     });
+  });
+
+  it("does not expose internal planning statements in the local response", async () => {
+    const provider = new RouterAiProvider({ isConfigured: vi.fn().mockReturnValue(false) } as any);
+    const result = await provider.generateResponse({
+      facts: {}, userText: "", decision: {},
+      responsePlan: { answers: [], nextQuestions: ["Пришлите, пожалуйста, фото ID."], requiredStatements: ["Попросить только недостающие документы."] }
+    } as any);
+    expect(result.message).toBe("Пришлите, пожалуйста, фото ID.");
   });
 });

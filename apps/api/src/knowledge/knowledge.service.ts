@@ -40,7 +40,7 @@ const seeds: Omit<KnowledgeItemDto, "id">[] = [
   ,{
     key: "office_location",
     category: "office",
-    aliases: ["адрес", "где вы", "где находится офис", "как доехать"],
+    aliases: ["адрес", "где вы", "где находится офис", "где ваш офис", "офис", "как доехать"],
     answerRu: "Наш офис находится на бульваре Молодой Гвардии, 22, в Бишкеке. Мы работаем с понедельника по пятницу с 11:00 до 19:00. Вы можете приехать в любое удобное время в рамках рабочего графика.\nhttps://go.2gis.com/Y34m4\nhttps://maps.app.goo.gl/9xiWLVvdyRgn3Sx4A",
     priority: 100,
     status: "approved",
@@ -146,16 +146,15 @@ export class KnowledgeService {
     };
   }
 
-  async resolve(question: string, language: "ru" | "kg"): Promise<KnowledgeItemDto | undefined> {
+  async resolveAll(question: string, language: "ru" | "kg"): Promise<KnowledgeItemDto[]> {
     await this.ensureSeeds();
     const normalized = question.toLocaleLowerCase();
     const items = await this.list();
     const matched = items
       .filter((item) => item.active && item.status === "approved")
-      .filter((item) => item.aliases.some((alias) => normalized.includes(alias.toLocaleLowerCase())))
-      .sort((a, b) => b.priority - a.priority)[0];
-    if (!matched) return undefined;
-    if (language === "kg" && !matched.answerKg) {
+      .filter((item) => item.aliases.some((alias) => normalized.includes(alias.toLocaleLowerCase())) || (item.key === "office_location" && /офис|адрес|где/.test(normalized)))
+      .sort((a, b) => b.priority - a.priority);
+    if (language === "kg") {
       // SPEC_GAP_C9: no machine-generated replacement for an approved fixed answer.
       return matched;
     }

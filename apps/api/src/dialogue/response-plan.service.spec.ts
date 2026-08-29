@@ -15,7 +15,7 @@ describe("ResponsePlanService first contact", () => {
     const service = new ResponsePlanService();
     const facts = { vehicleMake: "Toyota", vehicleModel: "Camry", vehicleYear: 2021, vehicleValue: 1_500_000, requestedAmount: 500_000 } as const;
     const plan = service.build({ facts, decision: evaluateApplication(facts), isFirstMessage: true, questions: [] });
+    expect(plan.nextQuestions[0]).toContain("Здравствуйте! Меня зовут Айлин.");
     expect(plan.nextQuestions[0]).toContain("без изъятия автомобиля");
-    expect(plan.nextQuestions[0]).not.toContain("Здравствуйте!");
   });
 });
