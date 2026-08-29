@@ -33,8 +33,19 @@ describe("business rules", () => {
   it("does not save or calculate with a future vehicle year", () => {
     const result = evaluateApplication({ vehicleMake: "Toyota", vehicleModel: "Camry", vehicleYear: 2099 });
 
-    expect(result.status).toBe("refuse");
-    expect(result.rulesApplied).toContain("future_vehicle_year");
+    expect(result.status).toBe("need_more_data");
+    expect(result.rulesApplied).toContain("future_vehicle_year_correction");
+    expect(result.requiredFacts).toEqual(["vehicleYear"]);
+  });
+
+  it("does not calculate a personal programme until programme and residence are both known", () => {
+    const result = evaluateApplication({ vehicleMake: "Toyota", vehicleModel: "Camry", vehicleYear: 2021, vehicleValue: 1_500_000, requestedAmount: 500_000 });
+    expect(result.requiredFacts).toEqual(["requestedProgram"]);
+  });
+
+  it("does not request documents again after the client declined to send them", () => {
+    const result = evaluateApplication({ vehicleMake: "Toyota", vehicleModel: "Camry", vehicleYear: 2021, vehicleValue: 1_500_000, requestedAmount: 500_000, requestedProgram: "parking", residenceRegion: "Бишкек", declinedDocuments: true });
+    expect(result.nextAction).toBe("schedule_visit");
   });
 
   it("requires residence before final regional limit decision", () => {
@@ -43,7 +54,8 @@ describe("business rules", () => {
       vehicleModel: "Camry",
       vehicleYear: 2021,
       vehicleValue: 1_500_000,
-      requestedAmount: 400_000
+      requestedAmount: 400_000,
+      requestedProgram: "without_storage"
     });
 
     expect(result.stage).toBe("COLLECTING_RESIDENCE");

@@ -163,7 +163,7 @@ type ScenarioEvaluation = {
 function evaluateScenario(scenario: Stage1Scenario): ScenarioEvaluation {
   const id = scenario.id;
   const exact: Record<string, () => ScenarioEvaluation> = {
-    "S1-CAR-004": () => assertDecision(id, { vehicleMake: "Toyota", vehicleModel: "Camry", vehicleYear: 2099 }, "refuse", "future_vehicle_year"),
+    "S1-CAR-004": () => assertDecision(id, { vehicleMake: "Toyota", vehicleModel: "Camry", vehicleYear: 2099 }, "need_more_data", "future_vehicle_year_correction"),
     "S1-CAR-007": () => assertDecision(id, { vehicleType: "truck" }, "refuse", "unsupported_vehicle_type"),
     "S1-CAR-008": () => assertDecision(id, { vehicleRegistrationRegion: "10" }, "refuse", "region_10_refusal"),
     "S1-CAR-009": () => assertDecision(id, { vehicleRegistrationCountry: "foreign" }, "refuse", "foreign_vehicle_registration"),
@@ -179,7 +179,7 @@ function evaluateScenario(scenario: Stage1Scenario): ScenarioEvaluation {
     "S1-LIM-002": () =>
       assertDecision(
         id,
-        { vehicleMake: "Toyota", vehicleModel: "Camry", vehicleValue: 1_000_000, requestedAmount: 300_000 },
+        { vehicleMake: "Toyota", vehicleModel: "Camry", vehicleValue: 1_000_000, requestedAmount: 300_000, requestedProgram: "without_storage" },
         "need_more_data",
         "residence_before_regional_limits"
       ),

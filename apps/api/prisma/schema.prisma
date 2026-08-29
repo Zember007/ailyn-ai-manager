@@ -200,6 +200,7 @@ model ManagerNotification {
   applicationId String?
   channel       String
   status        String       @default("pending")
+  idempotencyKey String?     @unique
   payload       Json         @default("{}")
   sentAt        DateTime?
   application   Application? @relation(fields: [applicationId], references: [id])
@@ -215,6 +216,7 @@ model Reminder {
   applicationId String?
   dueAt         DateTime
   status        String       @default("scheduled")
+  idempotencyKey String?     @unique
   payload       Json         @default("{}")
   application   Application? @relation(fields: [applicationId], references: [id])
   createdAt     DateTime     @default(now())

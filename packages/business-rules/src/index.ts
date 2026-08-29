@@ -23,6 +23,8 @@ export type NextActionCode =
   | "pause"
   | "target_reached";
 
+export type ResidenceCategory = "BISHKEK" | "CHUY" | "OTHER_KG" | "FOREIGN";
+
 export type ApplicationStage =
   | "NEW"
   | "COLLECTING_VEHICLE"
@@ -82,6 +84,15 @@ export interface ApplicationFacts {
   visitTime?: string;
   clientPaused?: boolean;
   clientClosed?: boolean;
+  declinedDocuments?: boolean;
+  declinedCarPhoto?: boolean;
+  ownerFullName?: string;
+  ownerResidenceRegion?: string;
+  ownerFamilyStatus?: "married" | "single" | "divorced" | "unknown";
+  vehiclePurchasedDuringMarriage?: boolean;
+  divorceCertificateReady?: boolean;
+  visitConfirmationPending?: boolean;
+  handedToManager?: boolean;
 }
 
 export type DocumentCode =
@@ -123,6 +134,8 @@ export interface DecisionResult {
   requiredStatements: string[];
   forbiddenStatements: string[];
   blockedRules: string[];
+  residenceCategory?: ResidenceCategory;
+  targetEvent?: "documents" | "visit";
 }
 
 export const defaultBusinessRuleSettings: BusinessRuleSettings = {
@@ -214,6 +227,13 @@ export function evaluateApplication(
   const calculatedLimits = calculateLoanLimits(facts, settings);
   const eligiblePrograms = determineAvailablePrograms(facts, settings, blockedRules);
 
+  if (facts.vehicleYear !== undefined && facts.vehicleYear > settings.currentYear) {
+    rulesApplied.push("future_vehicle_year_correction");
+    return needMore("COLLECTING_VEHICLE", "collect_vehicle", ["vehicleYear"], rulesApplied, [], {}, [
+      `Подскажите, пожалуйста, Вы, возможно, допустили опечатку. Автомобиля ${facts.vehicleYear} года выпуска пока не существует. Напишите, пожалуйста, правильный год выпуска автомобиля.`
+    ], forbiddenStatements, blockedRules);
+  }
+
   if (facts.requestedAmount !== undefined && facts.requestedAmount < settings.minimumLoan) {
     rulesApplied.push("minimum_loan");
     return needMore("COLLECTING_AMOUNT", "collect_amount", ["requestedAmount"], rulesApplied, eligiblePrograms, calculatedLimits, [
@@ -231,6 +251,10 @@ export function evaluateApplication(
 
   if (!facts.requestedAmount) {
     return needMore("COLLECTING_AMOUNT", "collect_amount", ["requestedAmount"], rulesApplied, eligiblePrograms, calculatedLimits, [], forbiddenStatements, blockedRules);
+  }
+
+  if (!facts.requestedProgram) {
+    return needMore("ELIGIBILITY_CHECK", "collect_residence", ["requestedProgram"], rulesApplied, [], {}, [], forbiddenStatements, blockedRules);
   }
 
   if (!facts.residenceRegion) {
@@ -256,9 +280,16 @@ export function evaluateApplication(
   }
 
   const missingDocuments = getMissingDocuments(facts);
-  if (missingDocuments.length > 0 && !facts.visitRequested) {
+  if (missingDocuments.length > 0 && !facts.visitRequested && !facts.declinedDocuments) {
     return needMore("COLLECTING_DOCUMENTS", "collect_documents", missingDocuments, rulesApplied, eligiblePrograms, calculatedLimits, [
       "Попросить только недостающие документы."
+    ], forbiddenStatements, blockedRules);
+  }
+
+  if (missingDocuments.length > 0 && facts.declinedDocuments && !facts.visitRequested) {
+    rulesApplied.push("documents_declined_originals_on_visit");
+    return needMore("SCHEDULING_VISIT", "schedule_visit", ["visitDate", "visitTime"], rulesApplied, eligiblePrograms, calculatedLimits, [
+      "Оригиналы документов нужно взять с собой на визит."
     ], forbiddenStatements, blockedRules);
   }
 
@@ -275,6 +306,13 @@ export function evaluateApplication(
     ], forbiddenStatements, blockedRules);
   }
 
+  if (facts.familyStatus === "divorced" && facts.vehicleBoughtDuringMarriage && facts.divorceCertificateReady !== true) {
+    rulesApplied.push("divorce_certificate_required");
+    return needMore("COLLECTING_FAMILY_STATUS", "collect_family_status", ["divorceCertificateReady"], rulesApplied, eligiblePrograms, calculatedLimits, [
+      "Для визита потребуется оригинал свидетельства о разводе."
+    ], forbiddenStatements, blockedRules);
+  }
+
   if (facts.visitDate && facts.visitTime) {
     rulesApplied.push("target_reached_visit");
     return {
@@ -287,7 +325,9 @@ export function evaluateApplication(
       nextAction: "target_reached",
       requiredStatements: ["Предварительная запись; менеджер подтвердит визит."],
       forbiddenStatements,
-      blockedRules
+      blockedRules,
+      residenceCategory: categorizeResidence(facts.residenceRegion),
+      targetEvent: "visit"
     };
   }
 
@@ -302,7 +342,9 @@ export function evaluateApplication(
     nextAction: "target_reached",
     requiredStatements: ["Карточка готова по полученным документам."],
     forbiddenStatements,
-    blockedRules
+    blockedRules,
+    residenceCategory: categorizeResidence(facts.residenceRegion),
+    targetEvent: "documents"
   };
 }
 
@@ -362,10 +404,6 @@ function firstRefusal(
   settings: BusinessRuleSettings,
   rulesApplied: string[]
 ): string | undefined {
-  if (facts.vehicleYear && facts.vehicleYear > settings.currentYear) {
-    rulesApplied.push("future_vehicle_year");
-    return "Год выпуска больше текущего. Нужно уточнить год, чтобы продолжить расчет.";
-  }
   if (facts.vehicleType && !supportedVehicleTypes.has(normalize(facts.vehicleType))) {
     rulesApplied.push("unsupported_vehicle_type");
     return "Компания оформляет займы только под легковые автомобили и минивэны.";
@@ -415,6 +453,15 @@ function firstRefusal(
     return "Собственник автомобиля должен присутствовать лично; по доверенности оформить займ нельзя.";
   }
   return undefined;
+}
+
+export function categorizeResidence(value: string | undefined): ResidenceCategory | undefined {
+  const residence = normalize(value);
+  if (!residence) return undefined;
+  if (residence.includes("бишкек") || residence === "bishkek") return "BISHKEK";
+  if (bishkekChuy.has(residence) || residence.includes("чуй")) return "CHUY";
+  if (["foreign", "иностран", "зарубеж"].some((token) => residence.includes(token))) return "FOREIGN";
+  return "OTHER_KG";
 }
 
 function needMore(

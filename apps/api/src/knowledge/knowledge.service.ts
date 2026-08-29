@@ -37,6 +37,46 @@ const seeds: Omit<KnowledgeItemDto, "id">[] = [
     version: 1,
     active: true
   }
+  ,{
+    key: "office_location",
+    category: "office",
+    aliases: ["адрес", "где вы", "где находится офис", "как доехать"],
+    answerRu: "Наш офис находится на бульваре Молодой Гвардии, 22, в Бишкеке. Мы работаем с понедельника по пятницу с 11:00 до 19:00. Вы можете приехать в любое удобное время в рамках рабочего графика.\nhttps://go.2gis.com/Y34m4\nhttps://maps.app.goo.gl/9xiWLVvdyRgn3Sx4A",
+    priority: 100,
+    status: "approved",
+    version: 1,
+    active: true
+  },
+  {
+    key: "without_seizure_rate",
+    category: "loan_terms",
+    aliases: ["ставка", "процент", "проценты"],
+    answerRu: "По программе без изъятия ставка определяется индивидуально после осмотра автомобиля и проверки документов.",
+    priority: 90,
+    status: "approved",
+    version: 1,
+    active: true
+  },
+  {
+    key: "personal_presence",
+    category: "loan_terms",
+    aliases: ["дистанционно", "без приезда", "лично приезжать", "по доверенности"],
+    answerRu: "Нет, собственник автомобиля должен лично присутствовать при осмотре автомобиля и выдаче займа.",
+    priority: 90,
+    status: "approved",
+    version: 1,
+    active: true
+  },
+  {
+    key: "unknown_fallback",
+    category: "fallback",
+    aliases: [],
+    answerRu: "К сожалению, у меня нет достоверной информации по этому вопросу. Когда Вы приедете, сотрудники с удовольствием подскажут Вам.",
+    priority: 1,
+    status: "approved",
+    version: 1,
+    active: true
+  }
 ];
 
 @Injectable()
@@ -104,6 +144,29 @@ export class KnowledgeService {
       version: saved.version,
       active: saved.active
     };
+  }
+
+  async resolve(question: string, language: "ru" | "kg"): Promise<KnowledgeItemDto | undefined> {
+    await this.ensureSeeds();
+    const normalized = question.toLocaleLowerCase();
+    const items = await this.list();
+    const matched = items
+      .filter((item) => item.active && item.status === "approved")
+      .filter((item) => item.aliases.some((alias) => normalized.includes(alias.toLocaleLowerCase())))
+      .sort((a, b) => b.priority - a.priority)[0];
+    if (!matched) return undefined;
+    if (language === "kg" && !matched.answerKg) {
+      // SPEC_GAP_C9: no machine-generated replacement for an approved fixed answer.
+      return matched;
+    }
+    return matched;
+  }
+
+  async fallback(): Promise<KnowledgeItemDto> {
+    await this.ensureSeeds();
+    const item = (await this.list()).find((entry) => entry.key === "unknown_fallback");
+    if (!item) throw new Error("knowledge fallback seed is missing");
+    return item;
   }
 
   private async ensureSeeds(): Promise<void> {

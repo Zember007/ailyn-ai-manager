@@ -362,6 +362,26 @@ export class Stage1StoreService {
     });
   }
 
+  async createManagerNotification(application: Stage1Application, kind: "initial" | "delta", payload: Record<string, unknown>): Promise<void> {
+    const idempotencyKey = `manager-${application.id}-${kind}-${JSON.stringify(payload)}`;
+    await this.prisma.managerNotification.upsert({
+      where: { idempotencyKey },
+      create: { applicationId: application.id, channel: "deferred", status: "blocked", idempotencyKey, payload: toJson({ kind, ...payload, delivery: "SPEC_GAP_MANAGER_DELIVERY" }) },
+      update: {}
+    });
+    await this.recordAudit("manager_notification.created", "Application", application.id, { kind, delivery: "SPEC_GAP_MANAGER_DELIVERY" });
+  }
+
+  async scheduleReminder(application: Stage1Application, dueAt: Date, sequence: number): Promise<void> {
+    const idempotencyKey = `reminder-${application.id}-${sequence}`;
+    await this.prisma.reminder.upsert({
+      where: { idempotencyKey },
+      create: { applicationId: application.id, dueAt, status: "blocked", idempotencyKey, payload: toJson({ sequence, code: "SPEC_CONFLICT_C2" }) },
+      update: {}
+    });
+    await this.recordAudit("reminder.scheduled", "Application", application.id, { sequence, code: "SPEC_CONFLICT_C2" });
+  }
+
   async reset(): Promise<void> {
     await this.prisma.auditEvent.deleteMany();
     await this.prisma.attachment.deleteMany();

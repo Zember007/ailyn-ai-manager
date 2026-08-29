@@ -8,6 +8,7 @@ import { ResponseValidatorService } from "./response-validator.service.js";
 import { Stage1StoreService, type Stage1Application, type Stage1Conversation } from "./stage1-store.service.js";
 import { SettingsService } from "../settings/settings.service.js";
 import { BackendLogsService } from "../logs/backend-logs.service.js";
+import { KnowledgeBaseResolverService } from "./knowledge-base-resolver.service.js";
 
 export interface DialogueResult {
   conversation: Stage1Conversation;
@@ -26,7 +27,8 @@ export class DialogueOrchestratorService {
     private readonly responsePlan: ResponsePlanService,
     private readonly validator: ResponseValidatorService,
     private readonly settings: SettingsService,
-    private readonly logs: BackendLogsService
+    private readonly logs: BackendLogsService,
+    private readonly knowledge?: KnowledgeBaseResolverService
   ) {}
 
   async receive(message: InboundMessage): Promise<DialogueResult> {
@@ -111,7 +113,7 @@ export class DialogueOrchestratorService {
         }
       });
 
-      const incomingFacts: Partial<ApplicationFacts> = {};
+      const incomingFacts: Partial<ApplicationFacts> = { language: extraction.language };
       for (const fact of extraction.facts) {
         (incomingFacts as Record<string, unknown>)[fact.key] = fact.value;
       }
@@ -158,6 +160,20 @@ export class DialogueOrchestratorService {
       await this.store.saveDecision(application, decision);
       application = (await this.store.getApplication(application.id)) ?? { ...application, decision, status: decision.status, stage: decision.stage };
 
+      if (decision.targetEvent) {
+        await this.store.createManagerNotification(application, application.facts.handedToManager ? "delta" : "initial", {
+          event: decision.targetEvent,
+          fullName: application.facts.fullName,
+          phone: application.facts.phone,
+          vehicle: `${application.facts.vehicleMake ?? ""} ${application.facts.vehicleModel ?? ""}`.trim(),
+          requestedAmount: application.facts.requestedAmount,
+          requestedProgram: application.facts.requestedProgram,
+          visitDate: application.facts.visitDate,
+          visitTime: application.facts.visitTime
+        });
+        await this.store.updateFacts(application, { handedToManager: true });
+      }
+
       await this.logs.debug("dialogue.receive", "Decision evaluated", {
         conversationId,
         metadata: {
@@ -172,7 +188,8 @@ export class DialogueOrchestratorService {
         facts: application.facts,
         decision,
         isFirstMessage: isNew,
-        questions: extraction.questions
+        questions: extraction.questions,
+        knowledgeAnswers: this.knowledge ? await this.knowledge.resolve(extraction.questions, extraction.language === "kg" ? "kg" : "ru") : []
       });
 
       await this.logs.debug("dialogue.receive", "Response plan prepared", {
@@ -206,7 +223,7 @@ export class DialogueOrchestratorService {
         }
       });
 
-      const validation = this.validator.validate({ message: generated.message, decision });
+      const validation = this.validator.validate({ message: generated.message, decision, plan });
       await this.store.addMessage(conversation, {
         author: "ai",
         body: validation.finalMessage,

@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+export { z } from "zod";
+
 export const messageAuthorSchema = z.enum(["client", "manager", "system", "ai"]);
 export const channelSchema = z.enum(["admin", "whatsapp", "telegram", "system"]);
 export const stage1ChannelSchema = z.enum(["web-test", "wazzup"]);

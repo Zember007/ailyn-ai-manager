@@ -14,6 +14,7 @@ import type {
   VisionResult
 } from "../ai-provider.interface.js";
 import { RouterAiClient } from "./router-ai.client.js";
+import { extractionSchema, responseGenerationSchema } from "../../dialogue/pipeline.contracts.js";
 
 @Injectable()
 export class RouterAiProvider implements AiProvider {
@@ -43,7 +44,9 @@ export class RouterAiProvider implements AiProvider {
         },
         { timeoutMs: getStage1Timeout(this.config.routerAiTimeoutMs, 12_000) }
       );
-      return normalizeExtractionResult(JSON.parse(response.choices?.[0]?.message?.content ?? "{}"));
+      const parsed = extractionSchema.safeParse(JSON.parse(response.choices?.[0]?.message?.content ?? "{}"));
+      if (!parsed.success) throw new Error("RouterAI extraction response does not match structured schema");
+      return normalizeExtractionResult(parsed.data);
     } catch (error) {
       this.logger.warn(`RouterAI extraction fallback activated: ${formatError(error)}`);
       return localExtract(input);
@@ -75,9 +78,10 @@ export class RouterAiProvider implements AiProvider {
         },
         { timeoutMs: getStage1Timeout(this.config.routerAiTimeoutMs, 10_000) }
       );
-      const parsed = JSON.parse(response.choices?.[0]?.message?.content ?? "{\"message\":\"\"}") as { message: string };
+      const parsed = responseGenerationSchema.safeParse(JSON.parse(response.choices?.[0]?.message?.content ?? "{}"));
+      if (!parsed.success) throw new Error("RouterAI response does not match structured schema");
       return {
-        message: parsed.message,
+        message: parsed.data.message,
         model: response.model ?? this.config.routerAiTextModel ?? "routerai",
         promptVersion: "stage1-routerai-v1"
       };
