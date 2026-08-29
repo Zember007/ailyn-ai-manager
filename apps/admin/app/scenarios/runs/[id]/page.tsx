@@ -1,4 +1,4 @@
-import { AdminShell, Field, Notice, Panel, StatusBadge } from "../../../components";
+import { AdminShell, Field, Notice, Panel, ScenarioEvaluationBadge, StatusBadge } from "../../../components";
 import { formatDate, getSearchParamValue, readQuery, toFeedbackMessage, type ScenarioRun } from "../../../lib/api";
 
 export default async function ScenarioRunPage({
@@ -31,6 +31,20 @@ export default async function ScenarioRunPage({
           <StatusBadge status={run.status} />
           <Field label="Создан" value={formatDate(run.createdAt)} />
           <Field label="Итоги" value={run.summary} />
+          <div className="scenarioSummary">
+            <div className="modeBadgeRow">
+              <ScenarioEvaluationBadge mode="deterministic" />
+              <span>{(run.summary.pass ?? 0) - (run.summary.contract ?? 0)} проверок</span>
+            </div>
+            <div className="modeBadgeRow">
+              <ScenarioEvaluationBadge mode="contract" />
+              <span>{run.summary.contract ?? 0} проверок</span>
+            </div>
+            <div className="modeBadgeRow">
+              <ScenarioEvaluationBadge mode="blocked" />
+              <span>{run.summary.blocked ?? 0} сценариев</span>
+            </div>
+          </div>
         </Panel>
       </section>
       <Panel title="Результаты">
@@ -40,6 +54,7 @@ export default async function ScenarioRunPage({
               <summary>
                 <span>{result.id}</span>
                 <StatusBadge status={result.status} />
+                <ScenarioEvaluationBadge mode={result.evaluationMode} />
                 <span>{result.expected}</span>
               </summary>
               <p><strong>Режим проверки:</strong> {result.evaluationMode === "contract" ? "контрактная автоматизация" : result.evaluationMode === "blocked" ? "blocked по acceptance source" : "детерминированная проверка"}</p>

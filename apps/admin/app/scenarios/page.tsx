@@ -1,4 +1,4 @@
-import { AdminShell, Notice, Panel, StatusBadge } from "../components";
+import { AdminShell, Notice, Panel, ScenarioEvaluationBadge, StatusBadge } from "../components";
 import { formatDate, getSearchParamValue, readQuery, toFeedbackMessage, type Scenario, type ScenarioRun } from "../lib/api";
 
 export default async function ScenariosPage({ searchParams }: Readonly<{ searchParams?: Promise<Record<string, string | string[] | undefined>> }>) {
@@ -34,6 +34,18 @@ export default async function ScenariosPage({ searchParams }: Readonly<{ searchP
         <Panel title="Последний прогон">
           <StatusBadge status={latest?.status ?? "not_run"} />
           <p className="muted">{latest ? formatDate(latest.createdAt) : "Прогонов пока не было."}</p>
+          {latest ? (
+            <div className="modeBadgeRow">
+              <ScenarioEvaluationBadge mode="deterministic" />
+              <span>{latest.summary.pass - (latest.summary.contract ?? 0)} проверок</span>
+            </div>
+          ) : null}
+          {latest?.summary.contract ? (
+            <div className="modeBadgeRow">
+              <ScenarioEvaluationBadge mode="contract" />
+              <span>{latest.summary.contract} проверок</span>
+            </div>
+          ) : null}
           {latest ? <a className="buttonLink" href={`/scenarios/runs/${latest.id}`}>Открыть прогон</a> : null}
         </Panel>
       </section>
@@ -57,10 +69,10 @@ export default async function ScenariosPage({ searchParams }: Readonly<{ searchP
               <a className="tableRow" href={`/scenarios/runs/${run.id}`} key={run.id}>
                 <span>{run.id}</span>
                 <span><StatusBadge status={run.status} /></span>
-                <span>{run.summary.pass ?? 0} pass</span>
-                <span>{run.summary.fail ?? 0} fail</span>
-                <span>{run.summary.blocked ?? 0} blocked</span>
-                <span>{run.summary.contract ?? 0} contract</span>
+                <span>{run.summary.pass ?? 0} PASS</span>
+                <span>{run.summary.fail ?? 0} FAIL</span>
+                <span>{run.summary.blocked ?? 0} BLOCKED</span>
+                <span>{run.summary.contract ?? 0} contract-check</span>
                 <span>{formatDate(run.createdAt)}</span>
               </a>
             ))}

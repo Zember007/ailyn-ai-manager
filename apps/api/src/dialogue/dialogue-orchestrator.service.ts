@@ -55,9 +55,22 @@ export class DialogueOrchestratorService {
         conversationId,
         metadata: {
           applicationId: application.id,
-          isNew
+          isNew,
+          externalConversationId: conversation.externalConversationId,
+          externalContactId: conversation.externalContactId
         }
       });
+
+      if (!isNew) {
+        await this.logs.debug("dialogue.receive", "Reusing existing conversation for follow-up message", {
+          conversationId,
+          metadata: {
+            applicationId: application.id,
+            externalConversationId: conversation.externalConversationId,
+            externalContactId: conversation.externalContactId
+          }
+        });
+      }
 
       const inbound = await this.store.addMessage(conversation, {
         author: "client",
@@ -207,20 +220,25 @@ export class DialogueOrchestratorService {
         }
       });
 
+      const refreshedConversation = (await this.store.getConversation(conversation.id)) ?? conversation;
+      const refreshedApplication =
+        (await this.store.getApplication(application.id)) ?? refreshedConversation.application ?? application;
+
       await this.logs.log("dialogue.receive", "Finished processing inbound message", {
-        conversationId: conversation.id,
+        conversationId: refreshedConversation.id,
         metadata: {
-          applicationId: application.id,
-          stage: application.stage,
-          status: application.status,
+          applicationId: refreshedApplication.id,
+          stage: refreshedApplication.stage,
+          status: refreshedApplication.status,
           validationPassed: validation.passed,
-          routerAiModel: generated.model
+          routerAiModel: generated.model,
+          messagesInConversation: refreshedConversation.messages.length
         }
       });
 
       return {
-        conversation,
-        application,
+        conversation: refreshedConversation,
+        application: refreshedApplication,
         reply: validation.finalMessage,
         validation: { passed: validation.passed, errors: validation.errors },
         routerAiModel: generated.model,

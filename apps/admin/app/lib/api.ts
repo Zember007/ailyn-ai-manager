@@ -72,6 +72,17 @@ export interface Stage1Conversation {
   updatedAt: string;
 }
 
+export interface TestChatSendResponse {
+  reply: string;
+  persisted: boolean;
+  conversation: Stage1Conversation;
+  conversationId: string;
+  application: Stage1Application;
+  validation: { passed: boolean; errors: string[] };
+  routerAiModel: string;
+  promptVersion: string;
+}
+
 export interface BackendLogEntry {
   id: string;
   level: string;
@@ -247,6 +258,38 @@ export function patchAction<T>(path: string, body: unknown): Promise<ApiMutation
   return mutateJson<T>("PATCH", path, body);
 }
 
+export async function postMultipart<T>(path: string, body: FormData): Promise<ApiMutationResult<T>> {
+  try {
+    const response = await fetch(path, {
+      method: "POST",
+      body,
+      cache: "no-store"
+    });
+    const payload = response.status === 204 ? null : ((await parsePayload(response)) as T | null);
+    if (!response.ok) {
+      return {
+        ok: false,
+        status: response.status,
+        data: payload,
+        error: extractApiError(payload) ?? `request_failed_${response.status}`
+      };
+    }
+
+    return {
+      ok: true,
+      status: response.status,
+      data: payload
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      status: 0,
+      data: null,
+      error: error instanceof Error ? error.message : "api_unavailable"
+    };
+  }
+}
+
 export function formatDate(value: string): string {
   return new Date(value).toLocaleString("ru-RU");
 }
@@ -294,6 +337,8 @@ export function toFeedbackMessage(code?: string): { tone: "success" | "error" | 
       return { tone: "error", text: "Схема PostgreSQL не инициализирована. Примените Prisma-миграции и повторите действие." };
     case "scenario_contract_mode":
       return { tone: "warning", text: "Часть сценариев сейчас автоматизирована как contract-check, а не как полный admin -> api E2E-прогон." };
+    case "message_send_in_progress":
+      return { tone: "warning", text: "Айлин обрабатывает сообщение. Ответ появится без перезагрузки страницы." };
     default:
       return code ? { tone: "error", text: `Backend вернул ошибку: ${code}` } : null;
   }

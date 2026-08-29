@@ -1,18 +1,76 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { type FormEvent, useRef, useState } from "react";
+import type { TestChatSendResponse } from "../../lib/api";
 
-export function ConversationComposer({ conversationId }: Readonly<{ conversationId: string }>) {
+interface SendErrorPayload {
+  error?: string;
+  status?: number;
+}
+
+export function ConversationComposer({
+  conversationId,
+  onPendingChange,
+  onSuccess,
+  onError
+}: Readonly<{
+  conversationId: string;
+  onPendingChange: (pending: boolean) => void;
+  onSuccess: (payload: TestChatSendResponse) => void;
+  onError: (code: string) => void;
+}>) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [files, setFiles] = useState<File[]>([]);
+  const [message, setMessage] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const totalSizeLabel = formatBytes(files.reduce((sum, file) => sum + file.size, 0));
 
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    const payload = new FormData();
+    payload.set("conversationId", conversationId);
+    payload.set("message", message);
+    for (const file of files) {
+      payload.append("files", file, file.name);
+    }
+
+    setIsSubmitting(true);
+    onPendingChange(true);
+
+    try {
+      const response = await fetch("/conversations/send", {
+        method: "POST",
+        body: payload
+      });
+      if (!response.ok) {
+        const errorPayload = (await response.json().catch(() => null)) as SendErrorPayload | null;
+        onError(errorPayload?.error ?? "message_send_failed");
+        return;
+      }
+
+      const result = (await response.json()) as TestChatSendResponse;
+      setMessage("");
+      setFiles([]);
+      if (fileInputRef.current) {
+        syncFileInput(fileInputRef.current, []);
+      }
+      onSuccess(result);
+    } catch {
+      onError("api_unavailable");
+    } finally {
+      setIsSubmitting(false);
+      onPendingChange(false);
+    }
+  }
+
   return (
-    <form className="composerCard" action="/conversations/send" encType="multipart/form-data" method="post">
+    <form className="composerCard" encType="multipart/form-data" onSubmit={handleSubmit}>
       <input type="hidden" name="conversationId" value={conversationId} />
       <div className="composerInputRow">
         <button
           className="composerAttach"
+          disabled={isSubmitting}
           onClick={(event) => {
             event.preventDefault();
             fileInputRef.current?.click();
@@ -22,8 +80,17 @@ export function ConversationComposer({ conversationId }: Readonly<{ conversation
           <span aria-hidden="true">+</span>
           <span>Файл</span>
         </button>
-        <textarea name="message" placeholder="Напишите сообщение клиенту от имени тестового пользователя" />
-        <button type="submit">Отправить</button>
+        <textarea
+          name="message"
+          onChange={(event) => {
+            setMessage(event.target.value);
+          }}
+          placeholder="Напишите сообщение клиенту от имени тестового пользователя"
+          value={message}
+        />
+        <button disabled={isSubmitting} type="submit">
+          {isSubmitting ? "Отправляем..." : "Отправить"}
+        </button>
       </div>
       <input
         hidden
@@ -45,6 +112,7 @@ export function ConversationComposer({ conversationId }: Readonly<{ conversation
               <div className="attachmentPill pending" key={`${file.name}-${file.size}-${index}`}>
                 <span>{file.name}</span>
                 <button
+                  disabled={isSubmitting}
                   onClick={(event) => {
                     event.preventDefault();
                     const nextFiles = files.filter((_, currentIndex) => currentIndex !== index);

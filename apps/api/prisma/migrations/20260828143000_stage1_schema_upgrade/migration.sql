@@ -90,27 +90,66 @@ ALTER TABLE "KnowledgeItem"
   ADD COLUMN IF NOT EXISTS "version" INTEGER DEFAULT 1,
   ADD COLUMN IF NOT EXISTS "active" BOOLEAN DEFAULT true;
 
-UPDATE "KnowledgeItem"
-SET
-  "key" = COALESCE("key", lower(regexp_replace(COALESCE("title", id), '[^a-zA-Z0-9]+', '_', 'g'))),
-  "category" = COALESCE("category", 'general'),
-  "aliases" = COALESCE("aliases", '[]'::jsonb),
-  "answerRu" = COALESCE("answerRu", "body", ''),
-  "conditions" = COALESCE("conditions", '{}'::jsonb),
-  "priority" = COALESCE("priority", 0),
-  "status" = COALESCE("status", 'draft'),
-  "version" = COALESCE("version", 1),
-  "active" = COALESCE("active", true)
-WHERE
-  "key" IS NULL
-  OR "category" IS NULL
-  OR "aliases" IS NULL
-  OR "answerRu" IS NULL
-  OR "conditions" IS NULL
-  OR "priority" IS NULL
-  OR "status" IS NULL
-  OR "version" IS NULL
-  OR "active" IS NULL;
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_name = 'KnowledgeItem'
+      AND column_name = 'title'
+  ) AND EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_name = 'KnowledgeItem'
+      AND column_name = 'body'
+  ) THEN
+    EXECUTE $migration$
+      UPDATE "KnowledgeItem"
+      SET
+        "key" = COALESCE("key", lower(regexp_replace(COALESCE("title", id), '[^a-zA-Z0-9]+', '_', 'g'))),
+        "category" = COALESCE("category", 'general'),
+        "aliases" = COALESCE("aliases", '[]'::jsonb),
+        "answerRu" = COALESCE("answerRu", "body", ''),
+        "conditions" = COALESCE("conditions", '{}'::jsonb),
+        "priority" = COALESCE("priority", 0),
+        "status" = COALESCE("status", 'draft'),
+        "version" = COALESCE("version", 1),
+        "active" = COALESCE("active", true)
+      WHERE
+        "key" IS NULL
+        OR "category" IS NULL
+        OR "aliases" IS NULL
+        OR "answerRu" IS NULL
+        OR "conditions" IS NULL
+        OR "priority" IS NULL
+        OR "status" IS NULL
+        OR "version" IS NULL
+        OR "active" IS NULL
+    $migration$;
+  ELSE
+    UPDATE "KnowledgeItem"
+    SET
+      "key" = COALESCE("key", lower(regexp_replace(id, '[^a-zA-Z0-9]+', '_', 'g'))),
+      "category" = COALESCE("category", 'general'),
+      "aliases" = COALESCE("aliases", '[]'::jsonb),
+      "answerRu" = COALESCE("answerRu", ''),
+      "conditions" = COALESCE("conditions", '{}'::jsonb),
+      "priority" = COALESCE("priority", 0),
+      "status" = COALESCE("status", 'draft'),
+      "version" = COALESCE("version", 1),
+      "active" = COALESCE("active", true)
+    WHERE
+      "key" IS NULL
+      OR "category" IS NULL
+      OR "aliases" IS NULL
+      OR "answerRu" IS NULL
+      OR "conditions" IS NULL
+      OR "priority" IS NULL
+      OR "status" IS NULL
+      OR "version" IS NULL
+      OR "active" IS NULL;
+  END IF;
+END $$;
 
 ALTER TABLE "KnowledgeItem"
   ALTER COLUMN "key" SET NOT NULL,

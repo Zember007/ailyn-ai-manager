@@ -42,6 +42,14 @@ export class MessagesController {
       if (!targetConversation) {
         throw new NotFoundException("conversation_not_found");
       }
+
+      await this.logs.debug("messages.test-chat", "Resolved existing web-test conversation", {
+        conversationId: targetConversation.id,
+        metadata: {
+          externalConversationId: targetConversation.externalConversationId,
+          externalContactId: targetConversation.externalContactId
+        }
+      });
     }
 
     const resolvedConversationId = targetConversation?.id;
@@ -95,8 +103,8 @@ export class MessagesController {
       reply: result.reply,
       persisted: true,
       conversation: result.conversation,
-      conversationId: resolvedConversationId ?? result.conversation.id,
-      application: result.application,
+      conversationId: result.conversation.id,
+      application: result.application ?? result.conversation.application,
       validation: result.validation,
       routerAiModel: result.routerAiModel,
       promptVersion: result.promptVersion

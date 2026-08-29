@@ -13,15 +13,16 @@ export async function POST(request: Request) {
     }
   }
 
-  const result = await postMultipartAction<{ conversationId?: string }>("/messages/test-chat", payload);
-  const locationConversationId = result.data?.conversationId || conversationId;
+  const result = await postMultipartAction("/messages/test-chat", payload);
+  if (!result.ok) {
+    return Response.json(
+      {
+        error: result.error ?? "message_send_failed",
+        status: result.status
+      },
+      { status: result.status || 500 }
+    );
+  }
 
-  const location = result.ok
-    ? `/conversations/${locationConversationId}?notice=message_sent`
-    : `/conversations/${locationConversationId}?error=${result.status === 0 ? "api_unavailable" : result.error ?? "message_send_failed"}`;
-
-  return new Response(null, {
-    status: 303,
-    headers: { Location: location }
-  });
+  return Response.json(result.data, { status: 200 });
 }

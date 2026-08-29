@@ -3,7 +3,7 @@ import { MessagesController } from "./messages.controller.js";
 
 describe("MessagesController", () => {
   it("routes a test-chat message into the existing conversation by internal id", async () => {
-    const logs = { log: vi.fn() } as any;
+    const logs = { log: vi.fn(), debug: vi.fn() } as any;
     const store = {
       getConversationByIdForChannel: vi.fn().mockResolvedValue({
         id: "conv-internal-1",
@@ -14,7 +14,7 @@ describe("MessagesController", () => {
     const orchestrator = {
       receive: vi.fn().mockResolvedValue({
         reply: "ok",
-        conversation: { id: "conv-internal-1" },
+        conversation: { id: "conv-internal-1", application: { id: "app-1" } },
         application: { id: "app-1" },
         validation: { passed: true, errors: [] },
         routerAiModel: "local-stage1-fallback",
@@ -29,6 +29,13 @@ describe("MessagesController", () => {
     });
 
     expect(store.getConversationByIdForChannel).toHaveBeenCalledWith("conv-internal-1", "web-test");
+    expect(logs.debug).toHaveBeenCalledWith(
+      "messages.test-chat",
+      "Resolved existing web-test conversation",
+      expect.objectContaining({
+        conversationId: "conv-internal-1"
+      })
+    );
     expect(orchestrator.receive).toHaveBeenCalledWith(
       expect.objectContaining({
         externalContactId: "web-client-1",
@@ -51,7 +58,7 @@ describe("MessagesController", () => {
   });
 
   it("includes uploaded files in the orchestrator payload", async () => {
-    const logs = { log: vi.fn() } as any;
+    const logs = { log: vi.fn(), debug: vi.fn() } as any;
     const store = {
       getConversationByIdForChannel: vi.fn().mockResolvedValue({
         id: "conv-internal-1",
@@ -62,7 +69,7 @@ describe("MessagesController", () => {
     const orchestrator = {
       receive: vi.fn().mockResolvedValue({
         reply: "ok",
-        conversation: { id: "conv-internal-1" },
+        conversation: { id: "conv-internal-1", application: { id: "app-1" } },
         application: { id: "app-1" },
         validation: { passed: true, errors: [] },
         routerAiModel: "local-stage1-fallback",
@@ -92,5 +99,51 @@ describe("MessagesController", () => {
         ]
       })
     );
+  });
+
+  it("keeps the same internal conversation id across sequential sends", async () => {
+    const logs = { log: vi.fn(), debug: vi.fn() } as any;
+    const store = {
+      getConversationByIdForChannel: vi.fn().mockResolvedValue({
+        id: "conv-internal-1",
+        externalConversationId: "web-conversation-1",
+        externalContactId: "web-client-1"
+      })
+    } as any;
+    const orchestrator = {
+      receive: vi
+        .fn()
+        .mockResolvedValueOnce({
+          reply: "first",
+          conversation: { id: "conv-internal-1", application: { id: "app-1" } },
+          application: { id: "app-1" },
+          validation: { passed: true, errors: [] },
+          routerAiModel: "local-stage1-fallback",
+          promptVersion: "stage1-local-v1"
+        })
+        .mockResolvedValueOnce({
+          reply: "second",
+          conversation: { id: "conv-internal-1", application: { id: "app-1" } },
+          application: { id: "app-1" },
+          validation: { passed: true, errors: [] },
+          routerAiModel: "local-stage1-fallback",
+          promptVersion: "stage1-local-v1"
+        })
+    } as any;
+    const controller = new MessagesController(orchestrator, store, logs);
+
+    const first = await controller.testChat({
+      conversationId: "conv-internal-1",
+      message: "Первое сообщение"
+    });
+    const second = await controller.testChat({
+      conversationId: "conv-internal-1",
+      message: "Второе сообщение"
+    });
+
+    expect(first.conversationId).toBe("conv-internal-1");
+    expect(second.conversationId).toBe("conv-internal-1");
+    expect(store.getConversationByIdForChannel).toHaveBeenCalledTimes(2);
+    expect(orchestrator.receive).toHaveBeenCalledTimes(2);
   });
 });

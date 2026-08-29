@@ -1,0 +1,2 @@
+-- Intentionally empty migration.
+-- This revision exists to preserve migration history ordering for Stage 1.

@@ -21,9 +21,9 @@ export function AdminShell({
         <a href="/">Обзор</a>
         <a href="/conversations">Диалоги</a>
         <a href="/logs">Логи</a>
-       {/*  <a href="/scenarios">Сценарии</a> */}
+        <a href="/scenarios">Сценарии</a>
         <a href="/settings">Настройки</a>
-       {/*  <a href="/knowledge">База знаний</a> */}
+        <a href="/knowledge">База знаний</a>
         <a href="/audit">Аудит</a>
       </nav>
       {children}
@@ -81,9 +81,11 @@ export function Field({ label, value }: Readonly<{ label: string; value: unknown
 }
 
 export function MessageList({
-  messages
+  messages,
+  pendingMessage
 }: Readonly<{
   messages: { id: string; author: string; body: string; createdAt: string; attachmentIds?: string[]; attachments?: Stage1Attachment[] }[];
+  pendingMessage?: string;
 }>) {
   return (
     <div className="messages">
@@ -105,6 +107,19 @@ export function MessageList({
           <time>{formatDate(message.createdAt)}</time>
         </article>
       ))}
+      {pendingMessage ? (
+        <article className="message ai pending">
+          <p className="messageAuthor">Айлин</p>
+          <div className="thinkingRow">
+            <span>{pendingMessage}</span>
+            <span className="thinkingDots" aria-hidden="true">
+              <span />
+              <span />
+              <span />
+            </span>
+          </div>
+        </article>
+      ) : null}
     </div>
   );
 }
@@ -115,6 +130,11 @@ export function JsonPreview({ value }: Readonly<{ value: unknown }>) {
 
 export function Notice({ tone, children }: Readonly<{ tone: "success" | "error" | "warning"; children: React.ReactNode }>) {
   return <div className={`notice ${tone}`}>{children}</div>;
+}
+
+export function ScenarioEvaluationBadge({ mode }: Readonly<{ mode?: "deterministic" | "contract" | "blocked" }>) {
+  const normalized = mode ?? "contract";
+  return <span className={`modeBadge ${normalized}`}>{translateScenarioMode(normalized)}</span>;
 }
 
 function translateStatus(status?: string): string {
@@ -218,4 +238,13 @@ function translateAuthor(author: string): string {
     system: "Система"
   };
   return map[author] ?? author;
+}
+
+function translateScenarioMode(mode: "deterministic" | "contract" | "blocked"): string {
+  const map: Record<typeof mode, string> = {
+    deterministic: "Детерминированный",
+    contract: "Контрактный",
+    blocked: "BLOCKED"
+  };
+  return map[mode];
 }
