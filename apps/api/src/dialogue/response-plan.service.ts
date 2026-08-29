@@ -41,13 +41,37 @@ export class ResponsePlanService {
 
   private nextQuestions(decision: DecisionResult, _facts: ApplicationFacts, isFirstMessage: boolean): string[] {
     if (["refuse", "redirect_existing_contract", "pause", "target_reached"].includes(decision.nextAction)) return [];
+    if (isFirstMessage) {
+      const missing = this.firstContactMissingFacts(_facts);
+      if (missing.length === 3) return [firstContactMessage];
+      if (missing.length > 0) return [`${firstContactIntroduction}\n\n${formatFirstContactRequest(missing)}`];
+    }
     const questionByFact: Record<string, string> = {
       vehicleMake: "Подскажите, пожалуйста, модель и год выпуска автомобиля.", vehicleModel: "Подскажите, пожалуйста, модель автомобиля.", vehicleYear: "Подскажите, пожалуйста, год выпуска автомобиля.", vehicleValue: "Какая ориентировочная стоимость автомобиля?", requestedAmount: "Какая сумма займа Вам необходима?", requestedProgram: "Подскажите, пожалуйста, Вас интересует займ без изъятия автомобиля или с постановкой автомобиля на охраняемую стоянку?", residenceRegion: "Какая прописка у собственника автомобиля?", id_front: "Пришлите, пожалуйста, фото лицевой стороны ID.", id_back: "Пришлите, пожалуйста, фото обратной стороны ID.", vehicle_registration_front: "Пришлите, пожалуйста, лицевую сторону свидетельства о регистрации ТС.", vehicle_registration_back: "Пришлите, пожалуйста, обратную сторону свидетельства о регистрации ТС.", spouseConsentReady: "Нотариальное согласие супруга или супруги уже оформлено?", divorceCertificateReady: "Свидетельство о разводе уже есть?", guarantorAvailable: "Для этой программы требуется поручитель; точные требования пока отмечены как BLOCKED.", visitDate: "На какую дату Вам удобно приехать?", visitTime: "Уточните, пожалуйста, конкретное время визита. Для оформления нужно приехать не позднее 18:00."
     };
     const questions = decision.requiredFacts.map((fact) => questionByFact[String(fact)]).filter((item): item is string => Boolean(item));
-    if (isFirstMessage && questions.length) questions[0] = `Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10. ${questions[0]}`;
     return [...new Set(questions)];
+  }
+
+  private firstContactMissingFacts(facts: ApplicationFacts): ("vehicle" | "vehicleValue" | "requestedAmount")[] {
+    const missing: ("vehicle" | "vehicleValue" | "requestedAmount")[] = [];
+    if (!facts.vehicleMake && !facts.vehicleModel && !facts.vehicleYear) missing.push("vehicle");
+    if (facts.vehicleValue === undefined) missing.push("vehicleValue");
+    if (facts.requestedAmount === undefined) missing.push("requestedAmount");
+    return missing;
   }
 }
 
 function formatMoney(value: number): string { return new Intl.NumberFormat("ru-RU").format(value); }
+
+const firstContactIntroduction = "Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10.";
+const firstContactMessage = `${firstContactIntroduction}\n\n${formatFirstContactRequest(["vehicle", "vehicleValue", "requestedAmount"])}`;
+
+function formatFirstContactRequest(missing: ("vehicle" | "vehicleValue" | "requestedAmount")[]): string {
+  const labels = {
+    vehicle: "модель и год выпуска автомобиля;",
+    vehicleValue: "ориентировочную стоимость автомобиля;",
+    requestedAmount: "какая сумма займа Вам необходима?"
+  };
+  return `Подскажите, пожалуйста:\n${missing.map((fact) => `- ${labels[fact]}`).join("\n")}`;
+}
