@@ -4,6 +4,10 @@ import type { RouterAiChatRequest, RouterAiChatResponse } from "./router-ai.type
 
 const ROUTERAI_CHAT_COMPLETIONS_URL = "https://routerai.ru/api/v1/chat/completions";
 
+interface RouterAiRequestOptions {
+  timeoutMs?: number;
+}
+
 @Injectable()
 export class RouterAiClient {
   private readonly config = loadAppConfig();
@@ -12,13 +16,13 @@ export class RouterAiClient {
     return Boolean(this.config.routerAiApiKey);
   }
 
-  async createChatCompletion(request: RouterAiChatRequest): Promise<RouterAiChatResponse> {
+  async createChatCompletion(request: RouterAiChatRequest, options: RouterAiRequestOptions = {}): Promise<RouterAiChatResponse> {
     if (!this.isConfigured()) {
       throw new Error("RouterAI is not configured.");
     }
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.config.routerAiTimeoutMs);
+    const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? this.config.routerAiTimeoutMs);
 
     try {
       const response = await fetch(ROUTERAI_CHAT_COMPLETIONS_URL, {

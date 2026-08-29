@@ -1,4 +1,4 @@
-import { Injectable } from "@nestjs/common";
+import { Injectable, Logger } from "@nestjs/common";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -18,6 +18,7 @@ import { RouterAiClient } from "./router-ai.client.js";
 @Injectable()
 export class RouterAiProvider implements AiProvider {
   private readonly config = loadAppConfig();
+  private readonly logger = new Logger(RouterAiProvider.name);
 
   constructor(private readonly client: RouterAiClient) {}
 
@@ -26,19 +27,27 @@ export class RouterAiProvider implements AiProvider {
       return localExtract(input);
     }
 
-    const response = await this.client.createChatCompletion({
-      model: this.config.routerAiTextModel ?? "routerai-text-model-not-configured",
-      temperature: 0,
-      response_format: { type: "json_object" },
-      messages: [
+    try {
+      const response = await this.client.createChatCompletion(
         {
-          role: "system",
-          content: [loadPrompt("core.system.md"), loadPrompt("extraction.system.md")].join("\n\n")
+          model: this.config.routerAiTextModel ?? "routerai-text-model-not-configured",
+          temperature: 0,
+          response_format: { type: "json_object" },
+          messages: [
+            {
+              role: "system",
+              content: [loadPrompt("core.system.md"), loadPrompt("extraction.system.md")].join("\n\n")
+            },
+            { role: "user", content: JSON.stringify(input) }
+          ]
         },
-        { role: "user", content: JSON.stringify(input) }
-      ]
-    });
-    return normalizeExtractionResult(JSON.parse(response.choices?.[0]?.message?.content ?? "{}"));
+        { timeoutMs: getStage1Timeout(this.config.routerAiTimeoutMs, 12_000) }
+      );
+      return normalizeExtractionResult(JSON.parse(response.choices?.[0]?.message?.content ?? "{}"));
+    } catch (error) {
+      this.logger.warn(`RouterAI extraction fallback activated: ${formatError(error)}`);
+      return localExtract(input);
+    }
   }
 
   async generateResponse(input: ResponseGenerationInput): Promise<GeneratedResponse> {
@@ -50,24 +59,36 @@ export class RouterAiProvider implements AiProvider {
       };
     }
 
-    const response = await this.client.createChatCompletion({
-      model: this.config.routerAiTextModel ?? "routerai-text-model-not-configured",
-      temperature: 0.2,
-      response_format: { type: "json_object" },
-      messages: [
+    try {
+      const response = await this.client.createChatCompletion(
         {
-          role: "system",
-          content: [loadPrompt("core.system.md"), loadPrompt("response.system.md"), loadPrompt("response.examples.md")].join("\n\n")
+          model: this.config.routerAiTextModel ?? "routerai-text-model-not-configured",
+          temperature: 0.2,
+          response_format: { type: "json_object" },
+          messages: [
+            {
+              role: "system",
+              content: [loadPrompt("core.system.md"), loadPrompt("response.system.md"), loadPrompt("response.examples.md")].join("\n\n")
+            },
+            { role: "user", content: JSON.stringify(input) }
+          ]
         },
-        { role: "user", content: JSON.stringify(input) }
-      ]
-    });
-    const parsed = JSON.parse(response.choices?.[0]?.message?.content ?? "{\"message\":\"\"}") as { message: string };
-    return {
-      message: parsed.message,
-      model: response.model ?? this.config.routerAiTextModel ?? "routerai",
-      promptVersion: "stage1-routerai-v1"
-    };
+        { timeoutMs: getStage1Timeout(this.config.routerAiTimeoutMs, 10_000) }
+      );
+      const parsed = JSON.parse(response.choices?.[0]?.message?.content ?? "{\"message\":\"\"}") as { message: string };
+      return {
+        message: parsed.message,
+        model: response.model ?? this.config.routerAiTextModel ?? "routerai",
+        promptVersion: "stage1-routerai-v1"
+      };
+    } catch (error) {
+      this.logger.warn(`RouterAI response fallback activated: ${formatError(error)}`);
+      return {
+        message: buildLocalResponse(input),
+        model: "routerai-local-fallback",
+        promptVersion: "stage1-local-v1"
+      };
+    }
   }
 
   async analyzeImage(input: VisionInput): Promise<VisionResult> {
@@ -175,6 +196,17 @@ function buildLocalResponse(input: ResponseGenerationInput): string {
   const questions = input.responsePlan.nextQuestions.join(" ");
   const required = input.responsePlan.requiredStatements.join(" ");
   return [exact, required, questions].filter(Boolean).join(" ").trim() || "Уточните, пожалуйста, модель, год автомобиля, ориентировочную стоимость и нужную сумму.";
+}
+
+function getStage1Timeout(configuredTimeoutMs: number, maxTimeoutMs: number): number {
+  return Math.max(3_000, Math.min(configuredTimeoutMs, maxTimeoutMs));
+}
+
+function formatError(error: unknown): string {
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+  return String(error);
 }
 
 function parseMoney(text: string): number | undefined {
