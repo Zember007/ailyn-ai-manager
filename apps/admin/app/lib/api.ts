@@ -338,7 +338,7 @@ export function toFeedbackMessage(code?: string): { tone: "success" | "error" | 
     case "scenario_contract_mode":
       return { tone: "warning", text: "Часть сценариев сейчас автоматизирована как contract-check, а не как полный admin -> api E2E-прогон." };
     case "message_send_in_progress":
-      return { tone: "warning", text: "Айлин обрабатывает сообщение. Ответ появится без перезагрузки страницы." };
+      return { tone: "warning", text: "Айлин обрабатывает сообщение." };
     default:
       return code ? { tone: "error", text: `Backend вернул ошибку: ${code}` } : null;
   }
