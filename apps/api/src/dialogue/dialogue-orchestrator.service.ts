@@ -149,6 +149,12 @@ export class DialogueOrchestratorService {
         pendingFacts,
         currentFacts: application.facts
       });
+      if (!incomingFacts.phone && !contextualFacts.phone) {
+        const contactPhone = normalizePhoneLikeValue(message.externalContactId);
+        if (contactPhone) {
+          incomingFacts.phone = contactPhone;
+        }
+      }
       if (contextualFacts.residenceNeedsClarification) {
         delete incomingFacts.residenceRegion;
         delete incomingFacts.residenceCategory;
@@ -465,5 +471,13 @@ function mapVisionTypeToDocument(type: string): DocumentCode | undefined {
   if (type === "unknown" || type === "poor_quality") {
     return "unknown";
   }
+  return undefined;
+}
+
+function normalizePhoneLikeValue(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const digits = value.replace(/\D/g, "");
+  if (digits.length === 12 && digits.startsWith("996")) return `+${digits}`;
+  if (digits.length === 10 && digits.startsWith("0")) return `+996${digits.slice(1)}`;
   return undefined;
 }

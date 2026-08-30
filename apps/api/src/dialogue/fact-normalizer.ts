@@ -18,6 +18,14 @@ export function normalizeTurnFacts(input: NormalizeTurnFactsInput): Partial<Appl
   }
 
   const facts: Partial<ApplicationFacts> = {};
+  const fullName = extractFullName(source);
+  if (fullName) {
+    facts.fullName = fullName;
+  }
+  const phone = extractPhone(source);
+  if (phone) {
+    facts.phone = phone;
+  }
   const pendingOwnerResidence = input.pendingFacts.includes("ownerResidenceRegion");
   if (input.pendingFacts.includes("residenceRegion") || pendingOwnerResidence) {
     const explicit = extractExplicitResidence(source);
@@ -133,4 +141,27 @@ function extractRequestedProgram(text: string): ApplicationFacts["requestedProgr
 function extractDeclinedDocuments(text: string): boolean {
   const normalized = text.toLocaleLowerCase("ru-RU");
   return /(?:не\s+могу|не\s+буду|не\s+хочу|нет\s+возможности)[^.!?]{0,60}(?:прислать|отправить|скинуть)?[^.!?]{0,30}(?:документ|фото)/.test(normalized);
+}
+
+function extractFullName(text: string): string | undefined {
+  const match =
+    text.match(/(?:меня\s+зовут|мое\s+фио|мо[её]\s+имя)\s*:?\s*([А-ЯЁ][А-ЯЁа-яё-]{1,}(?:\s+[А-ЯЁ][А-ЯЁа-яё-]{1,}){1,2})/iu)?.[1] ??
+    text.match(/(?:фио)\s*:?\s*([А-ЯЁ][А-ЯЁа-яё-]{1,}(?:\s+[А-ЯЁ][А-ЯЁа-яё-]{1,}){1,2})/iu)?.[1];
+
+  return match?.trim();
+}
+
+function extractPhone(text: string): string | undefined {
+  const raw = text.match(/(?:\+996|996|0)\s*\d{3}\s*\d{3}\s*\d{3}/)?.[0];
+  if (!raw) {
+    return undefined;
+  }
+  const digits = raw.replace(/\D/g, "");
+  if (digits.length === 12 && digits.startsWith("996")) {
+    return `+${digits}`;
+  }
+  if (digits.length === 10 && digits.startsWith("0")) {
+    return `+996${digits.slice(1)}`;
+  }
+  return undefined;
 }

@@ -139,6 +139,10 @@ function localExtract(input: ExtractionInput): ExtractionResult {
   if (money.vehicleValue !== undefined) facts.push({ key: "vehicleValue", value: money.vehicleValue, confidence: money.vehicleValueConfidence });
   const year = text.match(/\b(19\d{2}|20\d{2})\b/);
   if (year) facts.push({ key: "vehicleYear", value: Number(year[1]), confidence: 0.9 });
+  const fullName = parseExplicitFullName(input.text ?? "");
+  if (fullName) facts.push({ key: "fullName", value: fullName, confidence: 0.9 });
+  const phone = parsePhoneNumber(input.text ?? "");
+  if (phone) facts.push({ key: "phone", value: phone, confidence: 0.9 });
 
   if (text.includes("camry") || text.includes("камри")) {
     facts.push({ key: "vehicleMake", value: "Toyota", confidence: 0.9 });
@@ -230,6 +234,19 @@ function parseVisitDate(text: string): string | undefined {
   if (explicit) {
     return `${explicit[3]}-${explicit[2].padStart(2, "0")}-${explicit[1].padStart(2, "0")}`;
   }
+  return undefined;
+}
+
+function parseExplicitFullName(text: string): string | undefined {
+  return text.match(/(?:меня\s+зовут|мое\s+фио|мо[её]\s+имя|фио)\s*:?\s*([А-ЯЁ][А-ЯЁа-яё-]{1,}(?:\s+[А-ЯЁ][А-ЯЁа-яё-]{1,}){1,2})/iu)?.[1]?.trim();
+}
+
+function parsePhoneNumber(text: string): string | undefined {
+  const raw = text.match(/(?:\+996|996|0)\s*\d{3}\s*\d{3}\s*\d{3}/)?.[0];
+  if (!raw) return undefined;
+  const digits = raw.replace(/\D/g, "");
+  if (digits.length === 12 && digits.startsWith("996")) return `+${digits}`;
+  if (digits.length === 10 && digits.startsWith("0")) return `+996${digits.slice(1)}`;
   return undefined;
 }
 

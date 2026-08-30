@@ -49,9 +49,10 @@ class DialogueHarness {
     this.facts = { ...this.facts, ...extractedFacts, ...normalized, documents: { ...(this.facts.documents ?? {}) } };
     for (const attachment of attachments) {
       const vision = await this.ai.analyzeImage({ attachment });
+      const documentKey = vision.type === "car" ? "car_photo" : vision.type === "poor_quality" ? "unknown" : vision.type;
       this.facts.documents = {
         ...(this.facts.documents ?? {}),
-        [vision.type === "poor_quality" ? "unknown" : vision.type]: vision.quality === "poor" ? "poor_quality" : "received"
+        [documentKey]: vision.quality === "poor" ? "poor_quality" : "received"
       };
     }
 
@@ -81,8 +82,16 @@ class DialogueHarness {
         : code === "id_back"
           ? "id-back.jpg"
           : code === "vehicle_registration_front"
-            ? "registration-front.jpg"
-            : "registration-back.jpg",
+          ? "registration-front.jpg"
+          : "registration-back.jpg",
+      mimeType: "image/jpeg"
+    })));
+  }
+
+  async uploadImages(names: string[]): Promise<string> {
+    return this.send("Отправляю фото", names.map((name) => ({
+      id: name,
+      fileName: name,
       mimeType: "image/jpeg"
     })));
   }
@@ -142,6 +151,8 @@ describe("Dialogue pipeline e2e scenarios", () => {
 
     expect(dialogue.currentDecision.status).toBe("refuse");
     expect(answer).toContain("По автомобилям с регионом 10 компания займ не оформляет.");
+    expect(answer).toContain("Если у Вас есть другой автомобиль");
+    expect(answer).not.toContain("Подскажите, пожалуйста, модель и год выпуска автомобиля.");
   });
 
   it("refuses unsupported motorcycle collateral", async () => {
@@ -280,5 +291,40 @@ describe("Dialogue pipeline e2e scenarios", () => {
     expect(dialogue.currentDecision.status).toBe("redirect_existing_contract");
     expect(answer).toContain("+996 502 108 108");
     expect(answer).toContain("+996 776 108 108");
+  });
+
+  it("completes a full dialogue and leaves the lead-card facts populated after image uploads", async () => {
+    const dialogue = new DialogueHarness();
+
+    await dialogue.send("Меня зовут Иванов Иван Иванович, телефон +996 555 123 456. Toyota Camry 2018, машина стоит 1.5 млн, хочу 500к");
+    await dialogue.send("без изъятия");
+    const clarification = await dialogue.send("Прописка городская");
+    await dialogue.send("Бишкек");
+    await dialogue.uploadImages([
+      "id-front.jpg",
+      "id-back.jpg",
+      "registration-front.jpg",
+      "registration-back.jpg",
+      "car-photo.jpg"
+    ]);
+    await dialogue.send("Не женат");
+    const finalAnswer = await dialogue.send("Хочу приехать 01.09.2026 в 15:00");
+
+    expect(clarification).toContain("Уточните, пожалуйста, в каком городе или области прописан собственник автомобиля?");
+    expect(dialogue.currentDecision.status).toBe("target_reached");
+    expect(dialogue.currentFacts.fullName).toBe("Иванов Иван Иванович");
+    expect(dialogue.currentFacts.phone).toBe("+996555123456");
+    expect(dialogue.currentFacts.residenceRegion).toBe("Бишкек");
+    expect(dialogue.currentFacts.familyStatus).toBe("single");
+    expect(dialogue.currentFacts.visitDate).toBe("2026-09-01");
+    expect(dialogue.currentFacts.visitTime).toBe("15:00");
+    expect(dialogue.currentFacts.documents).toEqual(expect.objectContaining({
+      id_front: "received",
+      id_back: "received",
+      vehicle_registration_front: "received",
+      vehicle_registration_back: "received",
+      car_photo: "received"
+    }));
+    expect(finalAnswer).toContain("Предварительно записала Вас");
   });
 });

@@ -487,7 +487,7 @@ function firstRefusal(
   }
   if (normalize(facts.vehicleRegistrationRegion) === "10") {
     rulesApplied.push("region_10_refusal");
-    return "По автомобилям с регионом 10 компания займ не оформляет.";
+    return "По автомобилям с регионом 10 компания займ не оформляет. Если у Вас есть другой автомобиль, можете написать его марку, модель, год выпуска, примерную стоимость и нужную сумму займа. Если другого автомобиля нет, по этой заявке мы, к сожалению, не сможем продолжить оформление.";
   }
   if (facts.vehicleRegistrationCountry && normalize(facts.vehicleRegistrationCountry) !== "kg" && normalize(facts.vehicleRegistrationCountry) !== "кр" && normalize(facts.vehicleRegistrationCountry) !== "кыргызстан") {
     rulesApplied.push("foreign_vehicle_registration");

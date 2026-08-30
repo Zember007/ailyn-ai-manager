@@ -84,4 +84,15 @@ describe("normalizeTurnFacts", () => {
       declinedDocuments: true
     });
   });
+
+  it("extracts explicit borrower full name and phone from free text", () => {
+    expect(normalizeTurnFacts({
+      text: "Меня зовут Иванов Иван Иванович, мой номер +996 555 123 456",
+      pendingFacts: [],
+      currentFacts: {}
+    })).toEqual({
+      fullName: "Иванов Иван Иванович",
+      phone: "+996555123456"
+    });
+  });
 });

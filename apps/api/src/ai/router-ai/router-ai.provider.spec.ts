@@ -151,6 +151,20 @@ describe("RouterAiProvider", () => {
     expect(result.extractedFacts).toEqual(expect.arrayContaining([expect.objectContaining({ key: "fullName", value: "Иванов Иван Иванович" })]));
   });
 
+  it("extracts an explicit borrower full name and phone from text when RouterAI extraction falls back", async () => {
+    const provider = new RouterAiProvider({ isConfigured: vi.fn().mockReturnValue(false) } as any);
+    const result = await provider.extract({
+      text: "Меня зовут Иванов Иван Иванович, телефон +996 555 123 456. Toyota Camry 2018",
+      attachments: [],
+      facts: {}
+    });
+
+    expect(result.facts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: "fullName", value: "Иванов Иван Иванович" }),
+      expect.objectContaining({ key: "phone", value: "+996555123456" })
+    ]));
+  });
+
   it("falls back to local response when RouterAI errors", async () => {
     process.env.DATABASE_URL ??= "postgresql://test:test@localhost:5432/ailyn";
     process.env.REDIS_URL ??= "redis://localhost:6379";

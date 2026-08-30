@@ -7,38 +7,18 @@ export interface ResponseValidationResult { passed: boolean; errors: string[]; f
 @Injectable()
 export class ResponseValidatorService {
   validate(input: { message: string; decision: DecisionResult; plan?: ResponsePlanV62 }): ResponseValidationResult {
-    const errors: string[] = [];
-    const lower = input.message.toLowerCase();
-    for (const forbidden of input.decision.forbiddenStatements) if (lower.includes(forbidden.toLowerCase())) errors.push(`forbidden_statement:${forbidden}`);
-    if (/[😀-🙏🌀-🗿🚀-🛿🇦-🇿]/u.test(input.message)) errors.push("emoji");
-    if (/(^|\s)ты(\s|$)|(?:^|[\s,.!?])(?:тебе|твой|твоя|пришли|отправь|укажи)(?:$|[\s,.!?])/i.test(input.message)) errors.push("informal_you");
-    if (/проверка пройдена|условия соблюдены|stage|nextaction|rulesapplied|prompt injection/i.test(input.message)) errors.push("internal_status_leak");
-    if (/я\s+ии|я\s+искусственный интеллект|язык(?:овая)? модель|chatgpt|openai/i.test(lower)) errors.push("ai_identity_leak");
-    if (input.plan?.knownFactKeys?.includes("residenceRegion") && /какая\s+прописка[^?]{0,80}\?/i.test(input.message)) errors.push("repeated_known_fact:residenceRegion");
-    if (input.plan?.knownFactKeys?.includes("requestedAmount") && /какая\s+сумма\s+займа[^?]{0,80}\?/i.test(input.message)) errors.push("repeated_known_fact:requestedAmount");
-    if (input.plan?.knownFactKeys?.includes("vehicleValue") && /какая\s+(?:ориентировочная\s+)?стоимость[^?]{0,80}\?/i.test(input.message)) errors.push("repeated_known_fact:vehicleValue");
-    if (input.plan?.knownFactKeys?.includes("requestedProgram") && /вас\s+интересует\s+займ\s+без\s+изъятия[^?]{0,160}\?/i.test(input.message)) errors.push("repeated_known_fact:requestedProgram");
-    if (/(?:какая|ваша|у\s+собственника)[^.!?]{0,40}регистрац/i.test(input.message)) errors.push("residence_registration_wording");
-    if (input.plan?.validation.requiresPreliminaryDisclaimer && !lower.includes("окончательная сумма определяется после осмотра автомобиля и проверки документов")) errors.push("missing_preliminary_disclaimer");
-    for (const answer of input.plan?.answers ?? []) if (answer.exact && !input.message.includes(answer.text)) errors.push(`missing_approved_answer:${answer.key}`);
-    for (const question of input.plan?.nextQuestions ?? []) if (!input.message.includes(question)) errors.push("missing_required_next_question");
-    if (
-      input.plan?.validation.firstMessage &&
-      !["refuse", "redirect_existing_contract", "pause", "on_the_way", "arrived"].includes(input.decision.nextAction) &&
-      !input.message.includes(firstContactGreeting)
-    ) errors.push("missing_first_contact_greeting");
-    if (input.plan?.validation.visitConfirmation) {
-      const requiredVisitParts = [
-        "Предварительно записала Вас",
-        "Для подтверждения времени визита с Вами свяжется менеджер",
-        "Б. Молодой Гвардии, 22, Бишкек",
-        "https://go.2gis.com/Y34m4",
-        "https://maps.app.goo.gl/9xiWLVvdyRgn3Sx4A"
-      ];
-      if (!requiredVisitParts.every((part) => input.message.includes(part))) errors.push("incomplete_visit_confirmation");
+    const errors = this.collectErrors(input.message, input.decision, input.plan);
+    if (errors.length === 0) {
+      return { passed: true, errors: [], finalMessage: input.message };
     }
-    if (input.plan && !["target_reached", "refuse", "redirect_existing_contract", "pause", "on_the_way", "arrived"].includes(input.decision.nextAction) && !(input.plan.nextQuestions.length || input.message.includes("?"))) errors.push("missing_next_action");
-    return errors.length ? { passed: false, errors, finalMessage: this.fallback(input.decision, input.plan) } : { passed: true, errors, finalMessage: input.message };
+
+    const fallback = this.fallback(input.decision, input.plan);
+    const fallbackErrors = this.collectErrors(fallback, input.decision, input.plan);
+    if (input.decision.nextAction === "refuse" && fallbackErrors.length === 0) {
+      return { passed: true, errors: [], finalMessage: fallback };
+    }
+
+    return { passed: false, errors, finalMessage: fallback };
   }
 
   private fallback(decision: DecisionResult, plan?: ResponsePlanV62): string {
@@ -46,6 +26,44 @@ export class ResponseValidatorService {
     const next = plan?.nextQuestions ?? [];
     const statements = decision.requiredStatements.filter((item) => !item.startsWith("Попросить"));
     return [...approved, ...statements, ...next].filter(Boolean).join(" ") || "Подскажите, пожалуйста, недостающие данные, чтобы продолжить оформление.";
+  }
+
+  private collectErrors(message: string, decision: DecisionResult, plan?: ResponsePlanV62): string[] {
+    const errors: string[] = [];
+    const lower = message.toLowerCase();
+    for (const forbidden of decision.forbiddenStatements) if (lower.includes(forbidden.toLowerCase())) errors.push(`forbidden_statement:${forbidden}`);
+    if (/[😀-🙏🌀-🗿🚀-🛿🇦-🇿]/u.test(message)) errors.push("emoji");
+    if (/(^|\s)ты(\s|$)|(?:^|[\s,.!?])(?:тебе|твой|твоя|пришли|отправь|укажи)(?:$|[\s,.!?])/i.test(message)) errors.push("informal_you");
+    if (/проверка пройдена|условия соблюдены|stage|nextaction|rulesapplied|prompt injection/i.test(message)) errors.push("internal_status_leak");
+    if (/я\s+ии|я\s+искусственный интеллект|язык(?:овая)? модель|chatgpt|openai/i.test(lower)) errors.push("ai_identity_leak");
+    if (plan?.knownFactKeys?.includes("residenceRegion") && /какая\s+прописка[^?]{0,80}\?/i.test(message)) errors.push("repeated_known_fact:residenceRegion");
+    if (plan?.knownFactKeys?.includes("requestedAmount") && /какая\s+сумма\s+займа[^?]{0,80}\?/i.test(message)) errors.push("repeated_known_fact:requestedAmount");
+    if (plan?.knownFactKeys?.includes("vehicleValue") && /какая\s+(?:ориентировочная\s+)?стоимость[^?]{0,80}\?/i.test(message)) errors.push("repeated_known_fact:vehicleValue");
+    if (plan?.knownFactKeys?.includes("requestedProgram") && /вас\s+интересует\s+займ\s+без\s+изъятия[^?]{0,160}\?/i.test(message)) errors.push("repeated_known_fact:requestedProgram");
+    if (/(?:какая|ваша|у\s+собственника)[^.!?]{0,40}регистрац/i.test(message)) errors.push("residence_registration_wording");
+    if (plan?.validation.requiresPreliminaryDisclaimer && !lower.includes("окончательная сумма определяется после осмотра автомобиля и проверки документов")) errors.push("missing_preliminary_disclaimer");
+    for (const answer of plan?.answers ?? []) if (answer.exact && !message.includes(answer.text)) errors.push(`missing_approved_answer:${answer.key}`);
+    for (const question of plan?.nextQuestions ?? []) if (!message.includes(question)) errors.push("missing_required_next_question");
+    if (
+      plan?.validation.firstMessage &&
+      !["refuse", "redirect_existing_contract", "pause", "on_the_way", "arrived"].includes(decision.nextAction) &&
+      !message.includes(firstContactGreeting)
+    ) errors.push("missing_first_contact_greeting");
+    if (plan?.validation.visitConfirmation) {
+      const requiredVisitParts = [
+        "Предварительно записала Вас",
+        "Для подтверждения времени визита с Вами свяжется менеджер",
+        "Б. Молодой Гвардии, 22, Бишкек",
+        "https://go.2gis.com/Y34m4",
+        "https://maps.app.goo.gl/9xiWLVvdyRgn3Sx4A"
+      ];
+      if (!requiredVisitParts.every((part) => message.includes(part))) errors.push("incomplete_visit_confirmation");
+    }
+    if (plan && !["target_reached", "refuse", "redirect_existing_contract", "pause", "on_the_way", "arrived"].includes(decision.nextAction) && !(plan.nextQuestions.length || message.includes("?"))) errors.push("missing_next_action");
+    if (decision.nextAction === "refuse" && /(?:подскажите|уточните|пришлите|какая\s+|какой\s+|сможет\s+ли|когда\s+будет|вас\s+интересует)/i.test(message)) {
+      errors.push("unexpected_followup_after_refusal");
+    }
+    return errors;
   }
 }
 

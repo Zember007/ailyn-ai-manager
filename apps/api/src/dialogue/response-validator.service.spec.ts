@@ -55,4 +55,35 @@ describe("ResponseValidatorService", () => {
 
     expect(result.errors).toContain("incomplete_visit_confirmation");
   });
+
+  it("repairs a refusal that incorrectly continues data collection", () => {
+    const service = new ResponseValidatorService();
+    const refusalDecision = {
+      status: "refuse",
+      stage: "REFUSED",
+      nextAction: "refuse",
+      requiredFacts: [],
+      rulesApplied: ["region_10_refusal"],
+      eligiblePrograms: [],
+      calculatedLimits: {},
+      requiredStatements: [],
+      forbiddenStatements: [],
+      blockedRules: [],
+      refusalReason: "По автомобилям с регионом 10 компания займ не оформляет. Если у Вас есть другой автомобиль, можете написать его марку, модель, год выпуска, примерную стоимость и нужную сумму займа. Если другого автомобиля нет, по этой заявке мы, к сожалению, не сможем продолжить оформление."
+    } as any;
+    const result = service.validate({
+      message: "Здравствуйте! По автомобилям с регионом 10 компания займ не оформляет. Подскажите, пожалуйста, модель и год выпуска автомобиля.",
+      decision: refusalDecision,
+      plan: {
+        answers: [{ key: "refusal", text: refusalDecision.refusalReason, exact: true }],
+        nextQuestions: [],
+        validation: { requiresPreliminaryDisclaimer: false, firstMessage: false },
+        knownFactKeys: []
+      } as any
+    });
+
+    expect(result.passed).toBe(true);
+    expect(result.errors).toEqual([]);
+    expect(result.finalMessage).toBe(refusalDecision.refusalReason);
+  });
 });
