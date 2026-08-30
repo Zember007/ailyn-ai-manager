@@ -26,6 +26,8 @@ export function normalizeTurnFacts(input: NormalizeTurnFactsInput): Partial<Appl
   if (phone) {
     facts.phone = phone;
   }
+  const vehicleFacts = extractVehicleFacts(source);
+  Object.assign(facts, vehicleFacts);
   const pendingOwnerResidence = input.pendingFacts.includes("ownerResidenceRegion");
   if (input.pendingFacts.includes("residenceRegion") || pendingOwnerResidence) {
     const explicit = extractExplicitResidence(source);
@@ -164,4 +166,71 @@ function extractPhone(text: string): string | undefined {
     return `+996${digits.slice(1)}`;
   }
   return undefined;
+}
+
+function extractVehicleFacts(text: string): Partial<ApplicationFacts> {
+  const facts: Partial<ApplicationFacts> = {};
+  const normalized = text.toLocaleLowerCase("ru-RU");
+
+  if (normalized.includes("camry") || normalized.includes("камри")) {
+    facts.vehicleMake = "Toyota";
+    facts.vehicleModel = "Camry";
+  } else if (normalized.includes("land cruiser") || normalized.includes("ленд крузер") || normalized.includes("ланд крузер")) {
+    facts.vehicleMake = "Toyota";
+    facts.vehicleModel = "Land Cruiser";
+  } else if (normalized.includes("toyota") || normalized.includes("тойота")) {
+    facts.vehicleMake = "Toyota";
+  }
+
+  const year = text.match(/\b(19\d{2}|20\d{2})\b/);
+  if (year) {
+    facts.vehicleYear = Number(year[1]);
+  }
+
+  const vehicleValue = matchMoney(text, /(?:стоимость|стоит|цена|оцен[каить]*|машина\s+стоит)\D{0,20}(\d+(?:[.,]\d+)?)\s*(млн|миллион(?:а|ов)?|тыс(?:яч[аи]?)?|к)?/iu);
+  if (vehicleValue !== undefined) {
+    facts.vehicleValue = vehicleValue;
+  }
+
+  const requestedAmount = matchMoney(text, /(?:(?:нужно|займ|сумм[ауые]?|дай(?:те)?|получить|оформить)\D{0,20}|хочу(?!\s+приехать)\D{0,20})(\d+(?:[.,]\d+)?)\s*(млн|миллион(?:а|ов)?|тыс(?:яч[аи]?)?|к)?/iu);
+  if (requestedAmount !== undefined) {
+    facts.requestedAmount = requestedAmount;
+  }
+
+  if (/регион\s*10/i.test(text)) {
+    facts.vehicleRegistrationRegion = "10";
+  }
+
+  if (/мото|скутер/i.test(normalized)) {
+    facts.vehicleType = "motorcycle";
+  } else if (/минивэн/i.test(normalized)) {
+    facts.vehicleType = "minivan";
+  } else if (/легков/i.test(normalized)) {
+    facts.vehicleType = "passenger_car";
+  } else if (/груз/i.test(normalized)) {
+    facts.vehicleType = "truck";
+  } else if (/автобус/i.test(normalized)) {
+    facts.vehicleType = "bus";
+  }
+
+  return facts;
+}
+
+function matchMoney(text: string, pattern: RegExp): number | undefined {
+  const match = text.match(pattern);
+  if (!match?.[1]) {
+    return undefined;
+  }
+  const normalized = match[1].replace(/\s+/g, "").replace(",", ".");
+  if (!/^\d+(?:\.\d+)?$/.test(normalized)) {
+    return undefined;
+  }
+  const amount = Number(normalized);
+  const unit = match[2] ?? "";
+  const multiplier = /^(?:млн|миллион)/i.test(unit)
+    ? 1_000_000
+    : /^(?:тыс|к)/i.test(unit)
+      ? 1_000
+      : 1;
+  return Math.round(amount * multiplier);
 }

@@ -95,4 +95,32 @@ describe("normalizeTurnFacts", () => {
       phone: "+996555123456"
     });
   });
+
+  it("extracts critical first-message vehicle facts for a region-10 refusal", () => {
+    expect(normalizeTurnFacts({
+      text: "Меня зовут Иванов Иван Иванович, телефон +996 555 123 456. Toyota Camry 2018, регион 10, машина стоит 1.5 млн, хочу 500к",
+      pendingFacts: [],
+      currentFacts: {}
+    })).toEqual(expect.objectContaining({
+      fullName: "Иванов Иван Иванович",
+      phone: "+996555123456",
+      vehicleMake: "Toyota",
+      vehicleModel: "Camry",
+      vehicleYear: 2018,
+      vehicleValue: 1_500_000,
+      requestedAmount: 500_000,
+      vehicleRegistrationRegion: "10"
+    }));
+  });
+
+  it("extracts motorcycle collateral as an unsupported vehicle type", () => {
+    expect(normalizeTurnFacts({
+      text: "Меня зовут Иванов Иван Иванович. Хочу займ под мото, стоит 300к",
+      pendingFacts: [],
+      currentFacts: {}
+    })).toEqual(expect.objectContaining({
+      vehicleType: "motorcycle",
+      vehicleValue: 300_000
+    }));
+  });
 });

@@ -147,7 +147,7 @@ describe("Dialogue pipeline e2e scenarios", () => {
   it("refuses vehicle registration region 10 deterministically", async () => {
     const dialogue = new DialogueHarness();
 
-    const answer = await dialogue.send("Toyota Camry 2018, регион 10, стоит 1 млн, хочу 300к");
+    const answer = await dialogue.send("Меня зовут Иванов Иван Иванович, телефон +996 555 123 456. Toyota Camry 2018, регион 10, стоит 1 млн, хочу 300к");
 
     expect(dialogue.currentDecision.status).toBe("refuse");
     expect(answer).toContain("По автомобилям с регионом 10 компания займ не оформляет.");
@@ -158,7 +158,7 @@ describe("Dialogue pipeline e2e scenarios", () => {
   it("refuses unsupported motorcycle collateral", async () => {
     const dialogue = new DialogueHarness();
 
-    const answer = await dialogue.send("Хочу займ под мото, стоит 300к");
+    const answer = await dialogue.send("Меня зовут Иванов Иван Иванович, телефон +996 555 123 456. Хочу займ под мото, стоит 300к");
 
     expect(dialogue.currentDecision.status).toBe("refuse");
     expect(answer).toContain("только под легковые автомобили и минивэны");
