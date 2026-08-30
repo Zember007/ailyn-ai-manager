@@ -453,7 +453,7 @@ export function calculateLoanLimits(
 export function determineAvailablePrograms(
   facts: ApplicationFacts,
   settings: BusinessRuleSettings = defaultBusinessRuleSettings,
-  blockedRules: string[] = []
+  _blockedRules: string[] = []
 ): LoanProgram[] {
   const programs: LoanProgram[] = ["parking"];
   const residenceCategory = facts.residenceCategory ?? categorizeResidence(facts.residenceRegion);

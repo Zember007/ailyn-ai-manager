@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+const fetch = globalThis.fetch;
 const apiUrl = (process.env.AILYN_API_URL ?? "http://localhost:3001/api").replace(/\/$/, "");
 const runId = `routerai-e2e-${Date.now()}`;
 const scenarioFilter = new Set(
