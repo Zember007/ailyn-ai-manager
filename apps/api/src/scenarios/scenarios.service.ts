@@ -173,7 +173,7 @@ function evaluateScenario(scenario: Stage1Scenario): ScenarioEvaluation {
     "S1-CAR-013": () => assertDecision(id, { vehicleArrested: true }, "refuse", "arrest_or_restriction_refusal"),
     "S1-CAR-014": () => assertDecision(id, { refinancingRequested: true }, "refuse", "refinancing_refusal"),
     "S1-CAR-015": () => assertDecision(id, { buyoutRequested: true }, "refuse", "buyout_refusal"),
-    "S1-CAR-016": () => assertDecision(id, { vehicleMake: "Toyota", vehicleModel: "Camry", vehicleYear: 2000 }, "refuse", "vehicle_older_than_15"),
+    "S1-CAR-016": () => assertOldVehiclePolicy(id),
     "S1-CAR-017": () => assertDecision(id, { accidentNotDrivable: true }, "refuse", "accident_not_drivable"),
     "S1-EXI-003": () => assertDecision(id, { existingContractPaymentMessage: true }, "redirect_existing_contract", "existing_contract_redirect"),
     "S1-LIM-002": () =>
@@ -227,6 +227,24 @@ function assertLimit(
     expected: `${id}: ${key}=${expectedValue}`,
     actual: `${key}=${actualValue}`,
     assertions: [`limit:${key}`, "evaluation:deterministic"]
+  };
+}
+
+function assertOldVehiclePolicy(id: string): ScenarioEvaluation {
+  const decision = evaluateApplication({
+    vehicleMake: "Toyota", vehicleModel: "Camry", vehicleYear: 2000,
+    vehicleValue: 1_000_000, requestedAmount: 300_000,
+    requestedProgram: "without_storage", residenceRegion: "Бишкек"
+  });
+  const pass = decision.status !== "refuse" &&
+    decision.rulesApplied.includes("vehicle_older_than_15_individual_review") &&
+    decision.requiredStatements.some((statement) => statement.includes("старше 15 лет"));
+  return {
+    pass,
+    evaluationMode: "deterministic",
+    expected: `${id}: parking by default, individual review without seizure, no refusal`,
+    actual: `status=${decision.status}, rules=${decision.rulesApplied.join(",")}, statements=${decision.requiredStatements.join(" ")}`,
+    assertions: ["old_vehicle_not_refused", "old_vehicle_parking_and_individual_review", "evaluation:deterministic"]
   };
 }
 
@@ -353,10 +371,10 @@ function evaluateContractScenario(scenario: Stage1Scenario): ScenarioEvaluation 
     }),
     finance: () => ({
       pass:
-        contracts.responsePlan.includes("Точную ставку по стоянке нужно подтвердить у сотрудников") &&
+        contracts.responsePlan.includes("ставка 2,4% в месяц") &&
         contracts.responsePlan.includes("По программе без изъятия ставка определяется индивидуально"),
-      assertions: ["without_storage_rate_boundary_present", "blocked_parking_rate_preserved"],
-      actual: "Проверены ответы по ставкам без выдумывания неподтвержденных значений."
+      assertions: ["without_storage_rate_boundary_present", "approved_parking_rate_present"],
+      actual: "Проверены утверждённые ответы по ставкам без передачи расчёта модели."
     }),
     visit: () => ({
       pass:

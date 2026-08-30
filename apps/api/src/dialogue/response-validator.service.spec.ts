@@ -23,4 +23,36 @@ describe("ResponseValidatorService", () => {
     const result = service.validate({ message: "Пришлите, пожалуйста, фото ID.", decision });
     expect(result.errors).not.toContain("informal_you");
   });
+
+  it("rejects a repeated residence question when the fact is already known", () => {
+    const service = new ResponseValidatorService();
+    const result = service.validate({
+      message: "Какая прописка у собственника автомобиля?",
+      decision,
+      plan: {
+        answers: [], nextQuestions: [], knownFactKeys: ["residenceRegion"],
+        validation: { requiresPreliminaryDisclaimer: false, firstMessage: false }
+      } as any
+    });
+
+    expect(result.errors).toContain("repeated_known_fact:residenceRegion");
+  });
+
+  it("rejects an incomplete visit confirmation", () => {
+    const service = new ResponseValidatorService();
+    const result = service.validate({
+      message: "Предварительно записала Вас на 17:00.",
+      decision: { ...decision, nextAction: "target_reached" },
+      plan: {
+        answers: [], nextQuestions: [], knownFactKeys: [],
+        validation: {
+          requiresPreliminaryDisclaimer: false,
+          firstMessage: false,
+          visitConfirmation: { date: "2026-09-01", time: "17:00", address: "Б. Молодой Гвардии, 22, Бишкек", latestArrivalTime: "18:00" }
+        }
+      } as any
+    });
+
+    expect(result.errors).toContain("incomplete_visit_confirmation");
+  });
 });

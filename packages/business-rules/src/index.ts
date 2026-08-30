@@ -16,11 +16,14 @@ export type NextActionCode =
   | "collect_residence"
   | "collect_documents"
   | "collect_family_status"
+  | "collect_owner"
   | "check_guarantor"
   | "schedule_visit"
   | "redirect_existing_contract"
   | "refuse"
   | "pause"
+  | "on_the_way"
+  | "arrived"
   | "target_reached";
 
 export type ResidenceCategory = "BISHKEK" | "CHUY" | "OTHER_KG" | "FOREIGN";
@@ -48,12 +51,16 @@ export interface ApplicationFacts {
   phone?: string;
   citizenship?: string;
   residenceRegion?: string;
+  residenceText?: string;
+  residenceCategory?: ResidenceCategory;
+  residenceNeedsClarification?: boolean;
   vehicleRegistrationCountry?: string;
   vehicleRegistrationRegion?: string;
   vehicleType?: string;
   vehicleMake?: string;
   vehicleModel?: string;
   vehicleYear?: number;
+  reportedInvalidVehicleYear?: number | null;
   vehicleValue?: number;
   requestedAmount?: number;
   requestedProgram?: LoanProgram;
@@ -93,6 +100,8 @@ export interface ApplicationFacts {
   divorceCertificateReady?: boolean;
   visitConfirmationPending?: boolean;
   handedToManager?: boolean;
+  onTheWay?: boolean;
+  arrivedAtOffice?: boolean;
 }
 
 export type DocumentCode =
@@ -116,6 +125,10 @@ export interface BusinessRuleSettings {
   otherRegionMinVehicleValue: number;
   latestArrivalTime: string;
   workingDays: number[];
+  guarantorMinimumAge: number;
+  guarantorResidencePolicy: "SPEC_CONFLICT_C1" | "BISHKEK_CHUY" | "OUTSIDE_BISHKEK_CHUY";
+  guarantorPersonalPresenceRequired: boolean;
+  guarantorIdentityDocumentRequired: boolean;
   blockedRules?: string[];
 }
 
@@ -149,9 +162,11 @@ export const defaultBusinessRuleSettings: BusinessRuleSettings = {
   otherRegionMinVehicleValue: 1_000_000,
   latestArrivalTime: "18:00",
   workingDays: [1, 2, 3, 4, 5],
+  guarantorMinimumAge: 25,
+  guarantorResidencePolicy: "SPEC_CONFLICT_C1",
+  guarantorPersonalPresenceRequired: true,
+  guarantorIdentityDocumentRequired: true,
   blockedRules: [
-    "guarantor_requirements",
-    "parking_interest_rate",
     "foreign_currency_rate_source",
     "kg_holidays"
   ]
@@ -174,6 +189,7 @@ export function evaluateApplication(
     "можно свободно выезжать за границу"
   ];
   const blockedRules: string[] = [];
+  const flowStatements: string[] = [];
 
   const refusal = firstRefusal(facts, settings, rulesApplied);
   if (refusal) {
@@ -208,6 +224,22 @@ export function evaluateApplication(
     };
   }
 
+  if (facts.arrivedAtOffice) {
+    rulesApplied.push("client_arrived");
+    return {
+      status: "continue", stage: "SCHEDULING_VISIT", rulesApplied, eligiblePrograms: [], calculatedLimits: {},
+      requiredFacts: [], nextAction: "arrived", requiredStatements: [], forbiddenStatements, blockedRules
+    };
+  }
+
+  if (facts.onTheWay) {
+    rulesApplied.push("client_on_the_way");
+    return {
+      status: "continue", stage: "SCHEDULING_VISIT", rulesApplied, eligiblePrograms: [], calculatedLimits: {},
+      requiredFacts: [], nextAction: "on_the_way", requiredStatements: [], forbiddenStatements, blockedRules
+    };
+  }
+
   if (facts.clientPaused || facts.clientClosed) {
     rulesApplied.push("conversation_paused");
     return {
@@ -224,93 +256,150 @@ export function evaluateApplication(
     };
   }
 
+  if (facts.borrowerIsOwner === false) {
+    const missingOwnerFacts = ([
+      !facts.ownerFullName ? "ownerFullName" : undefined,
+      !facts.ownerResidenceRegion ? "ownerResidenceRegion" : undefined,
+      facts.ownerCanVisit === undefined ? "ownerCanVisit" : undefined,
+      !facts.ownerFamilyStatus ? "ownerFamilyStatus" : undefined
+    ] as const).filter((fact): fact is NonNullable<typeof fact> => Boolean(fact));
+    if (missingOwnerFacts.length > 0) {
+      rulesApplied.push("owner_flow");
+      return needMore("COLLECTING_RESIDENCE", "collect_owner", missingOwnerFacts, rulesApplied, [], {}, [], forbiddenStatements, blockedRules);
+    }
+  }
+
   const calculatedLimits = calculateLoanLimits(facts, settings);
   const eligiblePrograms = determineAvailablePrograms(facts, settings, blockedRules);
 
-  if (facts.vehicleYear !== undefined && facts.vehicleYear > settings.currentYear) {
+  const invalidVehicleYear = typeof facts.reportedInvalidVehicleYear === "number"
+    ? facts.reportedInvalidVehicleYear
+    : facts.vehicleYear !== undefined && facts.vehicleYear > settings.currentYear
+      ? facts.vehicleYear
+      : undefined;
+  if (invalidVehicleYear !== undefined) {
     rulesApplied.push("future_vehicle_year_correction");
     return needMore("COLLECTING_VEHICLE", "collect_vehicle", ["vehicleYear"], rulesApplied, [], {}, [
-      `Подскажите, пожалуйста, Вы, возможно, допустили опечатку. Автомобиля ${facts.vehicleYear} года выпуска пока не существует. Напишите, пожалуйста, правильный год выпуска автомобиля.`
+      `Подскажите, пожалуйста, Вы, возможно, допустили опечатку. Автомобиля ${invalidVehicleYear} года выпуска пока не существует. Напишите, пожалуйста, правильный год выпуска автомобиля.`
     ], forbiddenStatements, blockedRules);
+  }
+
+  if (facts.vehicleYear && settings.currentYear - facts.vehicleYear > 15) {
+    rulesApplied.push("vehicle_older_than_15_individual_review");
+    flowStatements.push(
+      "По общему правилу мы принимаем в залог автомобили старше 15 лет только на стоянку, но если Вы планируете получить займ без изъятия, то мы готовы рассмотреть Вашу заявку индивидуально."
+    );
   }
 
   if (facts.requestedAmount !== undefined && facts.requestedAmount < settings.minimumLoan) {
     rulesApplied.push("minimum_loan");
-    return needMore("COLLECTING_AMOUNT", "collect_amount", ["requestedAmount"], rulesApplied, eligiblePrograms, calculatedLimits, [
-      `Минимальная сумма займа — ${settings.minimumLoan} сом.`
+    return needMore("COLLECTING_AMOUNT", "collect_amount", ["requestedAmount"], rulesApplied, eligiblePrograms, calculatedLimits, [...flowStatements,
+      "К сожалению, мы не выдаем суммы меньше 50 тыс. сом. Будем рады Вам помочь, если сумма будет нужна более 50 тыс."
     ], forbiddenStatements, blockedRules);
   }
 
   if (!facts.vehicleMake && !facts.vehicleModel) {
-    return needMore("COLLECTING_VEHICLE", "collect_vehicle", ["vehicleMake", "vehicleModel", "vehicleYear"], rulesApplied, eligiblePrograms, calculatedLimits, [], forbiddenStatements, blockedRules);
+    return needMore("COLLECTING_VEHICLE", "collect_vehicle", ["vehicleMake", "vehicleModel", "vehicleYear"], rulesApplied, eligiblePrograms, calculatedLimits, flowStatements, forbiddenStatements, blockedRules);
   }
 
   if (!facts.vehicleValue) {
-    return needMore("COLLECTING_VALUE", "collect_value", ["vehicleValue"], rulesApplied, eligiblePrograms, calculatedLimits, [], forbiddenStatements, blockedRules);
+    return needMore("COLLECTING_VALUE", "collect_value", ["vehicleValue"], rulesApplied, eligiblePrograms, calculatedLimits, flowStatements, forbiddenStatements, blockedRules);
   }
 
   if (!facts.requestedAmount) {
-    return needMore("COLLECTING_AMOUNT", "collect_amount", ["requestedAmount"], rulesApplied, eligiblePrograms, calculatedLimits, [], forbiddenStatements, blockedRules);
+    return needMore("COLLECTING_AMOUNT", "collect_amount", ["requestedAmount"], rulesApplied, eligiblePrograms, calculatedLimits, flowStatements, forbiddenStatements, blockedRules);
   }
 
   if (!facts.requestedProgram) {
-    return needMore("ELIGIBILITY_CHECK", "collect_residence", ["requestedProgram"], rulesApplied, [], {}, [], forbiddenStatements, blockedRules);
+    return needMore("ELIGIBILITY_CHECK", "collect_residence", ["requestedProgram"], rulesApplied, [], {}, flowStatements, forbiddenStatements, blockedRules);
   }
 
   if (!facts.residenceRegion) {
     rulesApplied.push("residence_before_regional_limits");
-    return needMore("COLLECTING_RESIDENCE", "collect_residence", ["residenceRegion"], rulesApplied, eligiblePrograms, calculatedLimits, [], forbiddenStatements, blockedRules);
+    return needMore("COLLECTING_RESIDENCE", "collect_residence", ["residenceRegion"], rulesApplied, eligiblePrograms, calculatedLimits, flowStatements, forbiddenStatements, blockedRules);
   }
 
-  if (needsGuarantor(facts, settings)) {
+  if (requiresGuarantor(facts, settings) && facts.guarantorAvailable === false) {
+    rulesApplied.push("other_region_guarantor_unavailable");
+    return needMore("ELIGIBILITY_CHECK", "collect_residence", ["requestedProgram"], rulesApplied, ["parking"], calculatedLimits, [
+      ...flowStatements,
+      "Без поручителя оформление без изъятия продолжить нельзя. Можно выбрать программу с постановкой автомобиля на охраняемую стоянку."
+    ], forbiddenStatements, blockedRules);
+  }
+
+  if (requiresGuarantor(facts, settings) && facts.guarantorAvailable !== true) {
     rulesApplied.push("other_region_guarantor");
-    blockedRules.push("guarantor_requirements");
-    return {
-      status: "blocked",
-      stage: "CHECKING_GUARANTOR",
-      rulesApplied,
-      eligiblePrograms,
-      calculatedLimits,
-      requiredFacts: ["guarantorAvailable"],
-      nextAction: "check_guarantor",
-      requiredStatements: ["Требования к поручителю не подтверждены."],
-      forbiddenStatements,
-      blockedRules
-    };
+    if (settings.guarantorResidencePolicy === "SPEC_CONFLICT_C1") blockedRules.push("SPEC_CONFLICT_C1");
+    return needMore("CHECKING_GUARANTOR", "check_guarantor", ["guarantorAvailable"], rulesApplied, eligiblePrograms, calculatedLimits, [
+      ...flowStatements,
+      `Для займа без изъятия за пределами Бишкека и Чуйской области нужен поручитель от ${settings.guarantorMinimumAge} лет, который лично присутствует при выдаче займа и имеет с собой ID или паспорт.`
+    ], forbiddenStatements, blockedRules);
   }
 
   const missingDocuments = getMissingDocuments(facts);
   if (missingDocuments.length > 0 && !facts.visitRequested && !facts.declinedDocuments) {
     return needMore("COLLECTING_DOCUMENTS", "collect_documents", missingDocuments, rulesApplied, eligiblePrograms, calculatedLimits, [
+      ...flowStatements,
       "Попросить только недостающие документы."
     ], forbiddenStatements, blockedRules);
+  }
+
+  const documentsTarget = missingDocuments.length === 0 ? "documents" as const : undefined;
+
+  const effectiveFamilyStatus = facts.borrowerIsOwner === false ? facts.ownerFamilyStatus : facts.familyStatus;
+  if (!effectiveFamilyStatus && (facts.visitRequested || documentsTarget || facts.declinedDocuments)) {
+    return needMore("COLLECTING_FAMILY_STATUS", "collect_family_status", ["familyStatus"], rulesApplied, eligiblePrograms, calculatedLimits, flowStatements, forbiddenStatements, blockedRules, documentsTarget);
+  }
+
+  if (effectiveFamilyStatus === "married" && facts.spouseConsentReady !== true) {
+    rulesApplied.push("spouse_consent_required");
+    return needMore("COLLECTING_FAMILY_STATUS", "collect_family_status", ["spouseConsentReady"], rulesApplied, eligiblePrograms, calculatedLimits, [
+      ...flowStatements,
+      "Для визита потребуется оригинал нотариального согласия супруга или супруги."
+    ], forbiddenStatements, blockedRules, documentsTarget);
+  }
+
+  if (facts.visitRequested && (!facts.visitDate || !facts.visitTime)) {
+    return needMore("SCHEDULING_VISIT", "schedule_visit", facts.visitDate ? ["visitTime"] : ["visitDate", "visitTime"], rulesApplied, eligiblePrograms, calculatedLimits, [
+      ...flowStatements,
+      "Для оформления нужно приехать не позднее 18:00."
+    ], forbiddenStatements, blockedRules, documentsTarget);
+  }
+
+  if (effectiveFamilyStatus === "divorced" && facts.vehicleBoughtDuringMarriage === undefined) {
+    return needMore("COLLECTING_FAMILY_STATUS", "collect_family_status", ["vehicleBoughtDuringMarriage"], rulesApplied, eligiblePrograms, calculatedLimits, flowStatements, forbiddenStatements, blockedRules, documentsTarget);
+  }
+
+  if (effectiveFamilyStatus === "divorced" && facts.vehicleBoughtDuringMarriage && facts.divorceCertificateReady !== true) {
+    rulesApplied.push("divorce_certificate_required");
+    return needMore("COLLECTING_FAMILY_STATUS", "collect_family_status", ["divorceCertificateReady"], rulesApplied, eligiblePrograms, calculatedLimits, [
+      ...flowStatements,
+      "Для визита потребуется оригинал свидетельства о разводе."
+    ], forbiddenStatements, blockedRules, documentsTarget);
   }
 
   if (missingDocuments.length > 0 && facts.declinedDocuments && !facts.visitRequested) {
     rulesApplied.push("documents_declined_originals_on_visit");
     return needMore("SCHEDULING_VISIT", "schedule_visit", ["visitDate", "visitTime"], rulesApplied, eligiblePrograms, calculatedLimits, [
+      ...flowStatements,
       "Оригиналы документов нужно взять с собой на визит."
     ], forbiddenStatements, blockedRules);
   }
 
-  if (facts.familyStatus === "married" && facts.spouseConsentReady !== true) {
-    rulesApplied.push("spouse_consent_required");
-    return needMore("COLLECTING_FAMILY_STATUS", "collect_family_status", ["spouseConsentReady"], rulesApplied, eligiblePrograms, calculatedLimits, [
-      "Для визита потребуется оригинал нотариального согласия супруга или супруги."
-    ], forbiddenStatements, blockedRules);
+  if (facts.visitDate && !isWorkingDay(facts.visitDate, settings.workingDays)) {
+    rulesApplied.push("visit_non_working_day");
+    return needMore("SCHEDULING_VISIT", "schedule_visit", ["visitDate", "visitTime"], rulesApplied, eligiblePrograms, calculatedLimits, [
+      ...flowStatements,
+      "Мы работаем с понедельника по пятницу. Подскажите, пожалуйста, другую рабочую дату и время."
+    ], forbiddenStatements, blockedRules, documentsTarget);
   }
 
-  if (facts.visitRequested && (!facts.visitDate || !facts.visitTime)) {
-    return needMore("SCHEDULING_VISIT", "schedule_visit", facts.visitDate ? ["visitTime"] : ["visitDate", "visitTime"], rulesApplied, eligiblePrograms, calculatedLimits, [
-      "Для оформления нужно приехать не позднее 18:00."
-    ], forbiddenStatements, blockedRules);
-  }
-
-  if (facts.familyStatus === "divorced" && facts.vehicleBoughtDuringMarriage && facts.divorceCertificateReady !== true) {
-    rulesApplied.push("divorce_certificate_required");
-    return needMore("COLLECTING_FAMILY_STATUS", "collect_family_status", ["divorceCertificateReady"], rulesApplied, eligiblePrograms, calculatedLimits, [
-      "Для визита потребуется оригинал свидетельства о разводе."
-    ], forbiddenStatements, blockedRules);
+  if (facts.visitTime && facts.visitTime > settings.latestArrivalTime) {
+    rulesApplied.push("visit_after_latest_arrival");
+    return needMore("SCHEDULING_VISIT", "schedule_visit", ["visitTime"], rulesApplied, eligiblePrograms, calculatedLimits, [
+      ...flowStatements,
+      `Для оформления нужно приехать не позднее ${settings.latestArrivalTime}. Подскажите, пожалуйста, другое время.`
+    ], forbiddenStatements, blockedRules, documentsTarget);
   }
 
   if (facts.visitDate && facts.visitTime) {
@@ -332,20 +421,10 @@ export function evaluateApplication(
   }
 
   rulesApplied.push("target_reached_documents");
-  return {
-    status: "target_reached",
-    stage: "TARGET_REACHED_DOCUMENTS",
-    rulesApplied,
-    eligiblePrograms,
-    calculatedLimits,
-    requiredFacts: [],
-    nextAction: "target_reached",
-    requiredStatements: ["Карточка готова по полученным документам."],
-    forbiddenStatements,
-    blockedRules,
-    residenceCategory: categorizeResidence(facts.residenceRegion),
-    targetEvent: "documents"
-  };
+  return needMore("TARGET_REACHED_DOCUMENTS", "schedule_visit", ["visitDate", "visitTime"], rulesApplied, eligiblePrograms, calculatedLimits, [
+    ...flowStatements,
+    "Документы получены."
+  ], forbiddenStatements, blockedRules, "documents");
 }
 
 export function calculateLoanLimits(
@@ -358,11 +437,12 @@ export function calculateLoanLimits(
 
   const parking = Math.min(Math.floor(facts.vehicleValue * settings.parkingPercent), settings.parkingLimit);
   const residence = normalize(facts.residenceRegion);
-  const withoutStorageRegionalLimit = bishkekChuy.has(residence)
+  const residenceCategory = facts.residenceCategory ?? categorizeResidence(facts.residenceRegion);
+  const withoutStorageRegionalLimit = residenceCategory === "BISHKEK" || residenceCategory === "CHUY"
     ? settings.withoutStorageLimitBishkekChuy
     : settings.withoutStorageLimitOtherRegion;
   const withoutStorageAllowed =
-    residence === "" || bishkekChuy.has(residence) || facts.vehicleValue >= settings.otherRegionMinVehicleValue;
+    residence === "" || residenceCategory === "BISHKEK" || residenceCategory === "CHUY" || facts.vehicleValue >= settings.otherRegionMinVehicleValue;
   const withoutStorage = withoutStorageAllowed
     ? Math.min(Math.floor(facts.vehicleValue * settings.withoutStoragePercent), withoutStorageRegionalLimit)
     : undefined;
@@ -376,15 +456,12 @@ export function determineAvailablePrograms(
   blockedRules: string[] = []
 ): LoanProgram[] {
   const programs: LoanProgram[] = ["parking"];
-  const residence = normalize(facts.residenceRegion);
-  if (!facts.vehicleValue || residence === "" || bishkekChuy.has(residence)) {
+  const residenceCategory = facts.residenceCategory ?? categorizeResidence(facts.residenceRegion);
+  if (!facts.vehicleValue || !residenceCategory || residenceCategory === "BISHKEK" || residenceCategory === "CHUY") {
     programs.unshift("without_storage");
     return programs;
   }
   if (facts.vehicleValue >= settings.otherRegionMinVehicleValue) {
-    if (!blockedRules.includes("guarantor_requirements")) {
-      blockedRules.push("guarantor_requirements");
-    }
     programs.unshift("without_storage");
   }
   return programs;
@@ -440,10 +517,6 @@ function firstRefusal(
     rulesApplied.push("buyout_refusal");
     return "Компания не выкупает займы из других автоломбардов.";
   }
-  if (facts.vehicleYear && settings.currentYear - facts.vehicleYear > 15) {
-    rulesApplied.push("vehicle_older_than_15");
-    return "Для автомобиля старше 15 лет по общему правилу возможен вариант со стоянкой; без изъятия только индивидуальное рассмотрение.";
-  }
   if (facts.accidentNotDrivable) {
     rulesApplied.push("accident_not_drivable");
     return "Автомобиль после серьезного ДТП и не на ходу не принимается как подходящий залог.";
@@ -473,7 +546,8 @@ function needMore(
   calculatedLimits: DecisionResult["calculatedLimits"],
   requiredStatements: string[],
   forbiddenStatements: string[],
-  blockedRules: string[]
+  blockedRules: string[],
+  targetEvent?: "documents" | "visit"
 ): DecisionResult {
   return {
     status: "need_more_data",
@@ -485,7 +559,8 @@ function needMore(
     nextAction,
     requiredStatements,
     forbiddenStatements,
-    blockedRules
+    blockedRules,
+    targetEvent
   };
 }
 
@@ -496,18 +571,23 @@ function getMissingDocuments(facts: ApplicationFacts): DocumentCode[] {
   );
 }
 
-function needsGuarantor(facts: ApplicationFacts, settings: BusinessRuleSettings): boolean {
-  const residence = normalize(facts.residenceRegion);
+function requiresGuarantor(facts: ApplicationFacts, settings: BusinessRuleSettings): boolean {
+  const category = facts.residenceCategory ?? categorizeResidence(facts.residenceRegion);
   return Boolean(
-    residence &&
-      !bishkekChuy.has(residence) &&
+    category === "OTHER_KG" &&
       facts.vehicleValue &&
       facts.vehicleValue >= settings.otherRegionMinVehicleValue &&
-      facts.requestedProgram === "without_storage" &&
-      facts.guarantorAvailable !== true
+      facts.requestedProgram === "without_storage"
   );
 }
 
 function normalize(value: unknown): string {
   return String(value ?? "").trim().toLowerCase();
+}
+
+function isWorkingDay(value: string, workingDays: number[]): boolean {
+  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return true;
+  const date = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
+  return workingDays.includes(date.getUTCDay());
 }

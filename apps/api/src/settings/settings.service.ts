@@ -24,6 +24,18 @@ export interface Stage1Settings {
   parkingInterestRate: { value?: number; blocked: boolean };
   parkingDailyFee: { value?: number; blocked: boolean };
   otherRegionMinVehicleValue: number;
+  guarantorMinimumAge: number;
+  guarantorResidencePolicy: "SPEC_CONFLICT_C1" | "BISHKEK_CHUY" | "OUTSIDE_BISHKEK_CHUY";
+  guarantorPersonalPresenceRequired: boolean;
+  guarantorIdentityDocumentRequired: boolean;
+  reminderScheduleHours: number[];
+  reminderMaxCount: number;
+  officeDogPolicy: string;
+  currencyExchangeWalkingMinutes: string;
+  queuePolicy: string;
+  ownerAttendanceRequired: boolean;
+  notarySchedule: string;
+  notaryConsentApproximateCostSom: number;
 }
 
 export interface SettingDescriptor {
@@ -42,15 +54,15 @@ export interface SettingsResponse {
 }
 
 const defaultSettings: Stage1Settings = {
-  companyName: "Ailyn",
+  companyName: "Автоломбард «Молодой»",
   assistantName: "Айлин",
-  phone: "",
-  whatsAppPhone: "",
-  address: "Адрес офиса нужно подтвердить в настройках",
-  twoGisUrl: "",
-  googleMapsUrl: "",
+  phone: "+996 502 108 108",
+  whatsAppPhone: "+996 776 108 108",
+  address: "Б. Молодой Гвардии, 22, Бишкек",
+  twoGisUrl: "https://go.2gis.com/Y34m4",
+  googleMapsUrl: "https://maps.app.goo.gl/9xiWLVvdyRgn3Sx4A",
   timezone: "Asia/Bishkek",
-  schedule: "Понедельник-пятница",
+  schedule: "ПН–ПТ 11:00–19:00",
   latestArrivalTime: "18:00",
   withoutStoragePercent: 0.4,
   parkingPercent: 0.5,
@@ -58,14 +70,26 @@ const defaultSettings: Stage1Settings = {
   withoutStorageLimitOtherRegion: 200_000,
   parkingLimit: 2_000_000,
   minimumLoan: 50_000,
-  parkingInterestRate: { blocked: true },
-  parkingDailyFee: { blocked: true },
-  otherRegionMinVehicleValue: 1_000_000
+  parkingInterestRate: { value: 2.4, blocked: false },
+  parkingDailyFee: { value: 130, blocked: false },
+  otherRegionMinVehicleValue: 1_000_000,
+  guarantorMinimumAge: 25,
+  guarantorResidencePolicy: "SPEC_CONFLICT_C1",
+  guarantorPersonalPresenceRequired: true,
+  guarantorIdentityDocumentRequired: true,
+  reminderScheduleHours: [1, 24],
+  reminderMaxCount: 2,
+  officeDogPolicy: "SPEC_CONFLICT_C3",
+  currencyExchangeWalkingMinutes: "примерно 5–10 минут пешком",
+  queuePolicy: "Как правило, очереди нет, но точную ситуацию заранее гарантировать нельзя; лучше согласовать время визита.",
+  ownerAttendanceRequired: true,
+  notarySchedule: "ПН–ПТ 11:00–18:00",
+  notaryConsentApproximateCostSom: 1500
 };
 
 const blockedReasons: Partial<Record<keyof Stage1Settings, string>> = {
-  parkingInterestRate: "Ставка по стоянке помечена BLOCKED до письменного подтверждения.",
-  parkingDailyFee: "Ежедневная плата по стоянке помечена BLOCKED до письменного подтверждения."
+  guarantorResidencePolicy: "SPEC_CONFLICT_C1: место прописки поручителя противоречит в исходном ТЗ.",
+  officeDogPolicy: "SPEC_CONFLICT_C3: правила посещения офиса с собакой противоречат в исходном ТЗ."
 };
 
 @Injectable()
@@ -108,7 +132,11 @@ export class SettingsService {
       parkingLimit: values.parkingLimit,
       minimumLoan: values.minimumLoan,
       otherRegionMinVehicleValue: values.otherRegionMinVehicleValue,
-      latestArrivalTime: values.latestArrivalTime
+      latestArrivalTime: values.latestArrivalTime,
+      guarantorMinimumAge: values.guarantorMinimumAge,
+      guarantorResidencePolicy: values.guarantorResidencePolicy,
+      guarantorPersonalPresenceRequired: values.guarantorPersonalPresenceRequired,
+      guarantorIdentityDocumentRequired: values.guarantorIdentityDocumentRequired
     };
   }
 
@@ -150,6 +178,18 @@ function settingLabel(key: keyof Stage1Settings): string {
     parkingInterestRate: "Ставка по стоянке",
     parkingDailyFee: "Суточная плата за стоянку",
     otherRegionMinVehicleValue: "Минимальная стоимость авто для другого региона"
+    ,guarantorMinimumAge: "Минимальный возраст поручителя"
+    ,guarantorResidencePolicy: "Прописка поручителя"
+    ,guarantorPersonalPresenceRequired: "Личное присутствие поручителя"
+    ,guarantorIdentityDocumentRequired: "ID/паспорт поручителя"
+    ,reminderScheduleHours: "Расписание напоминаний, часы"
+    ,reminderMaxCount: "Максимум напоминаний"
+    ,officeDogPolicy: "Посещение с собакой"
+    ,currencyExchangeWalkingMinutes: "Расстояние до обмена валют"
+    ,queuePolicy: "Политика очереди"
+    ,ownerAttendanceRequired: "Личное присутствие собственника"
+    ,notarySchedule: "График нотариуса"
+    ,notaryConsentApproximateCostSom: "Стоимость нотариального согласия"
   };
   return labels[key];
 }

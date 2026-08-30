@@ -304,7 +304,8 @@ export class Stage1StoreService {
     };
   }
 
-  async updateFacts(application: Stage1Application, incoming: Partial<ApplicationFacts>): Promise<void> {
+  async updateFacts(application: Stage1Application, incoming: Partial<ApplicationFacts>): Promise<string[]> {
+    const changedKeys: string[] = [];
     for (const [key, newValue] of Object.entries(incoming)) {
       if (newValue === undefined) continue;
       const current = await this.prisma.applicationFact.findFirst({
@@ -340,8 +341,10 @@ export class Stage1StoreService {
         }
       });
       await this.recordAudit("fact.updated", "Application", application.id, { key, previousValue, newValue });
+      changedKeys.push(key);
     }
     await this.prisma.application.update({ where: { id: application.id }, data: { updatedAt: new Date() } });
+    return changedKeys;
   }
 
   async saveDecision(application: Stage1Application, decision: DecisionResult): Promise<void> {
@@ -362,14 +365,17 @@ export class Stage1StoreService {
     });
   }
 
-  async createManagerNotification(application: Stage1Application, kind: "initial" | "delta", payload: Record<string, unknown>): Promise<void> {
-    const idempotencyKey = `manager-${application.id}-${kind}-${JSON.stringify(payload)}`;
-    await this.prisma.managerNotification.upsert({
-      where: { idempotencyKey },
-      create: { applicationId: application.id, channel: "deferred", status: "blocked", idempotencyKey, payload: toJson({ kind, ...payload, delivery: "SPEC_GAP_MANAGER_DELIVERY" }) },
-      update: {}
+  async createManagerNotification(application: Stage1Application, kind: "initial" | "delta", payload: Record<string, unknown>): Promise<boolean> {
+    const idempotencyKey = kind === "initial"
+      ? `manager-${application.id}-initial`
+      : `manager-${application.id}-delta-${stablePayloadKey(payload)}`;
+    const existing = await this.prisma.managerNotification.findUnique({ where: { idempotencyKey } });
+    if (existing) return false;
+    await this.prisma.managerNotification.create({
+      data: { applicationId: application.id, channel: "deferred", status: "blocked", idempotencyKey, payload: toJson({ kind, ...payload, delivery: "SPEC_GAP_MANAGER_DELIVERY" }) }
     });
     await this.recordAudit("manager_notification.created", "Application", application.id, { kind, delivery: "SPEC_GAP_MANAGER_DELIVERY" });
+    return true;
   }
 
   async scheduleReminder(application: Stage1Application, dueAt: Date, sequence: number): Promise<void> {
@@ -532,4 +538,14 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function toJson(value: unknown): Prisma.InputJsonValue {
   return JSON.parse(JSON.stringify(value ?? null)) as Prisma.InputJsonValue;
+}
+
+function stablePayloadKey(payload: Record<string, unknown>): string {
+  const normalized = Object.keys(payload).sort().map((key) => `${key}:${JSON.stringify(payload[key])}`).join("|");
+  let hash = 2166136261;
+  for (let index = 0; index < normalized.length; index += 1) {
+    hash ^= normalized.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16);
 }

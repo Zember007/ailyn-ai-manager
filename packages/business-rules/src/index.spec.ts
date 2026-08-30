@@ -45,7 +45,8 @@ describe("business rules", () => {
 
   it("does not request documents again after the client declined to send them", () => {
     const result = evaluateApplication({ vehicleMake: "Toyota", vehicleModel: "Camry", vehicleYear: 2021, vehicleValue: 1_500_000, requestedAmount: 500_000, requestedProgram: "parking", residenceRegion: "Бишкек", declinedDocuments: true });
-    expect(result.nextAction).toBe("schedule_visit");
+    expect(result.nextAction).toBe("collect_family_status");
+    expect(result.requiredFacts).toEqual(["familyStatus"]);
   });
 
   it("requires residence before final regional limit decision", () => {
@@ -62,7 +63,7 @@ describe("business rules", () => {
     expect(result.rulesApplied).toContain("residence_before_regional_limits");
   });
 
-  it("marks other-region guarantor requirements as blocked when exact approved data is absent", () => {
+  it("continues the other-region guarantor flow while preserving only the residence-policy conflict", () => {
     const result = evaluateApplication({
       vehicleMake: "Toyota",
       vehicleModel: "Camry",
@@ -73,8 +74,10 @@ describe("business rules", () => {
       residenceRegion: "Ош"
     });
 
-    expect(result.status).toBe("blocked");
-    expect(result.blockedRules).toContain("guarantor_requirements");
+    expect(result.status).toBe("need_more_data");
+    expect(result.nextAction).toBe("check_guarantor");
+    expect(result.blockedRules).toContain("SPEC_CONFLICT_C1");
+    expect(result.requiredStatements.join(" ")).toContain("25");
   });
 
   it("flags loan amount below confirmed minimum", () => {
@@ -87,5 +90,100 @@ describe("business rules", () => {
 
     expect(result.stage).toBe("COLLECTING_AMOUNT");
     expect(result.requiredStatements.join(" ")).toContain("50");
+  });
+
+  it("does not refuse a vehicle older than 15 years", () => {
+    const result = evaluateApplication({
+      vehicleMake: "Toyota",
+      vehicleModel: "Camry",
+      vehicleYear: 2000,
+      vehicleValue: 900_000,
+      requestedAmount: 300_000,
+      requestedProgram: "without_storage",
+      residenceCategory: "BISHKEK",
+      residenceRegion: "Бишкек"
+    });
+
+    expect(result.status).not.toBe("refuse");
+    expect(result.rulesApplied).toContain("vehicle_older_than_15_individual_review");
+    expect(result.requiredStatements.join(" ")).toContain("старше 15 лет");
+  });
+
+  it("offers parking when an other-region client has no guarantor", () => {
+    const result = evaluateApplication({
+      vehicleMake: "Toyota",
+      vehicleModel: "Camry",
+      vehicleYear: 2021,
+      vehicleValue: 1_200_000,
+      requestedAmount: 200_000,
+      requestedProgram: "without_storage",
+      residenceCategory: "OTHER_KG",
+      residenceRegion: "Ош",
+      guarantorAvailable: false
+    });
+
+    expect(result.status).toBe("need_more_data");
+    expect(result.requiredFacts).toEqual(["requestedProgram"]);
+    expect(result.requiredStatements.join(" ")).toContain("стоянк");
+  });
+
+  it("hands off complete documents but keeps collecting family status", () => {
+    const result = evaluateApplication({
+      vehicleMake: "Toyota",
+      vehicleModel: "Camry",
+      vehicleYear: 2021,
+      vehicleValue: 1_200_000,
+      requestedAmount: 200_000,
+      requestedProgram: "parking",
+      residenceCategory: "BISHKEK",
+      residenceRegion: "Бишкек",
+      documents: {
+        id_front: "received",
+        id_back: "received",
+        vehicle_registration_front: "received",
+        vehicle_registration_back: "received"
+      }
+    });
+
+    expect(result.targetEvent).toBe("documents");
+    expect(result.nextAction).toBe("collect_family_status");
+    expect(result.requiredFacts).toEqual(["familyStatus"]);
+  });
+
+  it("does not schedule a visit before family status is known", () => {
+    const result = evaluateApplication({
+      vehicleMake: "Toyota",
+      vehicleModel: "Camry",
+      vehicleYear: 2021,
+      vehicleValue: 1_200_000,
+      requestedAmount: 200_000,
+      requestedProgram: "parking",
+      residenceCategory: "BISHKEK",
+      residenceRegion: "Бишкек",
+      visitRequested: true
+    });
+
+    expect(result.nextAction).toBe("collect_family_status");
+    expect(result.requiredFacts).toEqual(["familyStatus"]);
+  });
+
+  it("requires spouse consent before scheduling a visit with original documents", () => {
+    const result = evaluateApplication({
+      vehicleMake: "Toyota",
+      vehicleModel: "Camry",
+      vehicleYear: 2021,
+      vehicleValue: 1_200_000,
+      requestedAmount: 200_000,
+      requestedProgram: "parking",
+      residenceCategory: "BISHKEK",
+      residenceRegion: "Бишкек",
+      declinedDocuments: true,
+      familyStatus: "married",
+      spouseConsentReady: false
+    });
+
+    expect(result.rulesApplied).toContain("spouse_consent_required");
+    expect(result.nextAction).toBe("collect_family_status");
+    expect(result.requiredFacts).toEqual(["spouseConsentReady"]);
   });
 });

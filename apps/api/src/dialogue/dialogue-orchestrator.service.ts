@@ -9,6 +9,12 @@ import { Stage1StoreService, type Stage1Application, type Stage1Conversation } f
 import { SettingsService } from "../settings/settings.service.js";
 import { BackendLogsService } from "../logs/backend-logs.service.js";
 import { KnowledgeBaseResolverService } from "./knowledge-base-resolver.service.js";
+import { normalizeTurnFacts } from "./fact-normalizer.js";
+
+type RecoveryHint = {
+  unresolvedFacts: string[];
+  reason: "unrecognized_reply" | "attachment_issue";
+};
 
 export interface DialogueResult {
   conversation: Stage1Conversation;
@@ -101,10 +107,13 @@ export class DialogueOrchestratorService {
           attachments: message.attachments.length
         }
       });
+      const pendingFacts = application.decision?.requiredFacts ?? [];
+      const businessRuleSettings = await this.settings.getBusinessRuleSettings();
       const extraction = await this.ai.getProvider().extract({
         text: message.text,
         attachments: message.attachments,
-        facts: application.facts
+        facts: application.facts,
+        pendingFacts
       });
 
       await this.logs.debug("dialogue.receive", "Extraction completed", {
@@ -120,12 +129,29 @@ export class DialogueOrchestratorService {
       for (const fact of extraction.facts) {
         (incomingFacts as Record<string, unknown>)[fact.key] = fact.value;
       }
+      if (typeof incomingFacts.vehicleYear === "number") {
+        if (incomingFacts.vehicleYear > businessRuleSettings.currentYear) {
+          incomingFacts.reportedInvalidVehicleYear = incomingFacts.vehicleYear;
+          delete incomingFacts.vehicleYear;
+        } else if (application.facts.reportedInvalidVehicleYear) {
+          incomingFacts.reportedInvalidVehicleYear = null;
+        }
+      }
       const text = (message.text ?? "").toLowerCase();
       if (text.includes("сменился собственник") || text.includes("другой собственник")) {
         incomingFacts.ownerChanged = true;
       }
       if (text.includes("сменился номер") || text.includes("другой госномер") || text.includes("новый госномер")) {
         incomingFacts.plateChanged = true;
+      }
+      const contextualFacts = normalizeTurnFacts({
+        text: message.text,
+        pendingFacts,
+        currentFacts: application.facts
+      });
+      if (contextualFacts.residenceNeedsClarification) {
+        delete incomingFacts.residenceRegion;
+        delete incomingFacts.residenceCategory;
       }
 
       if (incomingFacts.ownerChanged || incomingFacts.plateChanged) {
@@ -139,8 +165,18 @@ export class DialogueOrchestratorService {
       }
 
       const documentFacts = await this.processAttachments(conversation.id, inbound.id, message.attachments);
-      await this.store.updateFacts(application, mergeFacts(incomingFacts, documentFacts));
+      const changedFactKeys = await this.store.updateFacts(application, mergeFacts(incomingFacts, contextualFacts, documentFacts.facts)) ?? [];
       application = (await this.store.getApplication(application.id)) ?? application;
+      const recovery = detectRecoveryHint({
+        previousFacts: originalApplication.facts,
+        currentFacts: application.facts,
+        pendingFacts,
+        changedFactKeys,
+        extractionQuestions: extraction.questions.length,
+        text: message.text,
+        attachments: message.attachments,
+        attachmentIssueDetected: documentFacts.hasRecognitionIssue
+      });
 
       await this.logs.debug("dialogue.receive", "Facts updated", {
         conversationId,
@@ -150,7 +186,6 @@ export class DialogueOrchestratorService {
         }
       });
 
-      const businessRuleSettings = await this.settings.getBusinessRuleSettings();
       await this.logs.debug("dialogue.receive", "Business rule settings loaded", {
         conversationId,
         metadata: {
@@ -163,8 +198,9 @@ export class DialogueOrchestratorService {
       await this.store.saveDecision(application, decision);
       application = (await this.store.getApplication(application.id)) ?? { ...application, decision, status: decision.status, stage: decision.stage };
 
-      if (decision.targetEvent) {
-        await this.store.createManagerNotification(application, application.facts.handedToManager ? "delta" : "initial", {
+      let managerEvent: "initial" | "delta" | null = null;
+      if (decision.targetEvent && !application.facts.handedToManager) {
+        const created = await this.store.createManagerNotification(application, "initial", {
           event: decision.targetEvent,
           fullName: application.facts.fullName,
           phone: application.facts.phone,
@@ -174,7 +210,19 @@ export class DialogueOrchestratorService {
           visitDate: application.facts.visitDate,
           visitTime: application.facts.visitTime
         });
+        if (created !== false) managerEvent = "initial";
         await this.store.updateFacts(application, { handedToManager: true });
+        application = (await this.store.getApplication(application.id)) ?? application;
+      } else if (application.facts.handedToManager && changedFactKeys.some((key) => managerDeltaFactKeys.has(key))) {
+        const created = await this.store.createManagerNotification(application, "delta", {
+          changedFactKeys: changedFactKeys.filter((key) => managerDeltaFactKeys.has(key)),
+          requestedAmount: application.facts.requestedAmount,
+          requestedProgram: application.facts.requestedProgram,
+          visitDate: application.facts.visitDate,
+          visitTime: application.facts.visitTime,
+          clientPaused: application.facts.clientPaused
+        });
+        if (created !== false) managerEvent = "delta";
       }
 
       await this.logs.debug("dialogue.receive", "Decision evaluated", {
@@ -192,6 +240,9 @@ export class DialogueOrchestratorService {
         decision,
         isFirstMessage: isFirstClientTurn,
         questions: extraction.questions,
+        intents: extraction.intents,
+        recovery,
+        previousAssistantMessages: conversation.messages.filter((item) => item.author === "ai").map((item) => item.body),
         knowledgeAnswers: this.knowledge ? await this.knowledge.resolve(extraction.questions, extraction.language === "kg" ? "kg" : "ru") : []
       });
 
@@ -236,7 +287,25 @@ export class DialogueOrchestratorService {
           sourceMessageId: inbound.id,
           routerAiModel: generated.model,
           promptVersion: generated.promptVersion,
-          validation
+          validation,
+          trace: {
+            conversationId: conversation.id,
+            applicationId: application.id,
+            inboundMessageIds: [inbound.id],
+            detectedLanguage: extraction.language,
+            intents: extraction.intents,
+            questionsDetected: extraction.questions.map((question) => question.text),
+            factsExtracted: extraction.facts,
+            factsChanged: changedFactKeys,
+            attachments: message.attachments.map((attachment) => attachment.id),
+            kbKeysUsed: plan.trace?.kbKeys ?? [],
+            rulesFired: decision.rulesApplied,
+            eligibilityResult: decision.status,
+            nextAction: decision.nextAction,
+            currentStageAfter: decision.stage,
+            managerEvent,
+            responseValidation: { passed: validation.passed, violations: validation.errors }
+          }
         }
       });
 
@@ -283,14 +352,18 @@ export class DialogueOrchestratorService {
     conversationId: string,
     messageId: string,
     attachments: InboundMessage["attachments"]
-  ): Promise<Partial<ApplicationFacts>> {
+  ): Promise<{ facts: Partial<ApplicationFacts>; hasRecognitionIssue: boolean }> {
     const documents: ApplicationFacts["documents"] = {};
     const extractedFacts: Partial<ApplicationFacts> = {};
+    let hasRecognitionIssue = false;
     for (const attachment of attachments) {
       const vision = await this.ai.getProvider().analyzeImage({ attachment });
       const docCode = mapVisionTypeToDocument(vision.type);
       if (docCode) {
         documents[docCode] = vision.quality === "poor" ? "poor_quality" : "received";
+      }
+      if (vision.quality !== "good" || vision.type === "unknown") {
+        hasRecognitionIssue = true;
       }
       for (const fact of vision.extractedFacts) {
         (extractedFacts as Record<string, unknown>)[fact.key] = fact.value;
@@ -306,9 +379,19 @@ export class DialogueOrchestratorService {
         storageKey: typeof attachment.metadata?.storageKey === "string" ? attachment.metadata.storageKey : undefined
       });
     }
-    return mergeFacts(Object.keys(documents).length > 0 ? { documents } : {}, extractedFacts);
+    return {
+      facts: mergeFacts(Object.keys(documents).length > 0 ? { documents } : {}, extractedFacts),
+      hasRecognitionIssue
+    };
   }
 }
+
+const managerDeltaFactKeys = new Set<string>([
+  "requestedAmount", "requestedProgram", "visitDate", "visitTime", "clientPaused",
+  "residenceRegion", "residenceCategory", "guarantorAvailable", "spouseConsentReady",
+  "vehicleInCredit", "vehiclePledged", "vehicleArrested", "registrationRestricted",
+  "ownerCanVisit", "vehicleRegistrationRegion"
+]);
 
 function mergeFacts(...items: Partial<ApplicationFacts>[]): Partial<ApplicationFacts> {
   const merged: Partial<ApplicationFacts> = {};
@@ -322,6 +405,54 @@ function mergeFacts(...items: Partial<ApplicationFacts>[]): Partial<ApplicationF
     }
   }
   return merged;
+}
+
+function detectRecoveryHint(input: {
+  previousFacts: ApplicationFacts;
+  currentFacts: ApplicationFacts;
+  pendingFacts: (keyof ApplicationFacts | DocumentCode)[];
+  changedFactKeys: string[];
+  extractionQuestions: number;
+  text?: string;
+  attachments: InboundMessage["attachments"];
+  attachmentIssueDetected: boolean;
+}): RecoveryHint | undefined {
+  if (input.pendingFacts.length === 0) return undefined;
+  if (input.extractionQuestions > 0) return undefined;
+  if (!input.text?.trim() && input.attachments.length === 0) return undefined;
+
+  const unresolvedFacts = input.pendingFacts.filter((fact) => !isFactSatisfied(input.currentFacts, fact)).map(String);
+  if (unresolvedFacts.length === 0) return undefined;
+
+  const anyPendingResolved = input.pendingFacts.some((fact) =>
+    isFactSatisfied(input.currentFacts, fact) && !isFactSatisfied(input.previousFacts, fact)
+  );
+  if (anyPendingResolved) return undefined;
+
+  if (input.attachments.length > 0 && input.attachmentIssueDetected) {
+    return { unresolvedFacts, reason: "attachment_issue" };
+  }
+
+  if (input.changedFactKeys.length === 0 || unresolvedFacts.length === input.pendingFacts.length) {
+    return { unresolvedFacts, reason: "unrecognized_reply" };
+  }
+
+  return undefined;
+}
+
+function isFactSatisfied(facts: ApplicationFacts, fact: keyof ApplicationFacts | DocumentCode): boolean {
+  if (isDocumentCode(fact)) {
+    return facts.documents?.[fact] === "received";
+  }
+  if (fact === "residenceRegion") {
+    return Boolean(facts.residenceRegion) && facts.residenceNeedsClarification !== true;
+  }
+  const value = facts[fact];
+  return value !== undefined && value !== null && value !== "";
+}
+
+function isDocumentCode(value: keyof ApplicationFacts | DocumentCode): value is DocumentCode {
+  return value === "id_front" || value === "id_back" || value === "vehicle_registration_front" || value === "vehicle_registration_back" || value === "car_photo" || value === "unknown";
 }
 
 function mapVisionTypeToDocument(type: string): DocumentCode | undefined {

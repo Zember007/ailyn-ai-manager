@@ -110,6 +110,29 @@ describe("RouterAiProvider", () => {
     ]));
   });
 
+  it("parses decimal millions and compact thousands without losing magnitude", async () => {
+    const provider = new RouterAiProvider({ isConfigured: vi.fn().mockReturnValue(false) } as any);
+    const result = await provider.extract({
+      text: "Camry 2021, стоит 1.5 млн, нужно 500к",
+      attachments: [],
+      facts: {}
+    });
+
+    expect(result.facts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: "vehicleValue", value: 1_500_000 }),
+      expect.objectContaining({ key: "requestedAmount", value: 500_000 })
+    ]));
+  });
+
+  it("does not mark the vehicle as pledged from a generic new-loan phrase", async () => {
+    const provider = new RouterAiProvider({ isConfigured: vi.fn().mockReturnValue(false) } as any);
+    const generic = await provider.extract({ text: "Хочу займ под залог автомобиля", attachments: [], facts: {} });
+    const explicit = await provider.extract({ text: "Машина сейчас в кредите", attachments: [], facts: {} });
+
+    expect(generic.facts).not.toEqual(expect.arrayContaining([expect.objectContaining({ key: "vehicleInCredit", value: true })]));
+    expect(explicit.facts).toEqual(expect.arrayContaining([expect.objectContaining({ key: "vehicleInCredit", value: true })]));
+  });
+
   it("extracts attachment facts from text documents and classifies them conservatively", async () => {
     process.env.DATABASE_URL ??= "postgresql://test:test@localhost:5432/ailyn";
     process.env.REDIS_URL ??= "redis://localhost:6379";

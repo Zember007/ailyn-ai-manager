@@ -37,7 +37,16 @@ export interface ResponsePlanV62 {
     visitConfirmation?: { date: string; time: string; address: string; latestArrivalTime: string };
     firstMessage: boolean;
   };
-  trace: { intents: string[]; questionCount: number; kbKeys: string[]; blocked: string[] };
+  trace: {
+    intents: string[];
+    questionCount: number;
+    kbKeys: string[];
+    blocked: string[];
+    recovery?: {
+      unresolvedFacts: string[];
+      reason: "unrecognized_reply" | "attachment_issue";
+    };
+  };
 }
 
 export interface DeferredIntegrationResult<T> {

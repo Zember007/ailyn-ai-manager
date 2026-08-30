@@ -20,24 +20,24 @@ const seeds: Omit<KnowledgeItemDto, "id">[] = [
   {
     key: "documents_required",
     category: "documents",
-    aliases: ["документы", "что нужно взять"],
-    answerRu: "Нужны фото ID и свидетельства о регистрации автомобиля с обеих сторон; оригиналы нужно взять на визит.",
+    aliases: ["какие документы", "что из документов", "что нужно взять"],
+    answerRu: "Для оформления понадобятся:\n- ID (паспорт);\n- свидетельство о регистрации автомобиля;\n- нотариальное согласие супруга, если Вы состоите в браке. Нотариус находится в нашем здании, примерная стоимость оформления согласия — 1500 сом.",
     priority: 100,
     status: "approved",
-    version: 1,
+    version: 2,
     active: true
   },
   {
     key: "existing_contract_redirect",
     category: "existing_contract",
     aliases: ["действующий договор", "оплата", "задолженность"],
-    answerRu: "По действующему договору нужно обратиться к сотрудникам компании.",
+    answerRu: "Я Айлин — виртуальный помощник по вопросам оформления новых займов. Если у Вас уже оформлен займ, пожалуйста, позвоните по телефону +996 502 108 108 или напишите в WhatsApp +996 776 108 108. Наши специалисты проверят информацию по Вашему договору и помогут решить Ваш вопрос.",
     priority: 100,
     status: "approved",
-    version: 1,
+    version: 2,
     active: true
-  }
-  ,{
+  },
+  {
     key: "office_location",
     category: "office",
     aliases: ["адрес", "где вы", "где находится офис", "где ваш офис", "офис", "как доехать"],
@@ -50,17 +50,17 @@ const seeds: Omit<KnowledgeItemDto, "id">[] = [
   {
     key: "without_seizure_rate",
     category: "loan_terms",
-    aliases: ["ставка", "процент", "проценты"],
-    answerRu: "По программе без изъятия ставка определяется индивидуально после осмотра автомобиля и проверки документов.",
+    aliases: ["ставка без изъятия", "процент без изъятия", "без изъятия процент"],
+    answerRu: "Программа БЕЗ ИЗЪЯТИЯ (авто остаётся у клиента): ставка определяется индивидуально после осмотра; сумма до 600 000 сом.",
     priority: 90,
     status: "approved",
-    version: 1,
+    version: 2,
     active: true
   },
   {
     key: "personal_presence",
     category: "loan_terms",
-    aliases: ["дистанционно", "без приезда", "лично приезжать", "по доверенности"],
+    aliases: ["лично приезжать", "по доверенности", "нужно присутствие собственника"],
     answerRu: "Нет, собственник автомобиля должен лично присутствовать при осмотре автомобиля и выдаче займа.",
     priority: 90,
     status: "approved",
@@ -76,6 +76,181 @@ const seeds: Omit<KnowledgeItemDto, "id">[] = [
     status: "approved",
     version: 1,
     active: true
+  },
+  {
+    key: "parking_rate",
+    category: "loan_terms",
+    aliases: ["ставка по стоянке", "процент по стоянке", "стоянка процент", "парковка ставка"],
+    answerRu: "Программа со стоянкой (авто на парковке): ставка 2,4% в месяц + стоимость парковки 130 сом/сутки; сумма до 2 000 000 сом.",
+    priority: 100, status: "approved", version: 1, active: true
+  },
+  {
+    key: "interest_rates_overview",
+    category: "loan_terms",
+    aliases: ["какие ставки", "какой процент", "какие проценты", "условия по процентам"],
+    answerRu: "По программе без изъятия ставка определяется индивидуально после осмотра автомобиля. По программе со стоянкой ставка составляет 2,4% в месяц, дополнительно оплачивается парковка 130 сом в сутки.",
+    priority: 80, status: "approved", version: 1, active: true
+  },
+  {
+    key: "remote_application",
+    category: "process",
+    aliases: ["дистанционно", "онлайн оформление", "без приезда"],
+    answerRu: "Нет, собственник автомобиля должен лично присутствовать при осмотре автомобиля и выдаче займа.",
+    priority: 100, status: "approved", version: 1, active: true
+  },
+  {
+    key: "processing_duration",
+    category: "process",
+    aliases: ["сколько занимает оформление", "как долго оформлять", "время оформления"],
+    answerRu: "Обычно оформление занимает 1 час. Присланные Вами документы помогут нам сократить время выдачи денег.",
+    priority: 90, status: "approved", version: 1, active: true
+  },
+  {
+    key: "money_disbursement_time",
+    category: "process",
+    aliases: ["когда выдаются деньги", "когда получу деньги"],
+    answerRu: "Сразу после осмотра автомобиля и подписания договора займа. Как правило, вся процедура занимает около 1 часа.",
+    priority: 90, status: "approved", version: 1, active: true
+  },
+  {
+    key: "cash_only",
+    category: "finance",
+    aliases: ["на карту", "безнал", "наличными", "способ выдачи"],
+    answerRu: "Займ выдаётся только наличными в кыргызских сомах. На банковскую карту займ не выдаётся.",
+    priority: 90, status: "approved", version: 1, active: true
+  },
+  {
+    key: "early_repayment",
+    category: "finance",
+    aliases: ["досрочно погасить", "досрочное погашение"],
+    answerRu: "Да, можно. Подробный расчет суммы к погашению мы сделаем на дату закрытия займа. При этом если с момента займа прошло меньше месяца, то оплатить % придется за месяц. При закрытии займа начиная с 31 дня оплата процентов рассчитывается день в день.",
+    priority: 90, status: "approved", version: 1, active: true
+  },
+  {
+    key: "partial_repayment",
+    category: "finance",
+    aliases: ["частично погасить", "частичное погашение"],
+    answerRu: "Да, возможно частично гасить займ. В таком случае Вам не придется платить лишние проценты.",
+    priority: 90, status: "approved", version: 1, active: true
+  },
+  {
+    key: "loan_term",
+    category: "finance",
+    aliases: ["срок займа", "на какой срок", "продлить договор", "продление займа"],
+    answerRu: "Срок займа — 30 дней, после чего нужно оплатить проценты за пользование займом. Далее займ можно продлевать, ежемесячно оплачивая проценты.",
+    priority: 90, status: "approved", version: 1, active: true
+  },
+  {
+    key: "gps_requirement",
+    category: "loan_terms",
+    aliases: ["gps", "трекер", "маячок"],
+    answerRu: "Это зависит от суммы займа и состояния автомобиля. Точно ответить сможем после осмотра автомобиля.",
+    priority: 80, status: "approved", version: 1, active: true
+  },
+  {
+    key: "second_key",
+    category: "documents",
+    aliases: ["второй ключ", "запасной ключ"],
+    answerRu: "Нет, он нам не нужен.",
+    priority: 90, status: "approved", version: 1, active: true
+  },
+  {
+    key: "same_day_application",
+    category: "process",
+    aliases: ["оформить сегодня", "получить сегодня"],
+    answerRu: "Если офис работает и документы в порядке, оформление возможно в день обращения. Мы работаем до 19:00. Вам надо подъехать до 18:00, чтобы успеть всё оформить.",
+    priority: 90, status: "approved", version: 1, active: true
+  },
+  {
+    key: "vehicle_inspection",
+    category: "process",
+    aliases: ["как проходит осмотр", "нужна сто", "сколько длится оценка", "оценка платная"],
+    answerRu: "Проводятся внешний осмотр автомобиля и проверка документов. СТО не требуется, осмотр обычно занимает около 5 минут. Окончательная оценка проводится при визите в офис.",
+    priority: 80, status: "approved", version: 1, active: true
+  },
+  {
+    key: "registration_original_required",
+    category: "documents",
+    aliases: ["без техпаспорта", "без свидетельства о регистрации", "нет техпаспорта"],
+    answerRu: "К сожалению, мы не сможем Вам выдать займ без оригинала свидетельства о регистрации.",
+    priority: 100, status: "approved", version: 1, active: true
+  },
+  {
+    key: "tunduk_identity",
+    category: "documents",
+    aliases: ["нет паспорта", "нет id", "түндүк", "tunduk"],
+    answerRu: "Вы можете использовать приложение Tunduk для идентификации личности.",
+    priority: 90, status: "approved", version: 1, active: true
+  },
+  {
+    key: "credit_history",
+    category: "eligibility",
+    aliases: ["кредитная история", "плохая кредитная история"],
+    answerRu: "Кредитная история не влияет на рассмотрение заявки.",
+    priority: 90, status: "approved", version: 1, active: true
+  },
+  {
+    key: "income_documents",
+    category: "eligibility",
+    aliases: ["справка о доходах", "официальная работа", "безработный"],
+    answerRu: "Официальная работа и справка о доходах для оформления не требуются.",
+    priority: 90, status: "approved", version: 1, active: true
+  },
+  {
+    key: "temporary_residence",
+    category: "eligibility",
+    aliases: ["временная прописка", "временная регистрация"],
+    answerRu: "Да, оформление по временной прописке возможно.",
+    priority: 90, status: "approved", version: 1, active: true
+  },
+  {
+    key: "documents_in_advance",
+    category: "documents",
+    aliases: ["документы заранее", "отправить фото документов", "привезти документы заранее"],
+    answerRu: "Да, можно предварительно привезти или отправить фотографии документов в WhatsApp.",
+    priority: 90, status: "approved", version: 1, active: true
+  },
+  {
+    key: "vehicle_cleanliness",
+    category: "process",
+    aliases: ["мыть авто", "машина грязная", "грязный автомобиль"],
+    answerRu: "Желательно, чтобы автомобиль был чистым — так его проще оценить. Но это не обязательно.",
+    priority: 80, status: "approved", version: 1, active: true
+  },
+  {
+    key: "document_privacy",
+    category: "documents",
+    aliases: ["конфиденциальность документов", "безопасно отправлять документы", "куда пойдут документы"],
+    answerRu: "Да. Полученные документы используются только для рассмотрения заявки и оформления займа.",
+    priority: 90, status: "approved", version: 1, active: true
+  },
+  {
+    key: "parking_details",
+    category: "office",
+    aliases: ["где стоянка", "посмотреть парковку", "охраняемая стоянка"],
+    answerRu: "Вопрос осмотра парковки решается непосредственно с менеджером при Вашем визите в офис. Во время оформления займа менеджер подробно расскажет об условиях хранения автомобиля и ответит на все Ваши вопросы.",
+    priority: 80, status: "approved", version: 1, active: true
+  },
+  {
+    key: "walk_in_visit",
+    category: "visit",
+    aliases: ["без записи", "можно приехать просто так"],
+    answerRu: "Да, но для сокращения ожидания лучше заранее сообщить время приезда.",
+    priority: 80, status: "approved", version: 1, active: true
+  },
+  {
+    key: "notary",
+    category: "documents",
+    aliases: ["нотариус", "нотариальное согласие где"],
+    answerRu: "Нотариус находится в нашем здании и работает в рабочие дни с 11:00 до 18:00. Примерная стоимость нотариального согласия — 1500 сом.",
+    priority: 90, status: "approved", version: 1, active: true
+  },
+  {
+    key: "foreign_currency_disbursement",
+    category: "finance",
+    aliases: ["займ в долларах", "выдаёте доллары", "в иностранной валюте"],
+    answerRu: "Нет. Займы выдаются только в кыргызских сомах наличными.",
+    priority: 100, status: "approved", version: 1, active: true
   }
 ];
 
@@ -148,12 +323,24 @@ export class KnowledgeService {
 
   async resolveAll(question: string, language: "ru" | "kg"): Promise<KnowledgeItemDto[]> {
     await this.ensureSeeds();
-    const normalized = question.toLocaleLowerCase();
     const items = await this.list();
-    const matched = items
-      .filter((item) => item.active && item.status === "approved")
-      .filter((item) => item.aliases.some((alias) => normalized.includes(alias.toLocaleLowerCase())) || (item.key === "office_location" && /офис|адрес|где/.test(normalized)))
-      .sort((a, b) => b.priority - a.priority);
+    const approved = items.filter((item) => item.active && item.status === "approved");
+    const segments = splitQuestion(question);
+    const matched = deduplicateItems(
+      segments.flatMap((segment) => {
+        const candidates = approved
+          .map((item) => ({ item, score: aliasScore(item, segment) }))
+          .filter((candidate) => candidate.score > 0)
+          .sort((a, b) => b.score - a.score || b.item.priority - a.item.priority);
+        const bestByCategory = new Map<string, KnowledgeItemDto>();
+        for (const candidate of candidates) {
+          if (!bestByCategory.has(candidate.item.category)) {
+            bestByCategory.set(candidate.item.category, candidate.item);
+          }
+        }
+        return [...bestByCategory.values()];
+      })
+    );
     if (language === "kg") {
       // SPEC_GAP_C9: no machine-generated replacement for an approved fixed answer.
       return matched;
@@ -170,9 +357,9 @@ export class KnowledgeService {
 
   private async ensureSeeds(): Promise<void> {
     for (const seed of seeds) {
-      await this.prisma.knowledgeItem.upsert({
-        where: { key: seed.key },
-        create: {
+      const existing = await this.prisma.knowledgeItem.findUnique({ where: { key: seed.key } });
+      if (!existing) {
+        await this.prisma.knowledgeItem.create({ data: {
           key: seed.key,
           category: seed.category,
           aliases: seed.aliases,
@@ -183,11 +370,45 @@ export class KnowledgeService {
           status: seed.status,
           version: seed.version,
           active: seed.active
-        },
-        update: {}
-      });
+        } });
+      } else if (existing.version < seed.version) {
+        await this.prisma.knowledgeItem.update({
+          where: { key: seed.key },
+          data: {
+            category: seed.category,
+            aliases: seed.aliases,
+            answerRu: seed.answerRu,
+            answerKg: seed.answerKg,
+            conditions: toJson(seed.conditions ?? {}),
+            priority: seed.priority,
+            status: seed.status,
+            version: seed.version,
+            active: seed.active
+          }
+        });
+      }
     }
   }
+}
+
+function splitQuestion(question: string): string[] {
+  return question
+    .toLocaleLowerCase("ru-RU")
+    .split(/(?:[?!;,]+|\s+и\s+(?=(?:какие?|где|сколько|можно|нуж|есть|работ)))/i)
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+}
+
+function aliasScore(item: KnowledgeItemDto, segment: string): number {
+  const aliases = item.aliases.map((alias) => alias.toLocaleLowerCase("ru-RU"));
+  if (item.key === "office_location" && /(?:где|адрес|как доехать).*(?:офис|находит)|(?:офис|адрес).*(?:где|как)/i.test(segment)) {
+    aliases.push("офис адрес");
+  }
+  return aliases.reduce((best, alias) => segment.includes(alias) ? Math.max(best, alias.length) : best, 0);
+}
+
+function deduplicateItems(items: KnowledgeItemDto[]): KnowledgeItemDto[] {
+  return items.filter((item, index) => items.findIndex((candidate) => candidate.key === item.key) === index);
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

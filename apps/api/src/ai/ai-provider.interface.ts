@@ -1,4 +1,4 @@
-import type { ApplicationFacts, DecisionResult } from "@ailyn/business-rules";
+import type { ApplicationFacts, DecisionResult, DocumentCode } from "@ailyn/business-rules";
 
 export interface InboundAttachment {
   id: string;
@@ -14,6 +14,7 @@ export interface ExtractionInput {
   text?: string;
   attachments: InboundAttachment[];
   facts: ApplicationFacts;
+  pendingFacts?: (keyof ApplicationFacts | DocumentCode)[];
 }
 
 export interface ExtractionResult {

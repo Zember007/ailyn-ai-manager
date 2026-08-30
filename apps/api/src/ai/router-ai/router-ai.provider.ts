@@ -42,7 +42,7 @@ export class RouterAiProvider implements AiProvider {
             { role: "user", content: JSON.stringify(input) }
           ]
         },
-        { timeoutMs: getStage1Timeout(this.config.routerAiTimeoutMs, 12_000) }
+        { timeoutMs: getStage1Timeout(this.config.routerAiTimeoutMs, 30_000) }
       );
       const parsed = extractionSchema.safeParse(JSON.parse(response.choices?.[0]?.message?.content ?? "{}"));
       if (!parsed.success) throw new Error("RouterAI extraction response does not match structured schema");
@@ -76,7 +76,7 @@ export class RouterAiProvider implements AiProvider {
             { role: "user", content: JSON.stringify(input) }
           ]
         },
-        { timeoutMs: getStage1Timeout(this.config.routerAiTimeoutMs, 10_000) }
+        { timeoutMs: getStage1Timeout(this.config.routerAiTimeoutMs, 30_000) }
       );
       const parsed = responseGenerationSchema.safeParse(JSON.parse(response.choices?.[0]?.message?.content ?? "{}"));
       if (!parsed.success) throw new Error("RouterAI response does not match structured schema");
@@ -143,31 +143,73 @@ function localExtract(input: ExtractionInput): ExtractionResult {
   if (text.includes("camry") || text.includes("камри")) {
     facts.push({ key: "vehicleMake", value: "Toyota", confidence: 0.9 });
     facts.push({ key: "vehicleModel", value: "Camry", confidence: 0.9 });
+  } else if (text.includes("accord") || text.includes("аккорд")) {
+    facts.push({ key: "vehicleMake", value: "Honda", confidence: 0.9 });
+    facts.push({ key: "vehicleModel", value: "Accord", confidence: 0.9 });
+  } else if (text.includes("land cruiser") || text.includes("ленд крузер") || text.includes("ланд крузер")) {
+    facts.push({ key: "vehicleMake", value: "Toyota", confidence: 0.9 });
+    facts.push({ key: "vehicleModel", value: "Land Cruiser", confidence: 0.9 });
   } else if (text.includes("toyota") || text.includes("тойота")) {
     facts.push({ key: "vehicleMake", value: "Toyota", confidence: 0.8 });
   }
 
-  if (text.includes("бишкек")) facts.push({ key: "residenceRegion", value: "Бишкек", confidence: 0.9 });
-  if (text.includes("чуй")) facts.push({ key: "residenceRegion", value: "Чуй", confidence: 0.9 });
-  if (text.includes(" ош") || text === "ош") facts.push({ key: "residenceRegion", value: "Ош", confidence: 0.8 });
+  if (text.includes("бишкек")) {
+    facts.push({ key: "residenceRegion", value: "Бишкек", confidence: 0.9 });
+    facts.push({ key: "residenceCategory", value: "BISHKEK", confidence: 0.9 });
+  }
+  if (text.includes("чуй")) {
+    facts.push({ key: "residenceRegion", value: "Чуйская область", confidence: 0.9 });
+    facts.push({ key: "residenceCategory", value: "CHUY", confidence: 0.9 });
+  }
+  if (text.includes(" ош") || text === "ош" || text.includes("в оше")) {
+    facts.push({ key: "residenceRegion", value: "Ош", confidence: 0.8 });
+    facts.push({ key: "residenceCategory", value: "OTHER_KG", confidence: 0.8 });
+  }
   if (text.includes("регион 10")) facts.push({ key: "vehicleRegistrationRegion", value: "10", confidence: 0.9 });
   if (text.includes("без изъятия") || text.includes("без изятия")) facts.push({ key: "requestedProgram", value: "without_storage", confidence: 0.9 });
   if (text.includes("стоянк") || text.includes("на парковк")) facts.push({ key: "requestedProgram", value: "parking", confidence: 0.9 });
-  if (text.includes("груз") || text.includes("автобус") || text.includes("мото")) facts.push({ key: "vehicleType", value: "truck", confidence: 0.8 });
+  if (text.includes("груз")) facts.push({ key: "vehicleType", value: "truck", confidence: 0.8 });
+  if (text.includes("автобус")) facts.push({ key: "vehicleType", value: "bus", confidence: 0.8 });
+  if (text.includes("мото") || text.includes("скутер")) facts.push({ key: "vehicleType", value: "motorcycle", confidence: 0.8 });
   if (text.includes("минивэн")) facts.push({ key: "vehicleType", value: "minivan", confidence: 0.8 });
   if (text.includes("легков")) facts.push({ key: "vehicleType", value: "passenger_car", confidence: 0.8 });
-  if (text.includes("кредит") || text.includes("залог")) facts.push({ key: "vehicleInCredit", value: true, confidence: 0.9 });
+  if (/(?:машин|авто|автомобил)[^.!?]{0,24}(?:в\s+кредит(?:е)?|в\s+залоге|заложен)|автокредит[^.!?]{0,24}(?:не\s+погашен|действующ)/i.test(text)) {
+    facts.push({ key: "vehicleInCredit", value: true, confidence: 0.9 });
+  }
   if (text.includes("арест") || text.includes("огранич")) facts.push({ key: "vehicleArrested", value: true, confidence: 0.9 });
   if (text.includes("рефинанс")) facts.push({ key: "refinancingRequested", value: true, confidence: 0.9 });
   if (text.includes("выкуп")) facts.push({ key: "buyoutRequested", value: true, confidence: 0.9 });
-  if (text.includes("договор") || text.includes("оплатил")) facts.push({ key: "existingContractQuestion", value: true, confidence: 0.8 });
-  if (text.includes("женат") || text.includes("замужем") || text.includes("браке")) facts.push({ key: "familyStatus", value: "married", confidence: 0.8 });
-  if (text.includes("не женат") || text.includes("не замужем")) facts.push({ key: "familyStatus", value: "single", confidence: 0.8 });
-  if (text.includes("приеду") || text.includes("визит") || text.includes("еду")) facts.push({ key: "visitRequested", value: true, confidence: 0.8 });
+  if (/(?:я\s+оплатил|проверьте\s+оплату|остаток\s+долга|задолженность|реквизит|действующ(?:ий|ему)\s+договор|не\s+работает\s+gps|вернуть\s+документ)/i.test(text)) {
+    facts.push({ key: "existingContractQuestion", value: true, confidence: 0.9 });
+  }
+  if (/(?:я\s+оплатил|проверьте\s+оплату)/i.test(text)) facts.push({ key: "existingContractPaymentMessage", value: true, confidence: 0.9 });
+  if (text.includes("не женат") || text.includes("не замужем") || text.includes("никогда не состоял") || text.includes("никогда не состояла")) {
+    facts.push({ key: "familyStatus", value: "single", confidence: 0.9 });
+  } else if (text.includes("разведен") || text.includes("разведён") || text.includes("разведена") || text.includes("в разводе")) {
+    facts.push({ key: "familyStatus", value: "divorced", confidence: 0.9 });
+  } else if (text.includes("женат") || text.includes("замужем") || text.includes("состою в браке")) {
+    facts.push({ key: "familyStatus", value: "married", confidence: 0.9 });
+  }
+  if (/(?:согласие|документ)[^.!?]{0,30}(?:готово|есть|оформлено)/i.test(text)) facts.push({ key: "spouseConsentReady", value: true, confidence: 0.85 });
+  if (/(?:согласие)[^.!?]{0,30}(?:нет|не готово|не оформлено)/i.test(text)) facts.push({ key: "spouseConsentReady", value: false, confidence: 0.85 });
+  if (/(?:супруг|супруга|муж|жена)[^.!?]{0,30}(?:за границей|в другом городе|не здесь)/i.test(text)) facts.push({ key: "spouseAway", value: true, confidence: 0.85 });
+  if (/(?:поручитель)[^.!?]{0,20}(?:есть|будет|найду)/i.test(text) || /^(?:да|есть)$/i.test(text.trim()) && input.pendingFacts?.includes("guarantorAvailable")) facts.push({ key: "guarantorAvailable", value: true, confidence: 0.85 });
+  if (/(?:поручител)[^.!?]{0,20}(?:нет|не будет)|^нет$/i.test(text.trim()) && input.pendingFacts?.includes("guarantorAvailable")) facts.push({ key: "guarantorAvailable", value: false, confidence: 0.85 });
+  if (/(?:не\s+могу|не\s+буду|не\s+хочу|нет\s+возможности)[^.!?]{0,40}(?:прислать|отправить)[^.!?]{0,20}(?:документ|фото)/i.test(text)) facts.push({ key: "declinedDocuments", value: true, confidence: 0.9 });
+  if (/(?:авто|машин)[^.!?]{0,25}(?:мужа|жены|супруга|супруги|брата|друга|не\s+моя)|оформлен[ао]?\s+на\s+(?:мужа|жену|другого)/i.test(text)) facts.push({ key: "borrowerIsOwner", value: false, confidence: 0.9 });
+  if (/(?:собственник)[^.!?]{0,25}(?:приедет|сможет приехать)/i.test(text)) facts.push({ key: "ownerCanVisit", value: true, confidence: 0.85 });
+  if (/(?:собственник)[^.!?]{0,25}(?:не приедет|не сможет приехать)/i.test(text)) facts.push({ key: "ownerCanVisit", value: false, confidence: 0.9 });
+  if (text.includes("приеду") || text.includes("визит") || text.includes("уже еду") || text.includes("хочу приехать")) facts.push({ key: "visitRequested", value: true, confidence: 0.8 });
+  if (/(?:уже\s+еду|я\s+в\s+пути|выехал)/i.test(text)) facts.push({ key: "onTheWay", value: true, confidence: 0.9 });
+  if (/(?:уже\s+приехал|я\s+у\s+офиса|стою\s+у\s+офиса|я\s+на\s+месте)/i.test(text)) facts.push({ key: "arrivedAtOffice", value: true, confidence: 0.9 });
+  const visitDate = parseVisitDate(text);
+  const visitTime = text.match(/(?:^|\s|в)([01]?\d|2[0-3]):([0-5]\d)(?:\s|$|[.,!?])/i);
+  if (visitDate) facts.push({ key: "visitDate", value: visitDate, confidence: 0.9 });
+  if (visitTime) facts.push({ key: "visitTime", value: `${visitTime[1].padStart(2, "0")}:${visitTime[2]}`, confidence: 0.9 });
   if (text.includes("подумаю") || text.includes("позже")) facts.push({ key: "clientPaused", value: true, confidence: 0.8 });
 
-  if (text.includes("?") || text.includes("какие") || text.includes("сколько") || text.includes("можно ли")) {
-    questions.push({ text: input.text ?? "", topic: "general" });
+  if (text.includes("?") || text.includes("какие") || text.includes("сколько") || text.includes("можно ли") || text.includes("где ")) {
+    questions.push(...detectQuestions(input.text ?? ""));
     intents.push("question");
   }
 
@@ -181,6 +223,29 @@ function localExtract(input: ExtractionInput): ExtractionResult {
     promptInjectionDetected: text.includes("ignore previous") || text.includes("забудь инструкции"),
     clarificationNeeded: false
   };
+}
+
+function parseVisitDate(text: string): string | undefined {
+  const explicit = text.match(/(?:^|\s)([0-3]?\d)[./-]([01]?\d)[./-](20\d{2})(?:\s|$|[.,!?])/);
+  if (explicit) {
+    return `${explicit[3]}-${explicit[2].padStart(2, "0")}-${explicit[1].padStart(2, "0")}`;
+  }
+  return undefined;
+}
+
+function detectQuestions(text: string): ExtractionResult["questions"] {
+  const segments = text.split(/[?;]+/).map((segment) => segment.trim()).filter(Boolean);
+  return segments.map((segment) => ({ text: segment, topic: questionTopic(segment) }));
+}
+
+function questionTopic(text: string): string {
+  const normalized = text.toLocaleLowerCase("ru-RU");
+  if (/ставк|процент/.test(normalized)) return "interest_rate";
+  if (/адрес|где.*офис|как доехать/.test(normalized)) return "office_location";
+  if (/документ|что нужно взять/.test(normalized)) return "documents_required";
+  if (/сумм|лимит|сколько.*получ/.test(normalized)) return "possible_amount";
+  if (/график|когда работает|время работы/.test(normalized)) return "office_hours";
+  return "general";
 }
 
 function normalizeExtractionResult(payload: unknown): ExtractionResult {
@@ -199,10 +264,12 @@ function normalizeExtractionResult(payload: unknown): ExtractionResult {
 }
 
 function buildLocalResponse(input: ResponseGenerationInput): string {
-  const exact = input.responsePlan.answers.map((answer) => answer.exactText).filter(Boolean).join(" ");
-  const questions = input.responsePlan.nextQuestions.join(" ");
-  const required = input.responsePlan.requiredStatements.filter((statement) => !statement.startsWith("Попросить")).join(" ");
-  return [exact, required, questions].filter(Boolean).join(" ").trim() || "Уточните, пожалуйста, модель, год автомобиля, ориентировочную стоимость и нужную сумму.";
+  const parts = [
+    ...input.responsePlan.answers.map((answer) => answer.exactText).filter((value): value is string => Boolean(value)),
+    ...input.responsePlan.requiredStatements.filter((statement) => !statement.startsWith("Попросить")),
+    ...input.responsePlan.nextQuestions
+  ];
+  return [...new Set(parts)].filter(Boolean).join(" ").trim() || "Уточните, пожалуйста, модель, год автомобиля, ориентировочную стоимость и нужную сумму.";
 }
 
 function getStage1Timeout(configuredTimeoutMs: number, maxTimeoutMs: number): number {
@@ -225,10 +292,10 @@ function parseMoneyCandidates(
   vehicleValue?: number;
   vehicleValueConfidence: number;
 } {
-  const explicitRequestedAmount = matchMoney(text, /(?:нужно|хочу|займ|сумм[ауые]?|дай(?:те)?|получить|оформить)\D{0,20}(\d[\d\s.,]{1,15})/);
-  const explicitVehicleValue = matchMoney(text, /(?:стоимость|стоит|оцен[каить]*|цена|цена машины|ориентировочно|примерно)\D{0,20}(\d[\d\s.,]{1,15})/);
+  const explicitRequestedAmount = matchMoney(text, /(?:(?:нужно|займ|сумм[ауые]?|дай(?:те)?|получить|оформить)\D{0,20}|хочу(?!\s+приехать)\D{0,20})(\d+(?:[.,]\d+)?(?:\s+\d{3})*)\s*(млн|миллион(?:а|ов)?|тыс(?:яч[аи]?)?|к)?/i);
+  const explicitVehicleValue = matchMoney(text, /(?:стоимость|стоит|оцен[каить]*|цена|цена машины|ориентировочно|примерно)\D{0,20}(\d+(?:[.,]\d+)?(?:\s+\d{3})*)\s*(млн|миллион(?:а|ов)?|тыс(?:яч[аи]?)?|к)?/i);
   const fallbackNumber = isStandaloneMoneyReply(text)
-    ? matchMoney(text, /(?:^|\D)(\d[\d\s.,]{1,15})(?:\s*(?:сом|сома|сомов|руб|рублей|kgs|kgs\.|kzt|тенге|usd|eur|\$|€|₽))?(?:\D|$)/)
+    ? matchMoney(text, /(?:^|\D)(\d+(?:[.,]\d+)?(?:\s+\d{3})*)\s*(млн|миллион(?:а|ов)?|тыс(?:яч[аи]?)?|к)?(?:\s*(?:сом|сома|сомов|руб|рублей|kgs|kgs\.|kzt|тенге|usd|eur|\$|€|₽))?(?:\D|$)/i)
     : undefined;
 
   const result = {
@@ -262,19 +329,24 @@ function matchMoney(text: string, pattern: RegExp): number | undefined {
     return undefined;
   }
 
-  const normalized = match[1].replace(/[^\d]/g, "");
-  if (!normalized) {
+  const normalized = match[1].replace(/\s+/g, "").replace(",", ".");
+  if (!normalized || !/^\d+(?:\.\d+)?$/.test(normalized)) {
     return undefined;
   }
 
-  const value = Number(normalized);
-  return Number.isFinite(value) ? value : undefined;
+  const multiplier = /^(?:млн|миллион)/i.test(match[2] ?? "")
+    ? 1_000_000
+    : /^(?:тыс|к)/i.test(match[2] ?? "")
+      ? 1_000
+      : 1;
+  const value = Number(normalized) * multiplier;
+  return Number.isFinite(value) ? Math.round(value) : undefined;
 }
 
 function isStandaloneMoneyReply(text: string): boolean {
   const normalized = text
     .toLowerCase()
-    .replace(/(?:ориентировочно|примерно|около|где-то|это|она|он|машина|авто|стоит|стоимость|цена|сом|сома|сомов|руб|рублей|kgs|kgs\.|kzt|тенге|usd|eur|\$|€|₽)/g, " ")
+    .replace(/(?:ориентировочно|примерно|около|где-то|это|она|он|машина|авто|стоит|стоимость|цена|миллион(?:а|ов)?|млн|тыс(?:яч[аи]?)?|сом|сома|сомов|руб|рублей|kgs|kgs\.|kzt|тенге|usd|eur|\$|€|₽|к(?=\s|$))/g, " ")
     .replace(/[.,:;!?()\-+]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
@@ -406,6 +478,9 @@ function normalizeFacts(value: unknown): ExtractionResult["facts"] {
     if (!isRecord(item) || typeof item.key !== "string" || !("value" in item)) {
       return [];
     }
+    if (!applicationFactKeys.has(item.key)) {
+      return [];
+    }
     const key = item.key as keyof ApplicationFacts;
     return [
       {
@@ -423,6 +498,9 @@ function normalizeChangedFacts(value: unknown): ExtractionResult["changedFacts"]
   }
   return value.flatMap((item) => {
     if (!isRecord(item) || typeof item.key !== "string" || !("newValue" in item)) {
+      return [];
+    }
+    if (!applicationFactKeys.has(item.key)) {
       return [];
     }
     return [{ key: item.key as keyof ApplicationFacts, newValue: item.newValue }];
@@ -465,6 +543,22 @@ function isAttachmentType(value: string): value is ExtractionResult["attachments
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
+
+const applicationFactKeys = new Set<string>([
+  "language", "fullName", "phone", "citizenship", "residenceRegion", "residenceText",
+  "residenceCategory", "residenceNeedsClarification", "vehicleRegistrationCountry",
+  "vehicleRegistrationRegion", "vehicleType", "vehicleMake", "vehicleModel", "vehicleYear",
+  "vehicleValue", "reportedInvalidVehicleYear", "requestedAmount", "requestedProgram", "ownerChanged", "plateChanged",
+  "ownerIsLegalEntity", "borrowerIsLegalEntity", "vehicleInCredit", "vehiclePledged",
+  "vehicleArrested", "registrationRestricted", "refinancingRequested", "buyoutRequested",
+  "accidentNotDrivable", "foreignTravelQuestion", "existingContractQuestion",
+  "existingContractPaymentMessage", "borrowerIsOwner", "ownerCanVisit", "familyStatus",
+  "vehicleBoughtDuringMarriage", "spouseConsentReady", "spouseAway", "guarantorAvailable",
+  "documents", "visitRequested", "visitDate", "visitTime", "clientPaused", "clientClosed",
+  "declinedDocuments", "declinedCarPhoto", "ownerFullName", "ownerResidenceRegion",
+  "ownerFamilyStatus", "vehiclePurchasedDuringMarriage", "divorceCertificateReady",
+  "visitConfirmationPending", "handedToManager", "onTheWay", "arrivedAtOffice"
+]);
 
 const promptCache = new Map<string, string>();
 const currentFilePath = fileURLToPath(import.meta.url);
