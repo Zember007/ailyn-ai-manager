@@ -187,12 +187,18 @@ function extractVehicleFacts(text: string): Partial<ApplicationFacts> {
     facts.vehicleYear = Number(year[1]);
   }
 
-  const vehicleValue = matchMoney(text, /(?:стоимость|стоит|цена|оцен[каить]*|машина\s+стоит)\D{0,20}(\d+(?:[.,]\d+)?)\s*(млн|миллион(?:а|ов)?|тыс(?:яч[аи]?)?|к)?/iu);
+  const vehicleValue = matchMoney(
+    text,
+    /(?:стоимость|стоит|цена|оцен[каить]*|машина\s+стоит)\D{0,20}(\d+(?:[.,]\d+)?(?:\s+\d{3})*)\s*(млн|миллион(?:а|ов)?|тыс(?:яч[аи]?)?|к)?/iu
+  );
   if (vehicleValue !== undefined) {
     facts.vehicleValue = vehicleValue;
   }
 
-  const requestedAmount = matchMoney(text, /(?:(?:нужно|займ|сумм[ауые]?|дай(?:те)?|получить|оформить)\D{0,20}|хочу(?!\s+приехать)\D{0,20})(\d+(?:[.,]\d+)?)\s*(млн|миллион(?:а|ов)?|тыс(?:яч[аи]?)?|к)?/iu);
+  const requestedAmount = matchMoney(
+    text,
+    /(?:(?:нужно|займ|сумм[ауые]?|дай(?:те)?|получить|оформить)\D{0,20}|хочу(?!\s+приехать)\D{0,20})(\d+(?:[.,]\d+)?(?:\s+\d{3})*)\s*(млн|миллион(?:а|ов)?|тыс(?:яч[аи]?)?|к)?/iu
+  );
   if (requestedAmount !== undefined) {
     facts.requestedAmount = requestedAmount;
   }

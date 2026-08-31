@@ -25,7 +25,8 @@ export class ResponseValidatorService {
     const approved = plan?.answers.map((answer) => answer.text) ?? [];
     const next = plan?.nextQuestions ?? [];
     const statements = decision.requiredStatements.filter((item) => !item.startsWith("Попросить"));
-    return [...approved, ...statements, ...next].filter(Boolean).join(" ") || "Подскажите, пожалуйста, недостающие данные, чтобы продолжить оформление.";
+    return deduplicateResponseParts([...approved, ...statements, ...next]).join(" ")
+      || "Подскажите, пожалуйста, недостающие данные, чтобы продолжить оформление.";
   }
 
   private collectErrors(message: string, decision: DecisionResult, plan?: ResponsePlanV62): string[] {
@@ -68,3 +69,19 @@ export class ResponseValidatorService {
 }
 
 const firstContactGreeting = "Здравствуйте! Меня зовут Айлин.";
+
+function deduplicateResponseParts(parts: string[]): string[] {
+  const seen = new Set<string>();
+  const unique: string[] = [];
+
+  for (const part of parts) {
+    const normalized = part.trim();
+    if (!normalized) continue;
+    const key = normalized.toLocaleLowerCase("ru-RU");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(normalized);
+  }
+
+  return unique;
+}

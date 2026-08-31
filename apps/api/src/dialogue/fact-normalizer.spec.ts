@@ -113,6 +113,20 @@ describe("normalizeTurnFacts", () => {
     }));
   });
 
+  it("parses spaced money amounts from the first message without truncating them", () => {
+    expect(normalizeTurnFacts({
+      text: "Камри 2021 года, машина стоит примерно 1 500 000 сом, нужно 500 000",
+      pendingFacts: [],
+      currentFacts: {}
+    })).toEqual(expect.objectContaining({
+      vehicleMake: "Toyota",
+      vehicleModel: "Camry",
+      vehicleYear: 2021,
+      vehicleValue: 1_500_000,
+      requestedAmount: 500_000
+    }));
+  });
+
   it("extracts motorcycle collateral as an unsupported vehicle type", () => {
     expect(normalizeTurnFacts({
       text: "Меня зовут Иванов Иван Иванович. Хочу займ под мото, стоит 300к",

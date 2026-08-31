@@ -86,4 +86,37 @@ describe("ResponseValidatorService", () => {
     expect(result.errors).toEqual([]);
     expect(result.finalMessage).toBe(refusalDecision.refusalReason);
   });
+
+  it("deduplicates the refusal text when it is present in both answers and required statements", () => {
+    const service = new ResponseValidatorService();
+    const refusalReason = "К сожалению, мы не выдаем суммы меньше 50 тыс. сом. Будем рады Вам помочь, если сумма будет нужна более 50 тыс.";
+    const refusalDecision = {
+      status: "refuse",
+      stage: "REFUSED",
+      nextAction: "refuse",
+      requiredFacts: [],
+      rulesApplied: ["minimum_loan"],
+      eligiblePrograms: [],
+      calculatedLimits: {},
+      requiredStatements: [refusalReason],
+      forbiddenStatements: [],
+      blockedRules: [],
+      refusalReason
+    } as any;
+
+    const result = service.validate({
+      message: `${refusalReason} ${refusalReason} Здравствуйте! Какая сумма займа Вам необходима?`,
+      decision: refusalDecision,
+      plan: {
+        answers: [{ key: "refusal", text: refusalReason, exact: true }],
+        nextQuestions: [],
+        validation: { requiresPreliminaryDisclaimer: false, firstMessage: false },
+        knownFactKeys: ["requestedAmount"]
+      } as any
+    });
+
+    expect(result.passed).toBe(true);
+    expect(result.errors).toEqual([]);
+    expect(result.finalMessage).toBe(refusalReason);
+  });
 });
