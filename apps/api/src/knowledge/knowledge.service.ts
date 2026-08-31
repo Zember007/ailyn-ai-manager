@@ -457,7 +457,14 @@ export class KnowledgeService {
       values.push(item.answerRu);
     }
 
-    const placeholders = values.map((_, index) => `$${index + 1}`).join(", ");
+    const placeholders = values.map((_, index) => {
+      const placeholder = `$${index + 1}`;
+      const field = fields[index];
+      if (field === `"aliases"` || field === `"conditions"` || field === `"metadata"`) {
+        return `${placeholder}::jsonb`;
+      }
+      return placeholder;
+    }).join(", ");
     const rows = await this.prisma.$queryRawUnsafe<Array<KnowledgeItemRow>>(
       `INSERT INTO "KnowledgeItem" (${fields.join(", ")}) VALUES (${placeholders}) RETURNING "id", "key", "category", "aliases", "answerRu", "answerKg", "conditions", "priority", "status", "version", "active"`,
       ...values
