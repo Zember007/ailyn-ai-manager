@@ -88,9 +88,9 @@ const seeds: Omit<KnowledgeItemDto, "id">[] = [
   {
     key: "interest_rates_overview",
     category: "loan_terms",
-    aliases: ["какие ставки", "какой процент", "какие проценты", "условия по процентам"],
+    aliases: ["какие ставки", "какой процент", "какие проценты", "условия по процентам", "процентная ставка", "какая процентная ставка", "какая у вас процентная ставка"],
     answerRu: "По программе без изъятия ставка определяется индивидуально после осмотра автомобиля. По программе со стоянкой ставка составляет 2,4% в месяц, дополнительно оплачивается парковка 130 сом в сутки.",
-    priority: 80, status: "approved", version: 1, active: true
+    priority: 80, status: "approved", version: 2, active: true
   },
   {
     key: "remote_application",
@@ -435,15 +435,15 @@ export class KnowledgeService {
       id,
       item.key,
       item.category,
-      toJson(item.aliases),
+      toJsonText(item.aliases),
       item.answerRu,
       item.answerKg ?? null,
-      toJson(item.conditions ?? {}),
+      toJsonText(item.conditions ?? {}),
       item.priority,
       item.status,
       item.version,
       item.active,
-      toJson({}),
+      toJsonText({}),
       now,
       now
     ];
@@ -543,4 +543,8 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function toJson(value: unknown): Prisma.InputJsonValue {
   return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
+}
+
+function toJsonText(value: unknown): string {
+  return JSON.stringify(value ?? {});
 }

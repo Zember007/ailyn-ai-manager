@@ -22,6 +22,13 @@ describe("KnowledgeService approved resolution", () => {
     expect(answers.find((answer) => answer.key === "parking_rate")?.answerRu).toContain("2,4%");
   });
 
+  it("resolves an interest-rate question even when it starts with a greeting", async () => {
+    const service = new KnowledgeService(createMemoryPrisma() as any);
+    const answers = await service.resolveAll("Здравствуйте. Какая у вас процентная ставка?", "ru");
+
+    expect(answers.map((answer) => answer.key)).toContain("interest_rates_overview");
+  });
+
   it("creates seeds through the legacy title/body schema without crashing", async () => {
     const prisma = createMemoryPrisma({ legacyTitleRequired: true, legacyBodyColumn: true });
     const service = new KnowledgeService(prisma as any);
@@ -32,26 +39,36 @@ describe("KnowledgeService approved resolution", () => {
     const stored = prisma.__rows.get("interest_rates_overview");
     expect(stored.title).toBe("interest_rates_overview");
     expect(stored.body).toContain("2,4%");
+    expect(typeof stored.aliases).toBe("string");
+    expect(stored.aliases).toContain("какие ставки");
   });
 });
 
 function createMemoryPrisma(options?: { legacyTitleRequired?: boolean; legacyBodyColumn?: boolean }) {
   const rows = new Map<string, any>();
+  const hydrate = (row: any) => {
+    if (!row) return row;
+    return {
+      ...row,
+      aliases: typeof row.aliases === "string" ? JSON.parse(row.aliases) : row.aliases,
+      conditions: typeof row.conditions === "string" ? JSON.parse(row.conditions) : row.conditions
+    };
+  };
   const prisma = {
     __rows: rows,
     knowledgeItem: {
-      findUnique: async ({ where }: any) => [...rows.values()].find((row) => row.key === where.key || row.id === where.id) ?? null,
-      findMany: async () => [...rows.values()],
+      findUnique: async ({ where }: any) => hydrate([...rows.values()].find((row) => row.key === where.key || row.id === where.id) ?? null),
+      findMany: async () => [...rows.values()].map(hydrate),
       create: async ({ data }: any) => {
         const row = { id: `kb-${rows.size + 1}`, answerKg: null, conditions: {}, ...data };
         rows.set(row.key, row);
-        return row;
+        return hydrate(row);
       },
       update: async ({ where, data }: any) => {
         const current = rows.get(where.key);
         const row = { ...current, ...data };
         rows.set(row.key, row);
-        return row;
+        return hydrate(row);
       }
     },
     $queryRawUnsafe: async (query: string, ...params: any[]) => {
