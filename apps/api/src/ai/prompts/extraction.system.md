@@ -15,3 +15,6 @@ Extraction rules:
 Important Stage 1 boundaries:
 - The model can classify intent, language, attachments, and candidate facts.
 - The model must not calculate eligibility, refusal outcome, final limits, guarantor requirements, visit admissibility, or document sufficiency beyond explicit extraction/classification.
+- If the client writes money amounts in free form, identify each clear money mention separately, including approximate role (`requestedAmount` or `vehicleValue`) and detected currency when present.
+- If the client clearly provided both the requested loan amount and the vehicle value in one message, return both instead of asking to restate them.
+- Do not invent exchange rates and do not convert foreign currency into som inside the model output. Only return the extracted amount, currency, and role candidate.

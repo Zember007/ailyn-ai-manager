@@ -1,10 +1,87 @@
 import { Injectable } from "@nestjs/common";
-import type { DeferredIntegrationResult, FxRateProvider, ManagerNotificationChannel, SpeechToTextProvider, WorkingCalendarProvider } from "./pipeline.contracts.js";
+import type {
+  DeferredIntegrationResult,
+  FxConversionResult,
+  FxRateProvider,
+  ManagerNotificationChannel,
+  SpeechToTextProvider,
+  WorkingCalendarProvider
+} from "./pipeline.contracts.js";
+import type { MoneyCurrencyCode } from "./money-normalization.js";
+
+const NBKR_DAILY_RATES_URL = "https://www.nbkr.kg/XML/daily.xml";
 
 @Injectable()
 export class DeferredIntegrationsService implements SpeechToTextProvider, FxRateProvider, WorkingCalendarProvider, ManagerNotificationChannel {
   async transcribe(): Promise<DeferredIntegrationResult<string>> { return { available: false, code: "SPEC_GAP_STT" }; }
-  async convertToSom(): Promise<DeferredIntegrationResult<number>> { return { available: false, code: "SPEC_GAP_FX" }; }
+  async convertToSom(input: { amount: number; currency: Exclude<MoneyCurrencyCode, "KGS"> }): Promise<FxConversionResult | DeferredIntegrationResult<number>> {
+    try {
+      const response = await fetch(NBKR_DAILY_RATES_URL, { headers: { accept: "application/xml,text/xml" } });
+      if (!response.ok) {
+        return { available: false, code: "SPEC_GAP_FX" };
+      }
+
+      const xml = await response.text();
+      const rate = extractNbkrRate(xml, input.currency);
+      if (!rate) {
+        return { available: false, code: "SPEC_GAP_FX" };
+      }
+
+      return {
+        available: true,
+        value: Math.round(input.amount * rate.ratePerUnit),
+        currency: input.currency,
+        rate: rate.rate,
+        nominal: rate.nominal,
+        source: "NBKR",
+        sourceUrl: NBKR_DAILY_RATES_URL,
+        effectiveDate: rate.effectiveDate
+      };
+    } catch {
+      return { available: false, code: "SPEC_GAP_FX" };
+    }
+  }
   async isWorkingTime(): Promise<DeferredIntegrationResult<boolean>> { return { available: false, code: "SPEC_GAP_CALENDAR" }; }
   async deliver(): Promise<DeferredIntegrationResult<void>> { return { available: false, code: "SPEC_GAP_MANAGER_DELIVERY" }; }
+}
+
+function extractNbkrRate(
+  xml: string,
+  currency: Exclude<MoneyCurrencyCode, "KGS">
+): { rate: number; nominal: number; ratePerUnit: number; effectiveDate: string } | undefined {
+  const currencyMatch = xml.match(new RegExp(`<Currency[^>]*ISOCode="${currency}"[^>]*>([\\s\\S]*?)<\\/Currency>`, "i"));
+  if (!currencyMatch?.[1]) {
+    return undefined;
+  }
+
+  const nominalValue = extractXmlTag(currencyMatch[1], "Nominal");
+  const rateValue = extractXmlTag(currencyMatch[1], "Value");
+  if (!nominalValue || !rateValue) {
+    return undefined;
+  }
+
+  const nominal = Number(nominalValue.replace(",", "."));
+  const rate = Number(rateValue.replace(",", "."));
+  if (!Number.isFinite(nominal) || !Number.isFinite(rate) || nominal <= 0) {
+    return undefined;
+  }
+
+  return {
+    rate,
+    nominal,
+    ratePerUnit: rate / nominal,
+    effectiveDate: extractNbkrDate(xml)
+  };
+}
+
+function extractXmlTag(xml: string, tagName: string): string | undefined {
+  return xml.match(new RegExp(`<${tagName}>([^<]+)<\\/${tagName}>`, "i"))?.[1]?.trim();
+}
+
+function extractNbkrDate(xml: string): string {
+  const rawDate = xml.match(/\bDate="(\d{2})[./-](\d{2})[./-](\d{4})"/i);
+  if (!rawDate) {
+    return new Date().toISOString().slice(0, 10);
+  }
+  return `${rawDate[3]}-${rawDate[2]}-${rawDate[1]}`;
 }

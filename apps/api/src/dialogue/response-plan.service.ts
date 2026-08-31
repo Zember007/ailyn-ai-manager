@@ -1,7 +1,8 @@
 import { Injectable } from "@nestjs/common";
 import type { ApplicationFacts, DecisionResult } from "@ailyn/business-rules";
 import type { ResponsePlan } from "../ai/ai-provider.interface.js";
-import type { KnowledgeAnswer, ResponsePlanV62 } from "./pipeline.contracts.js";
+import type { FxConversionTrace, KnowledgeAnswer, ResponsePlanV62 } from "./pipeline.contracts.js";
+import { formatMoney } from "./money-normalization.js";
 
 @Injectable()
 export class ResponsePlanService {
@@ -17,18 +18,23 @@ export class ResponsePlanService {
     previousAssistantMessages?: string[];
     recovery?: {
       unresolvedFacts: string[];
-      reason: "unrecognized_reply" | "attachment_issue";
+      reason: "unrecognized_reply" | "attachment_issue" | "fx_unavailable";
     };
+    fxConversions?: FxConversionTrace[];
   }): ResponsePlan & ResponsePlanV62 {
     const language = input.facts.language === "kg" ? "kg" : "ru";
     const previousAssistantMessages = input.previousAssistantMessages ?? [];
+    const fxAnswer = buildFxAnswer(input.fxConversions ?? []);
     const decisionAnswers = this.answerDecision(input.decision, input.facts)
       .filter((answer) => !previousAssistantMessages.some((message) => message.includes(answer.text)));
     const requiredAnswers = input.decision.requiredStatements
       .filter(isClientFacingRequiredStatement)
       .filter((statement) => !previousAssistantMessages.some((message) => message.includes(statement)))
       .map((text, index) => ({ key: `required_statement_${index}`, text, exact: true }));
-    const answers = [...(input.knowledgeAnswers ?? []), ...decisionAnswers, ...requiredAnswers].map((answer) => ({ topic: answer.key, meaning: answer.text, exactText: answer.text, ...answer }));
+    const answers = [fxAnswer, ...(input.knowledgeAnswers ?? []), ...decisionAnswers, ...requiredAnswers]
+      .filter((answer): answer is KnowledgeAnswer => Boolean(answer))
+      .filter((answer) => !previousAssistantMessages.some((message) => message.includes(answer.text)))
+      .map((answer) => ({ topic: answer.key, meaning: answer.text, exactText: answer.text, ...answer }));
     const nextQuestions = this.nextQuestions(input.decision, input.facts, input.isFirstMessage, input.recovery);
     const hasPersonalLimit = answers.some((answer) => answer.topic === "personal_limits");
     return {
@@ -47,6 +53,7 @@ export class ResponsePlanService {
         questionCount: input.questions.length,
         kbKeys: answers.map((answer) => answer.topic),
         blocked: input.decision.blockedRules,
+        fxConversions: input.fxConversions,
         recovery: input.recovery
       }
     };
@@ -75,7 +82,7 @@ export class ResponsePlanService {
     isFirstMessage: boolean,
     recovery?: {
       unresolvedFacts: string[];
-      reason: "unrecognized_reply" | "attachment_issue";
+      reason: "unrecognized_reply" | "attachment_issue" | "fx_unavailable";
     }
   ): string[] {
     if (["refuse", "redirect_existing_contract", "pause", "target_reached", "on_the_way", "arrived"].includes(decision.nextAction)) return [];
@@ -133,8 +140,6 @@ function visitConfirmationText(facts: ApplicationFacts): string {
   ].join("\n");
 }
 
-function formatMoney(value: number): string { return new Intl.NumberFormat("ru-RU").format(value).replace(/\u00a0/g, " "); }
-
 const firstContactIntroduction = "Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10.";
 const firstContactMessage = `${firstContactIntroduction}\n\n${formatFirstContactRequest(["vehicle", "vehicleValue", "requestedAmount"])}`;
 
@@ -159,7 +164,7 @@ function documentsRequest(requiredFacts: string[]): string {
 }
 
 function buildRecoveryQuestions(
-  recovery: { unresolvedFacts: string[]; reason: "unrecognized_reply" | "attachment_issue" },
+  recovery: { unresolvedFacts: string[]; reason: "unrecognized_reply" | "attachment_issue" | "fx_unavailable" },
   facts: ApplicationFacts,
   decision: DecisionResult
 ): string[] {
@@ -168,10 +173,23 @@ function buildRecoveryQuestions(
   if (recovery.reason === "attachment_issue" && unresolvedDocuments.length > 0) {
     return [documentsRecoveryRequest(unresolvedDocuments)];
   }
-  return unresolved.map((fact) => clarificationQuestion(fact, facts, decision)).filter((item, index, source) => Boolean(item) && source.indexOf(item) === index);
+  return unresolved.map((fact) => clarificationQuestion(fact, facts, decision, recovery.reason)).filter((item, index, source) => Boolean(item) && source.indexOf(item) === index);
 }
 
-function clarificationQuestion(fact: string, facts: ApplicationFacts, decision: DecisionResult): string {
+function clarificationQuestion(
+  fact: string,
+  facts: ApplicationFacts,
+  decision: DecisionResult,
+  recoveryReason: "unrecognized_reply" | "attachment_issue" | "fx_unavailable" = "unrecognized_reply"
+): string {
+  if (recoveryReason === "fx_unavailable") {
+    if (fact === "requestedAmount") {
+      return "Я увидела сумму в иностранной валюте, но не смогла сейчас надёжно перевести её в сомы. Напишите, пожалуйста, нужную сумму займа в сомах.";
+    }
+    if (fact === "vehicleValue") {
+      return "Я увидела стоимость автомобиля в иностранной валюте, но не смогла сейчас надёжно перевести её в сомы. Напишите, пожалуйста, ориентировочную стоимость автомобиля в сомах.";
+    }
+  }
   const clarificationByFact: Record<string, string> = {
     vehicleMake: "Я не до конца поняла марку автомобиля. Уточните, пожалуйста, марку, модель и год выпуска автомобиля.",
     vehicleModel: "Я не до конца поняла модель автомобиля. Уточните, пожалуйста, марку, модель и год выпуска автомобиля.",
@@ -202,6 +220,16 @@ function clarificationQuestion(fact: string, facts: ApplicationFacts, decision: 
     return documentsRecoveryRequest([fact]);
   }
   return clarificationByFact[fact] ?? "Я не до конца поняла Ваш ответ. Уточните, пожалуйста, детали ещё раз.";
+}
+
+function buildFxAnswer(conversions: FxConversionTrace[]): KnowledgeAnswer | undefined {
+  const successful = conversions.filter((item) => item.status === "converted" && typeof item.somValue === "number");
+  if (successful.length === 0) return undefined;
+  return {
+    key: "fx_equivalent",
+    text: `По текущему курсу ${successful.map((item) => `${item.sourceText} — это ориентировочно ${formatMoney(item.somValue ?? 0)} сом`).join(". ")}.`,
+    exact: true
+  };
 }
 
 function documentsRecoveryRequest(requiredFacts: string[]): string {

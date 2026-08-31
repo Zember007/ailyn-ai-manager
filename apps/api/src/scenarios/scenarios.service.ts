@@ -300,8 +300,8 @@ function evaluateContractScenario(scenario: Stage1Scenario): ScenarioEvaluation 
       return {
         pass:
           plan.nextQuestions.length > 0 &&
-          contracts.orchestrator.includes("const extraction = await this.ai.getProvider().extract") &&
-          contracts.orchestrator.includes("const generated = await this.ai.getProvider().generateResponse") &&
+          contracts.orchestrator.includes("this.ai.getProvider().extract") &&
+          contracts.orchestrator.includes("this.ai.getProvider().generateResponse") &&
           validation.passed,
         assertions: ["orchestrator_extract_path_present", "response_plan_present", "output_validation_present"],
         actual: "Проверен pipeline extraction -> rules -> response plan -> validation."

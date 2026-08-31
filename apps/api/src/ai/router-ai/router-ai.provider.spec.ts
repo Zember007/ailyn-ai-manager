@@ -25,6 +25,7 @@ describe("RouterAiProvider", () => {
       intents: [],
       questions: [],
       facts: [],
+      moneyMentions: [],
       changedFacts: [],
       attachments: [],
       promptInjectionDetected: true,
@@ -57,7 +58,7 @@ describe("RouterAiProvider", () => {
     );
   });
 
-  it("treats a short numeric reply as vehicle value when that fact is still missing", async () => {
+  it("keeps a short foreign-currency vehicle value reply as a money mention until FX conversion", async () => {
     process.env.DATABASE_URL ??= "postgresql://test:test@localhost:5432/ailyn";
     process.env.REDIS_URL ??= "redis://localhost:6379";
 
@@ -77,7 +78,13 @@ describe("RouterAiProvider", () => {
       }
     } as any);
 
-    expect(result.facts).toEqual(expect.arrayContaining([expect.objectContaining({ key: "vehicleValue", value: 2_000_000 })]));
+    expect(result.moneyMentions).toEqual(expect.arrayContaining([expect.objectContaining({
+      sourceText: "2 000 000 руб",
+      currency: "RUB",
+      roleCandidate: "vehicleValue",
+      normalizedAmount: 2_000_000
+    })]));
+    expect(result.facts).not.toEqual(expect.arrayContaining([expect.objectContaining({ key: "vehicleValue" })]));
     expect(result.facts).not.toEqual(expect.arrayContaining([expect.objectContaining({ key: "requestedAmount" })]));
   });
 
@@ -124,6 +131,24 @@ describe("RouterAiProvider", () => {
     ]));
   });
 
+  it("extracts mixed free-form requested amount and vehicle value mentions from one turn", async () => {
+    const provider = new RouterAiProvider({ isConfigured: vi.fn().mockReturnValue(false) } as any);
+    const result = await provider.extract({
+      text: "камри 2010 года надо 10 тыс долларов стоит 20 тыс",
+      attachments: [],
+      facts: {}
+    });
+
+    expect(result.moneyMentions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ sourceText: "10 тыс долларов", currency: "USD", roleCandidate: "requestedAmount", normalizedAmount: 10_000 }),
+      expect.objectContaining({ sourceText: "20 тыс", currency: "KGS", roleCandidate: "vehicleValue", normalizedAmount: 20_000 })
+    ]));
+    expect(result.facts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: "vehicleValue", value: 20_000 })
+    ]));
+    expect(result.facts).not.toEqual(expect.arrayContaining([expect.objectContaining({ key: "requestedAmount" })]));
+  });
+
   it("does not mark the vehicle as pledged from a generic new-loan phrase", async () => {
     const provider = new RouterAiProvider({ isConfigured: vi.fn().mockReturnValue(false) } as any);
     const generic = await provider.extract({ text: "Хочу займ под залог автомобиля", attachments: [], facts: {} });
@@ -165,6 +190,29 @@ describe("RouterAiProvider", () => {
     ]));
   });
 
+  it("uses local extraction immediately when the message is already deterministically understood", async () => {
+    const client = {
+      isConfigured: vi.fn().mockReturnValue(true),
+      createChatCompletion: vi.fn()
+    } as any;
+
+    const provider = new RouterAiProvider(client);
+    const result = await provider.extract({
+      text: "Toyota Camry 2018, стоит 1.5 млн, нужно 500к",
+      attachments: [],
+      facts: {}
+    });
+
+    expect(client.createChatCompletion).not.toHaveBeenCalled();
+    expect(result.facts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: "vehicleMake", value: "Toyota" }),
+      expect.objectContaining({ key: "vehicleModel", value: "Camry" }),
+      expect.objectContaining({ key: "vehicleYear", value: 2018 }),
+      expect.objectContaining({ key: "vehicleValue", value: 1_500_000 }),
+      expect.objectContaining({ key: "requestedAmount", value: 500_000 })
+    ]));
+  });
+
   it("falls back to local response when RouterAI errors", async () => {
     process.env.DATABASE_URL ??= "postgresql://test:test@localhost:5432/ailyn";
     process.env.REDIS_URL ??= "redis://localhost:6379";
@@ -199,8 +247,8 @@ describe("RouterAiProvider", () => {
 
     expect(result).toEqual({
       message: "Уточните, пожалуйста, ориентировочную стоимость автомобиля.",
-      model: "routerai-local-fallback",
-      promptVersion: "stage1-local-v1"
+      model: "stage1-response-plan-fast-path",
+      promptVersion: "stage1-response-plan-v1"
     });
   });
 
@@ -211,5 +259,47 @@ describe("RouterAiProvider", () => {
       responsePlan: { answers: [], nextQuestions: ["Пришлите, пожалуйста, фото ID."], requiredStatements: ["Попросить только недостающие документы."] }
     } as any);
     expect(result.message).toBe("Пришлите, пожалуйста, фото ID.");
+  });
+
+  it("uses a deterministic response fast path when the plan already contains exact client-facing text", async () => {
+    const client = {
+      isConfigured: vi.fn().mockReturnValue(true),
+      createChatCompletion: vi.fn()
+    } as any;
+
+    const provider = new RouterAiProvider(client);
+    const result = await provider.generateResponse({
+      facts: {},
+      userText: "Здравствуйте",
+      decision: {
+        stage: "COLLECTING_VEHICLE",
+        status: "need_more_data",
+        nextAction: "collect_vehicle",
+        blockedRules: [],
+        rulesApplied: [],
+        requiredFacts: ["vehicleValue"],
+        calculatedLimits: {},
+        eligiblePrograms: ["without_storage"],
+        requiredStatements: [],
+        forbiddenStatements: []
+      },
+      responsePlan: {
+        answers: [{ topic: "greeting", meaning: "Здравствуйте!", exactText: "Здравствуйте!" }],
+        nextAction: "collect_vehicle",
+        nextQuestions: ["Какая ориентировочная стоимость автомобиля?"],
+        allowedFacts: {},
+        allowedFinancialValues: [],
+        requiredStatements: [],
+        forbiddenStatements: [],
+        language: "ru"
+      }
+    } as any);
+
+    expect(client.createChatCompletion).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      message: "Здравствуйте! Какая ориентировочная стоимость автомобиля?",
+      model: "stage1-response-plan-fast-path",
+      promptVersion: "stage1-response-plan-v1"
+    });
   });
 });

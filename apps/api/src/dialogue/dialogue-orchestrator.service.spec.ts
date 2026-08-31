@@ -109,7 +109,11 @@ describe("DialogueOrchestratorService", () => {
       error: vi.fn()
     } as any;
 
-    const service = new DialogueOrchestratorService(ai, store, responsePlan, validator, settings, logs);
+    const deferredIntegrations = {
+      convertToSom: vi.fn()
+    } as any;
+
+    const service = new DialogueOrchestratorService(ai, store, responsePlan, validator, settings, logs, deferredIntegrations);
 
     const result = await service.receive({
       externalMessageId: "web-in-1",
@@ -243,7 +247,11 @@ describe("DialogueOrchestratorService", () => {
       error: vi.fn()
     } as any;
 
-    const service = new DialogueOrchestratorService(ai, store, responsePlan, validator, settings, logs);
+    const deferredIntegrations = {
+      convertToSom: vi.fn()
+    } as any;
+
+    const service = new DialogueOrchestratorService(ai, store, responsePlan, validator, settings, logs, deferredIntegrations);
 
     await service.receive({
       externalMessageId: "web-in-1",
@@ -372,7 +380,11 @@ describe("DialogueOrchestratorService", () => {
       error: vi.fn()
     } as any;
 
-    const service = new DialogueOrchestratorService(ai, store, responsePlan, validator, settings, logs);
+    const deferredIntegrations = {
+      convertToSom: vi.fn()
+    } as any;
+
+    const service = new DialogueOrchestratorService(ai, store, responsePlan, validator, settings, logs, deferredIntegrations);
 
     await service.receive({
       externalMessageId: "web-in-1",
@@ -389,6 +401,326 @@ describe("DialogueOrchestratorService", () => {
         unresolvedFacts: ["residenceRegion"],
         reason: "unrecognized_reply"
       }
+    }));
+  });
+
+  it("does not keep document recovery active after the dialogue legitimately moved to family status", async () => {
+    const initialConversation = {
+      id: "conv-1",
+      externalContactId: "web-client-1",
+      externalConversationId: "web-conversation-1",
+      channel: "web-test",
+      messages: [
+        { id: "msg-ai-prev", author: "ai", body: "Пришлите, пожалуйста, фото документов.", createdAt: "2026-08-29T00:00:00.000Z", attachmentIds: [], attachments: [] }
+      ],
+      application: undefined
+    };
+    const application = {
+      id: "app-1",
+      stage: "COLLECTING_DOCUMENTS",
+      status: "need_more_data",
+      facts: {
+        vehicleMake: "Toyota",
+        vehicleModel: "Camry",
+        vehicleYear: 2018,
+        vehicleValue: 1_500_000,
+        requestedAmount: 500_000,
+        requestedProgram: "without_storage",
+        residenceRegion: "Бишкек",
+        residenceCategory: "BISHKEK"
+      },
+      decision: { requiredFacts: ["id_front", "id_back", "vehicle_registration_front", "vehicle_registration_back"] },
+      factHistory: [],
+      contactId: "contact-1",
+      conversationId: "conv-1"
+    };
+    const ai = {
+      getProvider: () => ({
+        extract: vi.fn().mockResolvedValue({
+          language: "ru",
+          intents: [],
+          questions: [],
+          facts: [{ key: "declinedDocuments", value: true, confidence: 0.9 }],
+          changedFacts: [{ key: "declinedDocuments", newValue: true }],
+          attachments: [],
+          promptInjectionDetected: false,
+          clarificationNeeded: false
+        }),
+        generateResponse: vi.fn().mockResolvedValue({
+          message: "Подскажите, пожалуйста, собственник автомобиля состоит в браке, никогда не состоял в браке или в разводе?",
+          model: "stage1-response-plan-fast-path",
+          promptVersion: "stage1-response-plan-v1"
+        }),
+        analyzeImage: vi.fn()
+      })
+    } as any;
+    const updatedApplication = {
+      ...application,
+      stage: "COLLECTING_FAMILY_STATUS",
+      status: "need_more_data",
+      facts: {
+        ...application.facts,
+        declinedDocuments: true
+      },
+      decision: {
+        requiredFacts: ["familyStatus"],
+        stage: "COLLECTING_FAMILY_STATUS",
+        status: "need_more_data",
+        nextAction: "collect_family_status",
+        blockedRules: [],
+        rulesApplied: [],
+        calculatedLimits: { withoutStorage: 600_000 },
+        eligiblePrograms: ["without_storage"],
+        requiredStatements: [],
+        forbiddenStatements: []
+      }
+    };
+    const store = {
+      getOrCreateConversation: vi.fn().mockResolvedValue({
+        conversation: initialConversation,
+        application,
+        isNew: false
+      }),
+      addMessage: vi
+        .fn()
+        .mockResolvedValueOnce({ id: "msg-client-1", createdAt: "2026-08-29T00:00:01.000Z" })
+        .mockResolvedValueOnce({ id: "msg-ai-1", createdAt: "2026-08-29T00:00:02.000Z" }),
+      createNewApplication: vi.fn(),
+      updateFacts: vi.fn().mockResolvedValue(["declinedDocuments"]),
+      getApplication: vi
+        .fn()
+        .mockResolvedValueOnce(updatedApplication)
+        .mockResolvedValueOnce(updatedApplication),
+      saveDecision: vi.fn(),
+      addAttachment: vi.fn(),
+      getConversation: vi.fn().mockResolvedValue({
+        ...initialConversation,
+        messages: [
+          ...initialConversation.messages,
+          { id: "msg-client-1", author: "client", body: "Не могу сейчас отправить фото документов", createdAt: "2026-08-29T00:00:01.000Z", attachmentIds: [], attachments: [] },
+          { id: "msg-ai-1", author: "ai", body: "Подскажите, пожалуйста, собственник автомобиля состоит в браке, никогда не состоял в браке или в разводе?", createdAt: "2026-08-29T00:00:02.000Z", attachmentIds: [], attachments: [] }
+        ],
+        application: updatedApplication
+      })
+    } as any;
+    const responsePlan = {
+      build: vi.fn().mockReturnValue({
+        answers: [],
+        nextAction: "collect_family_status",
+        nextQuestions: ["Подскажите, пожалуйста, собственник автомобиля состоит в браке, никогда не состоял в браке или в разводе?"],
+        allowedFacts: {},
+        allowedFinancialValues: [600_000],
+        requiredStatements: [],
+        forbiddenStatements: [],
+        language: "ru",
+        trace: {}
+      })
+    } as any;
+    const validator = {
+      validate: vi.fn().mockReturnValue({
+        passed: true,
+        errors: [],
+        finalMessage: "Подскажите, пожалуйста, собственник автомобиля состоит в браке, никогда не состоял в браке или в разводе?"
+      })
+    } as any;
+    const settings = {
+      getBusinessRuleSettings: vi.fn().mockResolvedValue({
+        latestArrivalTime: "18:00",
+        minimumLoan: 50000
+      })
+    } as any;
+    const logs = {
+      log: vi.fn(),
+      debug: vi.fn(),
+      error: vi.fn()
+    } as any;
+
+    const deferredIntegrations = {
+      convertToSom: vi.fn()
+    } as any;
+
+    const service = new DialogueOrchestratorService(ai, store, responsePlan, validator, settings, logs, deferredIntegrations);
+
+    await service.receive({
+      externalMessageId: "web-in-1",
+      channel: "web-test",
+      externalContactId: "web-client-1",
+      externalConversationId: "web-conversation-1",
+      text: "Не могу сейчас отправить фото документов",
+      attachments: [],
+      timestamp: new Date("2026-08-29T00:00:01.000Z")
+    });
+
+    expect(responsePlan.build).toHaveBeenCalledWith(expect.objectContaining({
+      recovery: undefined
+    }));
+  });
+
+  it("converts a foreign requested amount, avoids redundant recovery, and stores FX trace metadata", async () => {
+    const initialConversation = {
+      id: "conv-1",
+      externalContactId: "web-client-1",
+      externalConversationId: "web-conversation-1",
+      channel: "web-test",
+      messages: [],
+      application: undefined
+    };
+    const application = {
+      id: "app-1",
+      stage: "COLLECTING_VEHICLE",
+      status: "need_more_data",
+      facts: {},
+      factHistory: [],
+      contactId: "contact-1",
+      conversationId: "conv-1"
+    };
+    const ai = {
+      getProvider: () => ({
+        extract: vi.fn().mockResolvedValue({
+          language: "ru",
+          intents: [],
+          questions: [],
+          facts: [
+            { key: "vehicleMake", value: "Toyota", confidence: 0.9 },
+            { key: "vehicleModel", value: "Camry", confidence: 0.9 },
+            { key: "vehicleYear", value: 2010, confidence: 0.9 },
+            { key: "vehicleValue", value: 1_600_000, confidence: 0.9 }
+          ],
+          moneyMentions: [
+            { sourceText: "10 тыс долларов", amount: 10_000, normalizedAmount: 10_000, currency: "USD", roleCandidate: "requestedAmount", confidence: 0.96, start: 28, end: 44 }
+          ],
+          changedFacts: [],
+          attachments: [],
+          promptInjectionDetected: false,
+          clarificationNeeded: false
+        }),
+        generateResponse: vi.fn().mockResolvedValue({
+          message: "По текущему курсу 10 тыс долларов — это ориентировочно 874 500 сом. Подскажите, пожалуйста, Вас интересует займ без изъятия автомобиля или с постановкой автомобиля на охраняемую стоянку?",
+          model: "stage1-response-plan-fast-path",
+          promptVersion: "stage1-response-plan-v1"
+        }),
+        analyzeImage: vi.fn()
+      })
+    } as any;
+    const updatedApplication = {
+      ...application,
+      facts: {
+        vehicleMake: "Toyota",
+        vehicleModel: "Camry",
+        vehicleYear: 2010,
+        vehicleValue: 1_600_000,
+        requestedAmount: 874_500
+      }
+    };
+    const store = {
+      getOrCreateConversation: vi.fn().mockResolvedValue({
+        conversation: initialConversation,
+        application,
+        isNew: false
+      }),
+      addMessage: vi
+        .fn()
+        .mockResolvedValueOnce({ id: "msg-client-1", createdAt: "2026-08-31T10:33:17.000Z" })
+        .mockResolvedValueOnce({ id: "msg-ai-1", createdAt: "2026-08-31T10:33:57.000Z" }),
+      createNewApplication: vi.fn(),
+      updateFacts: vi.fn().mockResolvedValue(["vehicleMake", "vehicleModel", "vehicleYear", "vehicleValue", "requestedAmount"]),
+      getApplication: vi
+        .fn()
+        .mockResolvedValueOnce(updatedApplication)
+        .mockResolvedValueOnce({
+          ...updatedApplication,
+          decision: {
+            requiredFacts: ["requestedProgram"]
+          }
+        }),
+      saveDecision: vi.fn(),
+      addAttachment: vi.fn(),
+      getConversation: vi.fn().mockResolvedValue({
+        ...initialConversation,
+        messages: [
+          { id: "msg-client-1", author: "client", body: "камри 2010 года надо 10 тыс долларов стоит 20 тыс", createdAt: "2026-08-31T10:33:17.000Z", attachmentIds: [], attachments: [] },
+          { id: "msg-ai-1", author: "ai", body: "По текущему курсу 10 тыс долларов — это ориентировочно 874 500 сом. Подскажите, пожалуйста, Вас интересует займ без изъятия автомобиля или с постановкой автомобиля на охраняемую стоянку?", createdAt: "2026-08-31T10:33:57.000Z", attachmentIds: [], attachments: [] }
+        ],
+        application: updatedApplication
+      })
+    } as any;
+    const responsePlan = {
+      build: vi.fn().mockReturnValue({
+        answers: [{ topic: "fx_equivalent", meaning: "По текущему курсу 10 тыс долларов — это ориентировочно 874 500 сом.", exactText: "По текущему курсу 10 тыс долларов — это ориентировочно 874 500 сом." }],
+        nextAction: "collect_residence",
+        nextQuestions: ["Подскажите, пожалуйста, Вас интересует займ без изъятия автомобиля или с постановкой автомобиля на охраняемую стоянку?"],
+        allowedFacts: {},
+        allowedFinancialValues: [],
+        requiredStatements: [],
+        forbiddenStatements: [],
+        language: "ru",
+        trace: { kbKeys: ["fx_equivalent"] }
+      })
+    } as any;
+    const validator = {
+      validate: vi.fn().mockReturnValue({
+        passed: true,
+        errors: [],
+        finalMessage: "По текущему курсу 10 тыс долларов — это ориентировочно 874 500 сом. Подскажите, пожалуйста, Вас интересует займ без изъятия автомобиля или с постановкой автомобиля на охраняемую стоянку?"
+      })
+    } as any;
+    const settings = {
+      getBusinessRuleSettings: vi.fn().mockResolvedValue({
+        currentYear: 2026,
+        latestArrivalTime: "18:00",
+        minimumLoan: 50000
+      })
+    } as any;
+    const logs = {
+      log: vi.fn(),
+      debug: vi.fn(),
+      error: vi.fn()
+    } as any;
+    const deferredIntegrations = {
+      convertToSom: vi.fn().mockResolvedValue({
+        available: true,
+        value: 874_500,
+        currency: "USD",
+        rate: 87.45,
+        nominal: 1,
+        source: "NBKR",
+        sourceUrl: "https://www.nbkr.kg/XML/daily.xml",
+        effectiveDate: "2026-08-31"
+      })
+    } as any;
+
+    const service = new DialogueOrchestratorService(ai, store, responsePlan, validator, settings, logs, deferredIntegrations);
+
+    await service.receive({
+      externalMessageId: "web-in-1",
+      channel: "web-test",
+      externalContactId: "web-client-1",
+      externalConversationId: "web-conversation-1",
+      text: "камри 2010 года надо 10 тыс долларов стоит 20 тыс",
+      attachments: [],
+      timestamp: new Date("2026-08-31T10:33:17.000Z")
+    });
+
+    expect(deferredIntegrations.convertToSom).toHaveBeenCalledWith({ amount: 10_000, currency: "USD" });
+    expect(store.updateFacts).toHaveBeenCalledWith(application, expect.objectContaining({
+      requestedAmount: 874_500
+    }));
+    expect(responsePlan.build).toHaveBeenCalledWith(expect.objectContaining({
+      recovery: undefined,
+      fxConversions: [expect.objectContaining({
+        role: "requestedAmount",
+        somValue: 874_500,
+        source: "NBKR",
+        effectiveDate: "2026-08-31"
+      })]
+    }));
+    expect(store.addMessage).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({
+      metadata: expect.objectContaining({
+        trace: expect.objectContaining({
+          moneyMentions: expect.arrayContaining([expect.objectContaining({ sourceText: "10 тыс долларов" })]),
+          fxConversions: expect.arrayContaining([expect.objectContaining({ somValue: 874_500 })])
+        })
+      })
     }));
   });
 });

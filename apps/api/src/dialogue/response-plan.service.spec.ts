@@ -108,4 +108,58 @@ describe("ResponsePlanService first contact", () => {
       "Я не смогла надёжно распознать документы. Если удобно, пришлите, пожалуйста, фото: лицевую сторону ID, обратную сторону ID."
     ]);
   });
+
+  it("adds an FX equivalent note before continuing the normal flow", () => {
+    const service = new ResponsePlanService();
+    const facts = {
+      vehicleMake: "Toyota",
+      vehicleModel: "Camry",
+      vehicleYear: 2010,
+      vehicleValue: 1_600_000,
+      requestedAmount: 874_500
+    } as const;
+    const plan = service.build({
+      facts,
+      decision: evaluateApplication(facts),
+      isFirstMessage: false,
+      questions: [],
+      fxConversions: [{
+        role: "requestedAmount",
+        sourceText: "10 тыс долларов",
+        currency: "USD",
+        amount: 10_000,
+        somValue: 874_500,
+        status: "converted",
+        source: "NBKR",
+        sourceUrl: "https://www.nbkr.kg/XML/daily.xml",
+        effectiveDate: "2026-08-31"
+      }]
+    });
+
+    expect(plan.answers[0]?.text).toContain("10 тыс долларов");
+    expect(plan.answers[0]?.text).toContain("874 500 сом");
+  });
+
+  it("uses a targeted clarification when FX conversion is unavailable", () => {
+    const service = new ResponsePlanService();
+    const facts = {
+      vehicleMake: "Toyota",
+      vehicleModel: "Camry",
+      vehicleYear: 2010
+    } as const;
+    const plan = service.build({
+      facts,
+      decision: evaluateApplication(facts),
+      isFirstMessage: false,
+      questions: [],
+      recovery: {
+        unresolvedFacts: ["requestedAmount"],
+        reason: "fx_unavailable"
+      }
+    });
+
+    expect(plan.nextQuestions).toEqual([
+      "Я увидела сумму в иностранной валюте, но не смогла сейчас надёжно перевести её в сомы. Напишите, пожалуйста, нужную сумму займа в сомах."
+    ]);
+  });
 });

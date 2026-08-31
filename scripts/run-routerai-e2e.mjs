@@ -150,8 +150,8 @@ function assertRouterAiResponse(scenarioId, response) {
   if (!response.routerAiModel || /fallback|local/i.test(response.routerAiModel)) {
     throw new Error(`${scenarioId}: expected RouterAI model, got ${response.routerAiModel}`);
   }
-  if (response.promptVersion !== "stage1-routerai-v1") {
-    throw new Error(`${scenarioId}: expected stage1-routerai-v1, got ${response.promptVersion}`);
+  if (!["stage1-routerai-v1", "stage1-response-plan-v1"].includes(response.promptVersion)) {
+    throw new Error(`${scenarioId}: expected stage1-routerai-v1 or stage1-response-plan-v1, got ${response.promptVersion}`);
   }
 }
 

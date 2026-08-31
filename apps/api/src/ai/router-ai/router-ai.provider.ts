@@ -15,6 +15,7 @@ import type {
 } from "../ai-provider.interface.js";
 import { RouterAiClient } from "./router-ai.client.js";
 import { extractionSchema, responseGenerationSchema } from "../../dialogue/pipeline.contracts.js";
+import { formatMoney, resolveMoneyFacts } from "../../dialogue/money-normalization.js";
 
 @Injectable()
 export class RouterAiProvider implements AiProvider {
@@ -24,8 +25,13 @@ export class RouterAiProvider implements AiProvider {
   constructor(private readonly client: RouterAiClient) {}
 
   async extract(input: ExtractionInput): Promise<ExtractionResult> {
+    const localResult = localExtract(input);
+    if (shouldUseLocalExtractionFastPath(input, localResult)) {
+      return localResult;
+    }
+
     if (!this.client.isConfigured()) {
-      return localExtract(input);
+      return localResult;
     }
 
     try {
@@ -49,11 +55,19 @@ export class RouterAiProvider implements AiProvider {
       return normalizeExtractionResult(parsed.data);
     } catch (error) {
       this.logger.warn(`RouterAI extraction fallback activated: ${formatError(error)}`);
-      return localExtract(input);
+      return localResult;
     }
   }
 
   async generateResponse(input: ResponseGenerationInput): Promise<GeneratedResponse> {
+    if (shouldUseDeterministicResponseFastPath(input)) {
+      return {
+        message: buildLocalResponse(input),
+        model: "stage1-response-plan-fast-path",
+        promptVersion: "stage1-response-plan-v1"
+      };
+    }
+
     if (!this.client.isConfigured()) {
       return {
         message: buildLocalResponse(input),
@@ -134,9 +148,13 @@ function localExtract(input: ExtractionInput): ExtractionResult {
   const intents: string[] = [];
   const questions: ExtractionResult["questions"] = [];
 
-  const money = parseMoneyCandidates(text, input.facts);
-  if (money.requestedAmount !== undefined) facts.push({ key: "requestedAmount", value: money.requestedAmount, confidence: money.requestedAmountConfidence });
-  if (money.vehicleValue !== undefined) facts.push({ key: "vehicleValue", value: money.vehicleValue, confidence: money.vehicleValueConfidence });
+  const money = resolveMoneyFacts({ text: input.text, currentFacts: input.facts });
+  if (money.requestedAmount !== undefined && money.requestedAmountCurrency === "KGS") {
+    facts.push({ key: "requestedAmount", value: money.requestedAmount, confidence: money.requestedAmountConfidence });
+  }
+  if (money.vehicleValue !== undefined && money.vehicleValueCurrency === "KGS") {
+    facts.push({ key: "vehicleValue", value: money.vehicleValue, confidence: money.vehicleValueConfidence });
+  }
   const year = text.match(/\b(19\d{2}|20\d{2})\b/);
   if (year) facts.push({ key: "vehicleYear", value: Number(year[1]), confidence: 0.9 });
   const fullName = parseExplicitFullName(input.text ?? "");
@@ -222,6 +240,7 @@ function localExtract(input: ExtractionInput): ExtractionResult {
     intents,
     questions,
     facts,
+    moneyMentions: money.mentions,
     changedFacts: facts.map((fact) => ({ key: fact.key, newValue: fact.value })),
     attachments: [],
     promptInjectionDetected: text.includes("ignore previous") || text.includes("забудь инструкции"),
@@ -273,6 +292,7 @@ function normalizeExtractionResult(payload: unknown): ExtractionResult {
     intents: normalizeStringArray(source.intents),
     questions: normalizeQuestions(source.questions),
     facts: normalizeFacts(source.facts),
+    moneyMentions: normalizeMoneyMentions(source.moneyMentions),
     changedFacts: normalizeChangedFacts(source.changedFacts),
     attachments: normalizeAttachments(source.attachments),
     promptInjectionDetected: source.promptInjectionDetected === true,
@@ -289,6 +309,26 @@ function buildLocalResponse(input: ResponseGenerationInput): string {
   return [...new Set(parts)].filter(Boolean).join(" ").trim() || "Уточните, пожалуйста, модель, год автомобиля, ориентировочную стоимость и нужную сумму.";
 }
 
+function shouldUseLocalExtractionFastPath(input: ExtractionInput, localResult: ExtractionResult): boolean {
+  if (input.attachments.length > 0) return false;
+  if (localResult.promptInjectionDetected) return true;
+  if (localResult.facts.length > 0) return true;
+  if (localResult.moneyMentions.length > 0) return true;
+  if (localResult.questions.length > 0) return true;
+  if (localResult.intents.length > 0) return true;
+  return false;
+}
+
+function shouldUseDeterministicResponseFastPath(input: ResponseGenerationInput): boolean {
+  const exactAnswers = input.responsePlan.answers.every((answer) => typeof answer.exactText === "string" && answer.exactText.trim().length > 0);
+  const hasDeterministicContent =
+    input.responsePlan.answers.length > 0 ||
+    input.responsePlan.nextQuestions.length > 0 ||
+    input.responsePlan.requiredStatements.some((statement) => !statement.startsWith("Попросить"));
+
+  return exactAnswers && hasDeterministicContent;
+}
+
 function getStage1Timeout(configuredTimeoutMs: number, maxTimeoutMs: number): number {
   return Math.max(3_000, Math.min(configuredTimeoutMs, maxTimeoutMs));
 }
@@ -298,77 +338,6 @@ function formatError(error: unknown): string {
     return error.message;
   }
   return String(error);
-}
-
-function parseMoneyCandidates(
-  text: string,
-  currentFacts: ApplicationFacts
-): {
-  requestedAmount?: number;
-  requestedAmountConfidence: number;
-  vehicleValue?: number;
-  vehicleValueConfidence: number;
-} {
-  const explicitRequestedAmount = matchMoney(text, /(?:(?:нужно|займ|сумм[ауые]?|дай(?:те)?|получить|оформить)\D{0,20}|хочу(?!\s+приехать)\D{0,20})(\d+(?:[.,]\d+)?(?:\s+\d{3})*)\s*(млн|миллион(?:а|ов)?|тыс(?:яч[аи]?)?|к)?/i);
-  const explicitVehicleValue = matchMoney(text, /(?:стоимость|стоит|оцен[каить]*|цена|цена машины|ориентировочно|примерно)\D{0,20}(\d+(?:[.,]\d+)?(?:\s+\d{3})*)\s*(млн|миллион(?:а|ов)?|тыс(?:яч[аи]?)?|к)?/i);
-  const fallbackNumber = isStandaloneMoneyReply(text)
-    ? matchMoney(text, /(?:^|\D)(\d+(?:[.,]\d+)?(?:\s+\d{3})*)\s*(млн|миллион(?:а|ов)?|тыс(?:яч[аи]?)?|к)?(?:\s*(?:сом|сома|сомов|руб|рублей|kgs|kgs\.|kzt|тенге|usd|eur|\$|€|₽))?(?:\D|$)/i)
-    : undefined;
-
-  const result = {
-    requestedAmount: explicitRequestedAmount,
-    requestedAmountConfidence: explicitRequestedAmount !== undefined ? 0.9 : 0,
-    vehicleValue: explicitVehicleValue,
-    vehicleValueConfidence: explicitVehicleValue !== undefined ? 0.9 : 0
-  };
-
-  if (result.requestedAmount !== undefined || result.vehicleValue !== undefined || fallbackNumber === undefined) {
-    return result;
-  }
-
-  if (currentFacts.vehicleValue === undefined) {
-    result.vehicleValue = fallbackNumber;
-    result.vehicleValueConfidence = 0.85;
-    return result;
-  }
-
-  if (currentFacts.requestedAmount === undefined) {
-    result.requestedAmount = fallbackNumber;
-    result.requestedAmountConfidence = 0.85;
-  }
-
-  return result;
-}
-
-function matchMoney(text: string, pattern: RegExp): number | undefined {
-  const match = text.match(pattern);
-  if (!match?.[1]) {
-    return undefined;
-  }
-
-  const normalized = match[1].replace(/\s+/g, "").replace(",", ".");
-  if (!normalized || !/^\d+(?:\.\d+)?$/.test(normalized)) {
-    return undefined;
-  }
-
-  const multiplier = /^(?:млн|миллион)/i.test(match[2] ?? "")
-    ? 1_000_000
-    : /^(?:тыс|к)/i.test(match[2] ?? "")
-      ? 1_000
-      : 1;
-  const value = Number(normalized) * multiplier;
-  return Number.isFinite(value) ? Math.round(value) : undefined;
-}
-
-function isStandaloneMoneyReply(text: string): boolean {
-  const normalized = text
-    .toLowerCase()
-    .replace(/(?:ориентировочно|примерно|около|где-то|это|она|он|машина|авто|стоит|стоимость|цена|миллион(?:а|ов)?|млн|тыс(?:яч[аи]?)?|сом|сома|сомов|руб|рублей|kgs|kgs\.|kzt|тенге|usd|eur|\$|€|₽|к(?=\s|$))/g, " ")
-    .replace(/[.,:;!?()\-+]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-
-  return normalized.length > 0 && /^[\d\s]+$/.test(normalized);
 }
 
 function readAttachmentText(attachment: ExtractionInput["attachments"][number]): string {
@@ -484,6 +453,41 @@ function normalizeQuestions(value: unknown): ExtractionResult["questions"] {
       return [];
     }
     return [{ text: item.text, topic: item.topic }];
+  });
+}
+
+function normalizeMoneyMentions(value: unknown): ExtractionResult["moneyMentions"] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.flatMap((item) => {
+    if (!isRecord(item)) {
+      return [];
+    }
+    if (
+      typeof item.sourceText !== "string" ||
+      typeof item.amount !== "number" ||
+      typeof item.normalizedAmount !== "number" ||
+      (item.currency !== "KGS" && item.currency !== "USD" && item.currency !== "EUR" && item.currency !== "KZT" && item.currency !== "RUB") ||
+      (item.roleCandidate !== "requestedAmount" && item.roleCandidate !== "vehicleValue" && item.roleCandidate !== "unknown") ||
+      typeof item.confidence !== "number" ||
+      typeof item.start !== "number" ||
+      typeof item.end !== "number"
+    ) {
+      return [];
+    }
+
+    return [{
+      sourceText: item.sourceText,
+      amount: item.amount,
+      normalizedAmount: item.normalizedAmount,
+      currency: item.currency,
+      roleCandidate: item.roleCandidate,
+      confidence: item.confidence,
+      start: item.start,
+      end: item.end
+    }];
   });
 }
 

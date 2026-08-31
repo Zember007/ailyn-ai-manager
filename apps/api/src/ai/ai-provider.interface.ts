@@ -1,4 +1,5 @@
 import type { ApplicationFacts, DecisionResult, DocumentCode } from "@ailyn/business-rules";
+import type { MoneyMention } from "../dialogue/money-normalization.js";
 
 export interface InboundAttachment {
   id: string;
@@ -22,6 +23,7 @@ export interface ExtractionResult {
   intents: string[];
   questions: { text: string; topic: string }[];
   facts: { key: keyof ApplicationFacts; value: unknown; confidence: number }[];
+  moneyMentions: MoneyMention[];
   changedFacts: { key: keyof ApplicationFacts; newValue: unknown }[];
   attachments: {
     attachmentId: string;

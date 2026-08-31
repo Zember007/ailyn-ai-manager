@@ -3,6 +3,7 @@ import { evaluateApplication, type ApplicationFacts, type DecisionResult, type D
 import { RouterAiProvider } from "../../apps/api/src/ai/router-ai/router-ai.provider.js";
 import type { InboundAttachment } from "../../apps/api/src/ai/ai-provider.interface.js";
 import { normalizeTurnFacts } from "../../apps/api/src/dialogue/fact-normalizer.js";
+import type { FxConversionTrace } from "../../apps/api/src/dialogue/pipeline.contracts.js";
 import { ResponsePlanService } from "../../apps/api/src/dialogue/response-plan.service.js";
 import { ResponseValidatorService } from "../../apps/api/src/dialogue/response-validator.service.js";
 
@@ -18,11 +19,13 @@ class DialogueHarness {
   private decision: DecisionResult = evaluateApplication(this.facts);
   private assistantMessages: string[] = [];
   private started = false;
+  private readonly fxRates: Partial<Record<"USD" | "EUR" | "KZT" | "RUB", number>>;
 
-  constructor(seedFacts: ApplicationFacts = {}) {
+  constructor(seedFacts: ApplicationFacts = {}, options?: { fxRates?: Partial<Record<"USD" | "EUR" | "KZT" | "RUB", number>> }) {
     this.facts = { ...seedFacts };
     this.decision = evaluateApplication(this.facts);
     this.started = Object.keys(seedFacts).length > 0;
+    this.fxRates = options?.fxRates ?? {};
   }
 
   get currentFacts(): ApplicationFacts {
@@ -41,6 +44,30 @@ class DialogueHarness {
       (acc as Record<string, unknown>)[fact.key] = fact.value;
       return acc;
     }, {});
+    const fxConversions = extraction.moneyMentions.reduce<FxConversionTrace[]>((acc, mention) => {
+      if (mention.currency === "KGS" || mention.roleCandidate === "unknown") return acc;
+      const rate = this.fxRates[mention.currency];
+      if (!rate) return acc;
+      const somValue = Math.round(mention.normalizedAmount * rate);
+      if (mention.roleCandidate === "requestedAmount" && extractedFacts.requestedAmount === undefined) {
+        extractedFacts.requestedAmount = somValue;
+      }
+      if (mention.roleCandidate === "vehicleValue" && extractedFacts.vehicleValue === undefined) {
+        extractedFacts.vehicleValue = somValue;
+      }
+      acc.push({
+        role: mention.roleCandidate,
+        sourceText: mention.sourceText,
+        currency: mention.currency,
+        amount: mention.normalizedAmount,
+        somValue,
+        status: "converted",
+        source: "NBKR",
+        sourceUrl: "https://www.nbkr.kg/XML/daily.xml",
+        effectiveDate: "2026-08-31"
+      });
+      return acc;
+    }, []);
     if (normalized.residenceNeedsClarification) {
       delete extractedFacts.residenceRegion;
       delete extractedFacts.residenceCategory;
@@ -63,7 +90,8 @@ class DialogueHarness {
       isFirstMessage: !this.started,
       questions: extraction.questions,
       intents: extraction.intents,
-      previousAssistantMessages: this.assistantMessages
+      previousAssistantMessages: this.assistantMessages,
+      fxConversions
     });
     this.started = true;
 
@@ -326,5 +354,21 @@ describe("Dialogue pipeline e2e scenarios", () => {
       car_photo: "received"
     }));
     expect(finalAnswer).toContain("Предварительно записала Вас");
+  });
+
+  it("converts a foreign-currency requested amount and does not ask to restate it in som", async () => {
+    const dialogue = new DialogueHarness({}, {
+      fxRates: {
+        USD: 87.45
+      }
+    });
+
+    const answer = await dialogue.send("камри 2010 года надо 10 тыс долларов стоит 20 тыс");
+
+    expect(dialogue.currentFacts.requestedAmount).toBe(874_500);
+    expect(dialogue.currentFacts.vehicleValue).toBe(20_000);
+    expect(answer).toContain("10 тыс долларов");
+    expect(answer).toContain("874 500 сом");
+    expect(answer).not.toContain("нужную сумму в сомах");
   });
 });

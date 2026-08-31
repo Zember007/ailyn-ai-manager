@@ -10,10 +10,13 @@ import { SettingsService } from "../settings/settings.service.js";
 import { BackendLogsService } from "../logs/backend-logs.service.js";
 import { KnowledgeBaseResolverService } from "./knowledge-base-resolver.service.js";
 import { normalizeTurnFacts } from "./fact-normalizer.js";
+import { DeferredIntegrationsService } from "./deferred-integrations.service.js";
+import type { FxConversionTrace } from "./pipeline.contracts.js";
+import type { MoneyMention } from "./money-normalization.js";
 
 type RecoveryHint = {
   unresolvedFacts: string[];
-  reason: "unrecognized_reply" | "attachment_issue";
+  reason: "unrecognized_reply" | "attachment_issue" | "fx_unavailable";
 };
 
 export interface DialogueResult {
@@ -34,11 +37,12 @@ export class DialogueOrchestratorService {
     private readonly validator: ResponseValidatorService,
     private readonly settings: SettingsService,
     private readonly logs: BackendLogsService,
+    private readonly deferredIntegrations: DeferredIntegrationsService,
     private readonly knowledge?: KnowledgeBaseResolverService
   ) {}
 
   async receive(message: InboundMessage): Promise<DialogueResult> {
-    await this.logs.log("dialogue.receive", "Started processing inbound message", {
+    void this.logs.log("dialogue.receive", "Started processing inbound message", {
       metadata: {
         channel: message.channel,
         externalConversationId: message.externalConversationId,
@@ -62,7 +66,7 @@ export class DialogueOrchestratorService {
       // by the absence of prior messages, not by whether the DB row already exists.
       const isFirstClientTurn = conversation.messages.length === 0;
 
-      await this.logs.debug("dialogue.receive", "Conversation resolved", {
+      void this.logs.debug("dialogue.receive", "Conversation resolved", {
         conversationId,
         metadata: {
           applicationId: application.id,
@@ -73,7 +77,7 @@ export class DialogueOrchestratorService {
       });
 
       if (!isNew) {
-        await this.logs.debug("dialogue.receive", "Reusing existing conversation for follow-up message", {
+        void this.logs.debug("dialogue.receive", "Reusing existing conversation for follow-up message", {
           conversationId,
           metadata: {
             applicationId: application.id,
@@ -94,29 +98,31 @@ export class DialogueOrchestratorService {
         }
       });
 
-      await this.logs.debug("dialogue.receive", "Inbound message persisted", {
+      void this.logs.debug("dialogue.receive", "Inbound message persisted", {
         conversationId,
         metadata: {
           inboundMessageId: inbound.id
         }
       });
 
-      await this.logs.debug("dialogue.receive", "Starting extraction", {
+      void this.logs.debug("dialogue.receive", "Starting extraction", {
         conversationId,
         metadata: {
           attachments: message.attachments.length
         }
       });
       const pendingFacts = application.decision?.requiredFacts ?? [];
-      const businessRuleSettings = await this.settings.getBusinessRuleSettings();
-      const extraction = await this.ai.getProvider().extract({
-        text: message.text,
-        attachments: message.attachments,
-        facts: application.facts,
-        pendingFacts
-      });
+      const [businessRuleSettings, extraction] = await Promise.all([
+        this.settings.getBusinessRuleSettings(),
+        this.ai.getProvider().extract({
+          text: message.text,
+          attachments: message.attachments,
+          facts: application.facts,
+          pendingFacts
+        })
+      ]);
 
-      await this.logs.debug("dialogue.receive", "Extraction completed", {
+      void this.logs.debug("dialogue.receive", "Extraction completed", {
         conversationId,
         metadata: {
           factsExtracted: extraction.facts.length,
@@ -159,10 +165,16 @@ export class DialogueOrchestratorService {
         delete incomingFacts.residenceRegion;
         delete incomingFacts.residenceCategory;
       }
+      const fxResolution = await resolveForeignCurrencyFacts({
+        mentions: extraction.moneyMentions,
+        currentFacts: application.facts,
+        incomingFacts,
+        deferredIntegrations: this.deferredIntegrations
+      });
 
       if (incomingFacts.ownerChanged || incomingFacts.plateChanged) {
         application = await this.store.createNewApplication(conversation, application.facts);
-        await this.logs.debug("dialogue.receive", "Created new application after owner/plate change", {
+        void this.logs.debug("dialogue.receive", "Created new application after owner/plate change", {
           conversationId,
           metadata: {
             applicationId: application.id
@@ -171,20 +183,22 @@ export class DialogueOrchestratorService {
       }
 
       const documentFacts = await this.processAttachments(conversation.id, inbound.id, message.attachments);
-      const changedFactKeys = await this.store.updateFacts(application, mergeFacts(incomingFacts, contextualFacts, documentFacts.facts)) ?? [];
+      const changedFactKeys = await this.store.updateFacts(application, mergeFacts(incomingFacts, contextualFacts, fxResolution.facts, documentFacts.facts)) ?? [];
       application = (await this.store.getApplication(application.id)) ?? application;
-      const recovery = detectRecoveryHint({
+      const decision = evaluateApplication(application.facts, businessRuleSettings);
+      const recovery = buildFxRecoveryHint(application.facts, decision.requiredFacts, fxResolution.blockedRoles) ?? detectRecoveryHint({
         previousFacts: originalApplication.facts,
         currentFacts: application.facts,
         pendingFacts,
         changedFactKeys,
+        currentRequiredFacts: decision.requiredFacts.map(String),
         extractionQuestions: extraction.questions.length,
         text: message.text,
         attachments: message.attachments,
         attachmentIssueDetected: documentFacts.hasRecognitionIssue
       });
 
-      await this.logs.debug("dialogue.receive", "Facts updated", {
+      void this.logs.debug("dialogue.receive", "Facts updated", {
         conversationId,
         metadata: {
           applicationId: application.id,
@@ -192,7 +206,7 @@ export class DialogueOrchestratorService {
         }
       });
 
-      await this.logs.debug("dialogue.receive", "Business rule settings loaded", {
+      void this.logs.debug("dialogue.receive", "Business rule settings loaded", {
         conversationId,
         metadata: {
           minimumLoan: businessRuleSettings.minimumLoan,
@@ -200,7 +214,6 @@ export class DialogueOrchestratorService {
         }
       });
 
-      const decision = evaluateApplication(application.facts, businessRuleSettings);
       await this.store.saveDecision(application, decision);
       application = (await this.store.getApplication(application.id)) ?? { ...application, decision, status: decision.status, stage: decision.stage };
 
@@ -231,7 +244,7 @@ export class DialogueOrchestratorService {
         if (created !== false) managerEvent = "delta";
       }
 
-      await this.logs.debug("dialogue.receive", "Decision evaluated", {
+      void this.logs.debug("dialogue.receive", "Decision evaluated", {
         conversationId,
         metadata: {
           applicationId: application.id,
@@ -241,6 +254,9 @@ export class DialogueOrchestratorService {
         }
       });
 
+      const knowledgeAnswers = this.knowledge
+        ? await this.knowledge.resolve(extraction.questions, extraction.language === "kg" ? "kg" : "ru")
+        : [];
       const plan = this.responsePlan.build({
         facts: application.facts,
         decision,
@@ -248,11 +264,12 @@ export class DialogueOrchestratorService {
         questions: extraction.questions,
         intents: extraction.intents,
         recovery,
+        fxConversions: fxResolution.traces,
         previousAssistantMessages: conversation.messages.filter((item) => item.author === "ai").map((item) => item.body),
-        knowledgeAnswers: this.knowledge ? await this.knowledge.resolve(extraction.questions, extraction.language === "kg" ? "kg" : "ru") : []
+        knowledgeAnswers
       });
 
-      await this.logs.debug("dialogue.receive", "Response plan prepared", {
+      void this.logs.debug("dialogue.receive", "Response plan prepared", {
         conversationId,
         metadata: {
           nextQuestions: plan.nextQuestions.length,
@@ -261,7 +278,7 @@ export class DialogueOrchestratorService {
         }
       });
 
-      await this.logs.debug("dialogue.receive", "Starting response generation", {
+      void this.logs.debug("dialogue.receive", "Starting response generation", {
         conversationId,
         metadata: {
           applicationId: application.id
@@ -274,7 +291,7 @@ export class DialogueOrchestratorService {
         responsePlan: plan
       });
 
-      await this.logs.debug("dialogue.receive", "Response generated", {
+      void this.logs.debug("dialogue.receive", "Response generated", {
         conversationId,
         metadata: {
           routerAiModel: generated.model,
@@ -302,6 +319,8 @@ export class DialogueOrchestratorService {
             intents: extraction.intents,
             questionsDetected: extraction.questions.map((question) => question.text),
             factsExtracted: extraction.facts,
+            moneyMentions: extraction.moneyMentions,
+            fxConversions: fxResolution.traces,
             factsChanged: changedFactKeys,
             attachments: message.attachments.map((attachment) => attachment.id),
             kbKeysUsed: plan.trace?.kbKeys ?? [],
@@ -319,7 +338,7 @@ export class DialogueOrchestratorService {
       const refreshedApplication =
         (await this.store.getApplication(application.id)) ?? refreshedConversation.application ?? application;
 
-      await this.logs.log("dialogue.receive", "Finished processing inbound message", {
+      void this.logs.log("dialogue.receive", "Finished processing inbound message", {
         conversationId: refreshedConversation.id,
         metadata: {
           applicationId: refreshedApplication.id,
@@ -413,11 +432,65 @@ function mergeFacts(...items: Partial<ApplicationFacts>[]): Partial<ApplicationF
   return merged;
 }
 
+async function resolveForeignCurrencyFacts(input: {
+  mentions?: MoneyMention[];
+  currentFacts: ApplicationFacts;
+  incomingFacts: Partial<ApplicationFacts>;
+  deferredIntegrations: DeferredIntegrationsService;
+}): Promise<{ facts: Partial<ApplicationFacts>; traces: FxConversionTrace[]; blockedRoles: ("requestedAmount" | "vehicleValue")[] }> {
+  const facts: Partial<ApplicationFacts> = {};
+  const traces: FxConversionTrace[] = [];
+  const blockedRoles = new Set<"requestedAmount" | "vehicleValue">();
+
+  for (const mention of input.mentions ?? []) {
+    if (mention.roleCandidate === "unknown" || mention.currency === "KGS") continue;
+    if (mention.roleCandidate === "requestedAmount" && (input.currentFacts.requestedAmount !== undefined || input.incomingFacts.requestedAmount !== undefined || facts.requestedAmount !== undefined)) continue;
+    if (mention.roleCandidate === "vehicleValue" && (input.currentFacts.vehicleValue !== undefined || input.incomingFacts.vehicleValue !== undefined || facts.vehicleValue !== undefined)) continue;
+
+    const conversion = await input.deferredIntegrations.convertToSom({
+      amount: mention.normalizedAmount,
+      currency: mention.currency
+    });
+
+    if (conversion.available) {
+      if (mention.roleCandidate === "requestedAmount") {
+        facts.requestedAmount = conversion.value;
+      } else {
+        facts.vehicleValue = conversion.value;
+      }
+      traces.push({
+        role: mention.roleCandidate,
+        sourceText: mention.sourceText,
+        currency: mention.currency,
+        amount: mention.normalizedAmount,
+        somValue: conversion.value,
+        status: "converted",
+        source: conversion.source,
+        sourceUrl: conversion.sourceUrl,
+        effectiveDate: conversion.effectiveDate
+      });
+    } else {
+      blockedRoles.add(mention.roleCandidate);
+      traces.push({
+        role: mention.roleCandidate,
+        sourceText: mention.sourceText,
+        currency: mention.currency,
+        amount: mention.normalizedAmount,
+        status: "blocked",
+        code: conversion.code
+      });
+    }
+  }
+
+  return { facts, traces, blockedRoles: [...blockedRoles] };
+}
+
 function detectRecoveryHint(input: {
   previousFacts: ApplicationFacts;
   currentFacts: ApplicationFacts;
   pendingFacts: (keyof ApplicationFacts | DocumentCode)[];
   changedFactKeys: string[];
+  currentRequiredFacts: string[];
   extractionQuestions: number;
   text?: string;
   attachments: InboundMessage["attachments"];
@@ -429,6 +502,7 @@ function detectRecoveryHint(input: {
 
   const unresolvedFacts = input.pendingFacts.filter((fact) => !isFactSatisfied(input.currentFacts, fact)).map(String);
   if (unresolvedFacts.length === 0) return undefined;
+  if (!sameFactSet(unresolvedFacts, input.currentRequiredFacts)) return undefined;
 
   const anyPendingResolved = input.pendingFacts.some((fact) =>
     isFactSatisfied(input.currentFacts, fact) && !isFactSatisfied(input.previousFacts, fact)
@@ -444,6 +518,23 @@ function detectRecoveryHint(input: {
   }
 
   return undefined;
+}
+
+function sameFactSet(left: string[], right: string[]): boolean {
+  if (left.length !== right.length) return false;
+  const leftSet = new Set(left);
+  if (leftSet.size !== right.length) return false;
+  return right.every((item) => leftSet.has(item));
+}
+
+function buildFxRecoveryHint(
+  facts: ApplicationFacts,
+  requiredFacts: (keyof ApplicationFacts | DocumentCode)[],
+  blockedRoles: ("requestedAmount" | "vehicleValue")[]
+): RecoveryHint | undefined {
+  const unresolvedFacts = blockedRoles.filter((role) => requiredFacts.includes(role) && !isFactSatisfied(facts, role));
+  if (unresolvedFacts.length === 0) return undefined;
+  return { unresolvedFacts, reason: "fx_unavailable" };
 }
 
 function isFactSatisfied(facts: ApplicationFacts, fact: keyof ApplicationFacts | DocumentCode): boolean {

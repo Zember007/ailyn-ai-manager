@@ -1,4 +1,5 @@
 import type { ApplicationFacts, DocumentCode, ResidenceCategory } from "@ailyn/business-rules";
+import { resolveMoneyFacts } from "./money-normalization.js";
 
 export interface NormalizeTurnFactsInput {
   text?: string;
@@ -171,6 +172,7 @@ function extractPhone(text: string): string | undefined {
 function extractVehicleFacts(text: string): Partial<ApplicationFacts> {
   const facts: Partial<ApplicationFacts> = {};
   const normalized = text.toLocaleLowerCase("ru-RU");
+  const money = resolveMoneyFacts({ text, currentFacts: {} });
 
   if (normalized.includes("camry") || normalized.includes("камри")) {
     facts.vehicleMake = "Toyota";
@@ -187,20 +189,12 @@ function extractVehicleFacts(text: string): Partial<ApplicationFacts> {
     facts.vehicleYear = Number(year[1]);
   }
 
-  const vehicleValue = matchMoney(
-    text,
-    /(?:стоимость|стоит|цена|оцен[каить]*|машина\s+стоит)\D{0,20}(\d+(?:[.,]\d+)?(?:\s+\d{3})*)\s*(млн|миллион(?:а|ов)?|тыс(?:яч[аи]?)?|к)?/iu
-  );
-  if (vehicleValue !== undefined) {
-    facts.vehicleValue = vehicleValue;
+  if (money.vehicleValue !== undefined && money.vehicleValueCurrency === "KGS") {
+    facts.vehicleValue = money.vehicleValue;
   }
 
-  const requestedAmount = matchMoney(
-    text,
-    /(?:(?:нужно|займ|сумм[ауые]?|дай(?:те)?|получить|оформить)\D{0,20}|хочу(?!\s+приехать)\D{0,20})(\d+(?:[.,]\d+)?(?:\s+\d{3})*)\s*(млн|миллион(?:а|ов)?|тыс(?:яч[аи]?)?|к)?/iu
-  );
-  if (requestedAmount !== undefined) {
-    facts.requestedAmount = requestedAmount;
+  if (money.requestedAmount !== undefined && money.requestedAmountCurrency === "KGS") {
+    facts.requestedAmount = money.requestedAmount;
   }
 
   if (/регион\s*10/i.test(text)) {
@@ -220,23 +214,4 @@ function extractVehicleFacts(text: string): Partial<ApplicationFacts> {
   }
 
   return facts;
-}
-
-function matchMoney(text: string, pattern: RegExp): number | undefined {
-  const match = text.match(pattern);
-  if (!match?.[1]) {
-    return undefined;
-  }
-  const normalized = match[1].replace(/\s+/g, "").replace(",", ".");
-  if (!/^\d+(?:\.\d+)?$/.test(normalized)) {
-    return undefined;
-  }
-  const amount = Number(normalized);
-  const unit = match[2] ?? "";
-  const multiplier = /^(?:млн|миллион)/i.test(unit)
-    ? 1_000_000
-    : /^(?:тыс|к)/i.test(unit)
-      ? 1_000
-      : 1;
-  return Math.round(amount * multiplier);
 }

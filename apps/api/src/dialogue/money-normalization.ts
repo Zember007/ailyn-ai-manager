@@ -1,0 +1,242 @@
+import type { ApplicationFacts } from "@ailyn/business-rules";
+
+export type MoneyCurrencyCode = "KGS" | "USD" | "EUR" | "KZT" | "RUB";
+export type MoneyRoleCandidate = "requestedAmount" | "vehicleValue" | "unknown";
+
+export interface MoneyMention {
+  sourceText: string;
+  amount: number;
+  normalizedAmount: number;
+  currency: MoneyCurrencyCode;
+  roleCandidate: MoneyRoleCandidate;
+  confidence: number;
+  start: number;
+  end: number;
+}
+
+export interface ResolvedMoneyFacts {
+  mentions: MoneyMention[];
+  requestedAmount?: number;
+  requestedAmountCurrency?: MoneyCurrencyCode;
+  requestedAmountConfidence: number;
+  vehicleValue?: number;
+  vehicleValueCurrency?: MoneyCurrencyCode;
+  vehicleValueConfidence: number;
+}
+
+const moneyPattern =
+  /(?:(\$|€|₸|₽|usd|eur|kzt|kgs?\.?|rub|доллар(?:ов|а|ы)?|евро|тенге|сом(?:а|ов)?|руб(?:ль|ля|лей)?)\s*)?(\d{1,3}(?:[ \u00a0.,]\d{3})+|\d+(?:[.,]\d+)?)(?:\s*)(млн|миллион(?:а|ов)?|тыс(?:яч[аи]?)?|тыщ|к)?(?:\s*)(\$|€|₸|₽|usd|eur|kzt|kgs?\.?|rub|доллар(?:ов|а|ы)?|евро|тенге|сом(?:а|ов)?|руб(?:ль|ля|лей)?)?/giu;
+const requestedCuePattern = /(нужн|надо|сумм|займ|получить|оформить|хочу|хотел(?:ось)?|надобно)/i;
+const vehicleCuePattern = /(стоит|стоимость|цена|оцен|машина|авто|автомобил)/i;
+
+export function resolveMoneyFacts(input: {
+  text?: string;
+  currentFacts: ApplicationFacts;
+}): ResolvedMoneyFacts {
+  const mentions = detectMoneyMentions(input.text ?? "");
+  const vehicle = chooseMoneyMention("vehicleValue", mentions, input.currentFacts);
+  if (vehicle && vehicle.roleCandidate === "unknown") {
+    vehicle.roleCandidate = "vehicleValue";
+  }
+  const requested = chooseMoneyMention("requestedAmount", mentions, input.currentFacts, vehicle ? [vehicle] : []);
+  if (requested && requested.roleCandidate === "unknown") {
+    requested.roleCandidate = "requestedAmount";
+  }
+
+  return {
+    mentions,
+    requestedAmount: requested?.normalizedAmount,
+    requestedAmountCurrency: requested?.currency,
+    requestedAmountConfidence: requested?.confidence ?? 0,
+    vehicleValue: vehicle?.normalizedAmount,
+    vehicleValueCurrency: vehicle?.currency,
+    vehicleValueConfidence: vehicle?.confidence ?? 0
+  };
+}
+
+export function detectMoneyMentions(text: string): MoneyMention[] {
+  const source = text ?? "";
+  const mentions: MoneyMention[] = [];
+
+  for (const match of source.matchAll(moneyPattern)) {
+    const raw = match[0]?.trim();
+    const numberPart = match[2];
+    if (!raw || !numberPart || match.index === undefined) {
+      continue;
+    }
+
+    const contextBefore = source.slice(Math.max(0, match.index - 32), match.index);
+    const contextAfter = source.slice(match.index + raw.length, Math.min(source.length, match.index + raw.length + 32));
+    const unit = match[3] ?? "";
+    const prefixCurrency = normalizeCurrency(match[1]);
+    const suffixCurrency = normalizeCurrency(match[4]);
+    const currency = suffixCurrency ?? prefixCurrency ?? "KGS";
+    const amount = parseNormalizedAmount(numberPart, unit);
+
+    if (amount === undefined || !looksLikeMoneyMention({ fullText: source, raw, amount, unit, prefixCurrency, suffixCurrency, contextBefore, contextAfter })) {
+      continue;
+    }
+
+    const role = inferMoneyRoleCandidate(contextBefore, contextAfter);
+    const explicitCurrency = Boolean(prefixCurrency || suffixCurrency);
+    const explicitUnit = Boolean(unit);
+    const confidence = role === "unknown"
+      ? explicitCurrency || explicitUnit ? 0.82 : 0.7
+      : explicitCurrency || explicitUnit ? 0.96 : 0.88;
+
+    mentions.push({
+      sourceText: raw,
+      amount,
+      normalizedAmount: amount,
+      currency,
+      roleCandidate: role,
+      confidence,
+      start: match.index,
+      end: match.index + raw.length
+    });
+  }
+
+  return dedupeMentions(mentions);
+}
+
+export function formatMoney(value: number): string {
+  return new Intl.NumberFormat("ru-RU").format(value).replace(/\u00a0/g, " ");
+}
+
+function chooseMoneyMention(
+  role: Extract<MoneyRoleCandidate, "requestedAmount" | "vehicleValue">,
+  mentions: MoneyMention[],
+  currentFacts: ApplicationFacts,
+  excluded: MoneyMention[] = []
+): MoneyMention | undefined {
+  if (role === "requestedAmount" && currentFacts.requestedAmount !== undefined) {
+    return undefined;
+  }
+  if (role === "vehicleValue" && currentFacts.vehicleValue !== undefined) {
+    return undefined;
+  }
+
+  const available = mentions.filter((mention) => !excluded.includes(mention));
+  const explicit = available
+    .filter((mention) => mention.roleCandidate === role)
+    .sort((left, right) => right.confidence - left.confidence || left.start - right.start)[0];
+  if (explicit) {
+    return explicit;
+  }
+
+  if (available.length === 1 && (available[0].roleCandidate === "unknown" || available[0].roleCandidate === role)) {
+    return available[0];
+  }
+
+  const unresolvedRequested = currentFacts.requestedAmount === undefined;
+  const unresolvedVehicle = currentFacts.vehicleValue === undefined;
+  if (available.length >= 2 && unresolvedRequested && unresolvedVehicle) {
+    const sorted = [...available].sort((left, right) => right.normalizedAmount - left.normalizedAmount || left.start - right.start);
+    return role === "vehicleValue" ? sorted[0] : sorted[sorted.length - 1];
+  }
+
+  return available.sort((left, right) => right.confidence - left.confidence || left.start - right.start)[0];
+}
+
+function normalizeCurrency(value: string | undefined): MoneyCurrencyCode | undefined {
+  if (!value) return undefined;
+  const normalized = value.toLocaleLowerCase("ru-RU").replace(/\./g, "");
+  if (normalized === "$" || normalized === "usd" || normalized.startsWith("доллар")) return "USD";
+  if (normalized === "€" || normalized === "eur" || normalized === "евро") return "EUR";
+  if (normalized === "₸" || normalized === "kzt" || normalized === "тенге") return "KZT";
+  if (normalized === "₽" || normalized === "rub" || normalized.startsWith("руб")) return "RUB";
+  if (normalized.startsWith("сом") || normalized === "kgs" || normalized === "kgs") return "KGS";
+  return undefined;
+}
+
+function parseNormalizedAmount(rawNumber: string, unit: string): number | undefined {
+  const compact = rawNumber.replace(/\u00a0/g, " ").trim();
+  let numericValue: number | undefined;
+
+  if (/^\d{1,3}(?:[ .]\d{3})+$/.test(compact) || /^\d{1,3}(?:[.,]\d{3})+$/.test(compact)) {
+    numericValue = Number(compact.replace(/[ .,]/g, ""));
+  } else {
+    const normalized = compact.replace(/\s+/g, "").replace(",", ".");
+    if (!/^\d+(?:\.\d+)?$/.test(normalized)) {
+      return undefined;
+    }
+    numericValue = Number(normalized);
+  }
+
+  if (!Number.isFinite(numericValue)) {
+    return undefined;
+  }
+
+  const normalizedUnit = unit.toLocaleLowerCase("ru-RU");
+  const multiplier = normalizedUnit.startsWith("млн") || normalizedUnit.startsWith("миллион")
+    ? 1_000_000
+    : normalizedUnit.startsWith("тыс") || normalizedUnit.startsWith("тыщ") || normalizedUnit === "к"
+      ? 1_000
+      : 1;
+  return Math.round(numericValue * multiplier);
+}
+
+function looksLikeMoneyMention(input: {
+  fullText: string;
+  raw: string;
+  amount: number;
+  unit: string;
+  prefixCurrency?: MoneyCurrencyCode;
+  suffixCurrency?: MoneyCurrencyCode;
+  contextBefore: string;
+  contextAfter: string;
+}): boolean {
+  const context = `${input.contextBefore} ${input.contextAfter}`.toLocaleLowerCase("ru-RU");
+  const explicitMarker = Boolean(input.unit || input.prefixCurrency || input.suffixCurrency);
+  if (explicitMarker) {
+    return true;
+  }
+  if (/год(?:а|у|ом)?|года|телефон|номер|время|час|минут/.test(context)) {
+    return false;
+  }
+  const nonNumericRemainder = input.fullText
+    .replace(input.raw, " ")
+    .toLocaleLowerCase("ru-RU")
+    .replace(/[0-9\s.,]/g, " ")
+    .replace(/\bи\b/g, " ")
+    .trim();
+  if (input.amount >= 10_000 && nonNumericRemainder.length === 0) {
+    return true;
+  }
+  if (input.amount >= 10_000 && (requestedCuePattern.test(context) || vehicleCuePattern.test(context))) {
+    return true;
+  }
+  return false;
+}
+
+function inferMoneyRoleCandidate(contextBefore: string, contextAfter: string): MoneyRoleCandidate {
+  const before = contextBefore.toLocaleLowerCase("ru-RU");
+  const after = contextAfter.toLocaleLowerCase("ru-RU");
+  const requestedScore = cueScore(before, after, requestedCuePattern);
+  const vehicleScore = cueScore(before, after, vehicleCuePattern);
+
+  if (requestedScore > vehicleScore) return "requestedAmount";
+  if (vehicleScore > requestedScore) return "vehicleValue";
+  return "unknown";
+}
+
+function cueScore(before: string, after: string, pattern: RegExp): number {
+  let score = 0;
+  if (pattern.test(before.slice(-24))) score += 2;
+  pattern.lastIndex = 0;
+  if (pattern.test(after.slice(0, 24))) score += 1;
+  pattern.lastIndex = 0;
+  return score;
+}
+
+function dedupeMentions(mentions: MoneyMention[]): MoneyMention[] {
+  const seen = new Set<string>();
+  return mentions.filter((mention) => {
+    const key = `${mention.start}:${mention.end}:${mention.currency}:${mention.normalizedAmount}`;
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+}
