@@ -1,5 +1,6 @@
 import { Injectable } from "@nestjs/common";
 import type { Prisma } from "@prisma/client";
+import { randomUUID } from "node:crypto";
 import { PrismaService } from "../database/prisma.service.js";
 
 export interface KnowledgeItemDto {
@@ -258,6 +259,8 @@ const seeds: Omit<KnowledgeItemDto, "id">[] = [
 export class KnowledgeService {
   constructor(private readonly prisma: PrismaService) {}
 
+  private legacySchemaPromise?: Promise<LegacyKnowledgeSchema>;
+
   async list(): Promise<KnowledgeItemDto[]> {
     await this.ensureSeeds();
     const items = await this.prisma.knowledgeItem.findMany({ orderBy: [{ priority: "desc" }, { key: "asc" }] });
@@ -280,32 +283,33 @@ export class KnowledgeService {
     const current = item.id
       ? await this.prisma.knowledgeItem.findUnique({ where: { id: item.id } })
       : await this.prisma.knowledgeItem.findUnique({ where: { key: item.key } });
-    const saved = await this.prisma.knowledgeItem.upsert({
-      where: { key: current?.key ?? item.key },
-      create: {
+    const saved = current
+      ? await this.prisma.knowledgeItem.update({
+        where: { key: current.key },
+        data: {
+          category: item.category,
+          aliases: item.aliases,
+          answerRu: item.answerRu,
+          answerKg: item.answerKg,
+          conditions: toJson(item.conditions ?? {}),
+          priority: item.priority,
+          status: item.status,
+          version: { increment: 1 },
+          active: item.active
+        }
+      })
+      : await this.createKnowledgeItem({
         key: item.key,
         category: item.category,
         aliases: item.aliases,
         answerRu: item.answerRu,
         answerKg: item.answerKg,
-        conditions: toJson(item.conditions ?? {}),
+        conditions: item.conditions,
         priority: item.priority,
         status: item.status,
         version: 1,
         active: item.active
-      },
-      update: {
-        category: item.category,
-        aliases: item.aliases,
-        answerRu: item.answerRu,
-        answerKg: item.answerKg,
-        conditions: toJson(item.conditions ?? {}),
-        priority: item.priority,
-        status: item.status,
-        version: { increment: 1 },
-        active: item.active
-      }
-    });
+      });
     return {
       id: saved.id,
       key: saved.key,
@@ -359,18 +363,18 @@ export class KnowledgeService {
     for (const seed of seeds) {
       const existing = await this.prisma.knowledgeItem.findUnique({ where: { key: seed.key } });
       if (!existing) {
-        await this.prisma.knowledgeItem.create({ data: {
+        await this.createKnowledgeItem({
           key: seed.key,
           category: seed.category,
           aliases: seed.aliases,
           answerRu: seed.answerRu,
           answerKg: seed.answerKg,
-          conditions: toJson(seed.conditions ?? {}),
+          conditions: seed.conditions,
           priority: seed.priority,
           status: seed.status,
           version: seed.version,
           active: seed.active
-        } });
+        });
       } else if (existing.version < seed.version) {
         await this.prisma.knowledgeItem.update({
           where: { key: seed.key },
@@ -389,6 +393,121 @@ export class KnowledgeService {
       }
     }
   }
+
+  private async createKnowledgeItem(item: Omit<KnowledgeItemDto, "id">) {
+    const schema = await this.getLegacyKnowledgeSchema();
+    if (!schema.requiresTitle && !schema.hasBody) {
+      return this.prisma.knowledgeItem.create({
+        data: {
+          key: item.key,
+          category: item.category,
+          aliases: item.aliases,
+          answerRu: item.answerRu,
+          answerKg: item.answerKg,
+          conditions: toJson(item.conditions ?? {}),
+          priority: item.priority,
+          status: item.status,
+          version: item.version,
+          active: item.active
+        }
+      });
+    }
+
+    const now = new Date();
+    const id = randomUUID();
+    const fields = [
+      `"id"`,
+      `"key"`,
+      `"category"`,
+      `"aliases"`,
+      `"answerRu"`,
+      `"answerKg"`,
+      `"conditions"`,
+      `"priority"`,
+      `"status"`,
+      `"version"`,
+      `"active"`,
+      `"metadata"`,
+      `"createdAt"`,
+      `"updatedAt"`
+    ];
+    const values: unknown[] = [
+      id,
+      item.key,
+      item.category,
+      toJson(item.aliases),
+      item.answerRu,
+      item.answerKg ?? null,
+      toJson(item.conditions ?? {}),
+      item.priority,
+      item.status,
+      item.version,
+      item.active,
+      toJson({}),
+      now,
+      now
+    ];
+
+    if (schema.requiresTitle) {
+      fields.push(`"title"`);
+      values.push(item.key);
+    }
+    if (schema.hasBody) {
+      fields.push(`"body"`);
+      values.push(item.answerRu);
+    }
+
+    const placeholders = values.map((_, index) => `$${index + 1}`).join(", ");
+    const rows = await this.prisma.$queryRawUnsafe<Array<KnowledgeItemRow>>(
+      `INSERT INTO "KnowledgeItem" (${fields.join(", ")}) VALUES (${placeholders}) RETURNING "id", "key", "category", "aliases", "answerRu", "answerKg", "conditions", "priority", "status", "version", "active"`,
+      ...values
+    );
+    return rows[0];
+  }
+
+  private async getLegacyKnowledgeSchema(): Promise<LegacyKnowledgeSchema> {
+    this.legacySchemaPromise ??= this.loadLegacyKnowledgeSchema();
+    return this.legacySchemaPromise;
+  }
+
+  private async loadLegacyKnowledgeSchema(): Promise<LegacyKnowledgeSchema> {
+    if (!("$queryRawUnsafe" in this.prisma) || typeof this.prisma.$queryRawUnsafe !== "function") {
+      return { requiresTitle: false, hasBody: false };
+    }
+
+    const rows = await this.prisma.$queryRawUnsafe<Array<{ column_name: string; is_nullable: "YES" | "NO" }>>(
+      `SELECT column_name, is_nullable
+       FROM information_schema.columns
+       WHERE table_schema = 'public'
+         AND table_name = 'KnowledgeItem'
+         AND column_name IN ('title', 'body')`
+    );
+
+    const title = rows.find((row) => row.column_name === "title");
+    return {
+      requiresTitle: title?.is_nullable === "NO",
+      hasBody: rows.some((row) => row.column_name === "body")
+    };
+  }
+}
+
+interface LegacyKnowledgeSchema {
+  requiresTitle: boolean;
+  hasBody: boolean;
+}
+
+interface KnowledgeItemRow {
+  id: string;
+  key: string;
+  category: string;
+  aliases: unknown;
+  answerRu: string;
+  answerKg: string | null;
+  conditions: unknown;
+  priority: number;
+  status: string;
+  version: number;
+  active: boolean;
 }
 
 function splitQuestion(question: string): string[] {
