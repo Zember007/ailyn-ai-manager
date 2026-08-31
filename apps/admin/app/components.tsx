@@ -21,9 +21,9 @@ export function AdminShell({
         <a href="/">Обзор</a>
         <a href="/conversations">Диалоги</a>
         <a href="/logs">Логи</a>
-        <a href="/scenarios">Сценарии</a>
+  {/*       <a href="/scenarios">Сценарии</a>
         <a href="/settings">Настройки</a>
-        <a href="/knowledge">База знаний</a>
+        <a href="/knowledge">База знаний</a> */}
         <a href="/audit">Аудит</a>
       </nav>
       {children}
@@ -84,14 +84,14 @@ export function MessageList({
   messages,
   pendingMessage
 }: Readonly<{
-  messages: { id: string; author: string; body: string; createdAt: string; attachmentIds?: string[]; attachments?: Stage1Attachment[] }[];
+  messages: { id: string; author: string; body: string; createdAt: string; attachmentIds?: string[]; attachments?: Stage1Attachment[]; metadata?: Record<string, unknown> }[];
   pendingMessage?: string;
 }>) {
   return (
     <div className="messages">
       {messages.length === 0 ? <p className="muted">Сообщений пока нет.</p> : null}
       {messages.map((message) => (
-        <article className={`message ${message.author}`} key={message.id}>
+        <article className={`message ${message.author}${message.metadata?.optimistic ? " pending" : ""}`} key={message.id}>
           <p className="messageAuthor">{translateAuthor(message.author)}</p>
           <p>{message.body || "[вложение]"}</p>
           {message.attachments?.length ? (

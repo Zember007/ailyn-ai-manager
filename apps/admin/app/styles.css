@@ -182,7 +182,8 @@ button {
   display: grid;
   grid-template-columns: minmax(0, 1.55fr) minmax(340px, 0.85fr);
   gap: 16px;
-  min-height: calc(100vh - 180px);
+  height: calc(100vh - 180px);
+  min-height: 0;
   margin-bottom: 16px;
 }
 
@@ -198,11 +199,14 @@ button {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
   min-height: 0;
+  height: 100%;
   padding: 16px;
+  overflow: hidden;
 }
 
 .messageListFrame {
   min-height: 0;
+  overflow: hidden;
 }
 
 .conversationSidebar {
@@ -564,6 +568,10 @@ textarea {
 .panel {
   min-height: 220px;
   padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  
 }
 
 .panel h2 {
@@ -665,6 +673,7 @@ pre {
   }
 
   .conversationSidebar {
+    height: auto;
     max-height: none;
     overflow: visible;
     position: static;

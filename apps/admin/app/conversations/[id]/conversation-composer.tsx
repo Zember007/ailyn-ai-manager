@@ -10,11 +10,13 @@ interface SendErrorPayload {
 
 export function ConversationComposer({
   conversationId,
+  onSubmitStart,
   onPendingChange,
   onSuccess,
   onError
 }: Readonly<{
   conversationId: string;
+  onSubmitStart: (payload: { message: string; files: File[] }) => void;
   onPendingChange: (pending: boolean) => void;
   onSuccess: (payload: TestChatSendResponse) => void;
   onError: (code: string) => void;
@@ -27,15 +29,27 @@ export function ConversationComposer({
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const trimmedMessage = message.trim();
+    const submittedFiles = [...files];
+
+    if (!trimmedMessage && submittedFiles.length === 0) {
+      return;
+    }
 
     const payload = new FormData();
     payload.set("conversationId", conversationId);
-    payload.set("message", message);
-    for (const file of files) {
+    payload.set("message", trimmedMessage);
+    for (const file of submittedFiles) {
       payload.append("files", file, file.name);
     }
 
     setIsSubmitting(true);
+    setMessage("");
+    setFiles([]);
+    if (fileInputRef.current) {
+      syncFileInput(fileInputRef.current, []);
+    }
+    onSubmitStart({ message: trimmedMessage, files: submittedFiles });
     onPendingChange(true);
 
     try {
@@ -50,11 +64,6 @@ export function ConversationComposer({
       }
 
       const result = (await response.json()) as TestChatSendResponse;
-      setMessage("");
-      setFiles([]);
-      if (fileInputRef.current) {
-        syncFileInput(fileInputRef.current, []);
-      }
       onSuccess(result);
     } catch {
       onError("api_unavailable");

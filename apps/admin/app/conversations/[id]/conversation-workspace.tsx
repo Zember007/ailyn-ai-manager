@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Field, JsonPreview, LeadCard, MessageList, Notice, Panel } from "../../components";
-import { toFeedbackMessage, type Stage1Attachment, type Stage1Conversation, type TestChatSendResponse } from "../../lib/api";
+import { toFeedbackMessage, type Stage1Attachment, type Stage1Conversation, type Stage1Message, type TestChatSendResponse } from "../../lib/api";
 import { ConversationComposer } from "./conversation-composer";
 
 export function ConversationWorkspace({
@@ -15,10 +15,12 @@ export function ConversationWorkspace({
   const [conversation, setConversation] = useState(initialConversation);
   const [feedback, setFeedback] = useState(initialFeedback ?? null);
   const [isPendingReply, setIsPendingReply] = useState(false);
+  const [optimisticMessage, setOptimisticMessage] = useState<Stage1Message | null>(null);
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const application = conversation.application;
-  const conversationAttachments = flattenAttachments(conversation.messages);
-  const latestAi = [...conversation.messages].reverse().find((message) => message.author === "ai");
+  const displayedMessages = optimisticMessage ? [...conversation.messages, optimisticMessage] : conversation.messages;
+  const conversationAttachments = flattenAttachments(displayedMessages);
+  const latestAi = [...displayedMessages].reverse().find((message) => message.author === "ai");
 
   useEffect(() => {
     const container = messageListRef.current?.querySelector(".messages");
@@ -32,6 +34,7 @@ export function ConversationWorkspace({
   }, [conversation.messages, isPendingReply]);
 
   function handleSuccess(payload: TestChatSendResponse) {
+    setOptimisticMessage(null);
     setConversation({
       ...payload.conversation,
       application: payload.application ?? payload.conversation.application
@@ -40,6 +43,7 @@ export function ConversationWorkspace({
   }
 
   function handleError(code: string) {
+    setOptimisticMessage(null);
     setFeedback(toFeedbackMessage(code) ?? { tone: "error", text: `Backend вернул ошибку: ${code}` });
   }
 
@@ -59,11 +63,14 @@ export function ConversationWorkspace({
             </div>
           </div>
           <div className="messageListFrame" ref={messageListRef}>
-            <MessageList messages={conversation.messages} pendingMessage={isPendingReply ? "Айлин думает" : undefined} />
+            <MessageList messages={displayedMessages} pendingMessage={isPendingReply ? "Айлин думает" : undefined} />
           </div>
           <ConversationComposer
             conversationId={conversation.id}
             onError={handleError}
+            onSubmitStart={({ message, files }) => {
+              setOptimisticMessage(buildOptimisticMessage(conversation.id, message, files));
+            }}
             onPendingChange={(pending) => {
               setIsPendingReply(pending);
               if (pending) {
@@ -101,6 +108,30 @@ export function ConversationWorkspace({
       </section>
     </>
   );
+}
+
+function buildOptimisticMessage(conversationId: string, message: string, files: File[]): Stage1Message {
+  const createdAt = new Date().toISOString();
+  const attachments = files.map((file, index) => ({
+    id: `pending-${index}-${file.name}-${file.lastModified}`,
+    conversationId,
+    type: "unknown",
+    status: "pending",
+    fileName: file.name,
+    mimeType: file.type || undefined,
+    byteSize: file.size,
+    createdAt
+  }));
+
+  return {
+    id: `pending-${createdAt}`,
+    author: "client",
+    body: message,
+    attachmentIds: attachments.map((attachment) => attachment.id),
+    attachments,
+    createdAt,
+    metadata: { optimistic: true }
+  };
 }
 
 function flattenAttachments(messages: Stage1Conversation["messages"]): Stage1Attachment[] {
