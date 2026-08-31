@@ -15,7 +15,7 @@ import type {
 } from "../ai-provider.interface.js";
 import { RouterAiClient } from "./router-ai.client.js";
 import { extractionSchema, responseGenerationSchema } from "../../dialogue/pipeline.contracts.js";
-import { formatMoney, resolveMoneyFacts } from "../../dialogue/money-normalization.js";
+import { resolveMoneyFacts } from "../../dialogue/money-normalization.js";
 
 @Injectable()
 export class RouterAiProvider implements AiProvider {
