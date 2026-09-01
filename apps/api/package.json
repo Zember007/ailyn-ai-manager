@@ -9,6 +9,7 @@
     "start": "set -a; if [ -f ../../.env ]; then . ../../.env; else . ../../.env.example; fi; set +a; node dist/apps/api/src/main.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "prisma:generate": "node ../../scripts/prisma-generate-with-retry.mjs prisma/schema.prisma",
+    "documentation:generate": "node ../../scripts/generate-documentation-chunks.mjs",
     "prisma:migrate:deploy": "prisma migrate deploy --schema prisma/schema.prisma"
   },
   "dependencies": {
