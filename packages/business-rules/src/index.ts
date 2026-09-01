@@ -351,7 +351,7 @@ export function evaluateApplication(
 
   const effectiveFamilyStatus = facts.borrowerIsOwner === false ? facts.ownerFamilyStatus : facts.familyStatus;
   if (!effectiveFamilyStatus && (facts.visitRequested || documentsTarget || facts.declinedDocuments)) {
-    return needMore("COLLECTING_FAMILY_STATUS", "collect_family_status", ["familyStatus"], rulesApplied, eligiblePrograms, calculatedLimits, flowStatements, forbiddenStatements, blockedRules, documentsTarget);
+    return needMore("COLLECTING_FAMILY_STATUS", "collect_family_status", [facts.borrowerIsOwner === false ? "ownerFamilyStatus" : "familyStatus"], rulesApplied, eligiblePrograms, calculatedLimits, flowStatements, forbiddenStatements, blockedRules, documentsTarget);
   }
 
   if (effectiveFamilyStatus === "married" && facts.spouseConsentReady !== true) {

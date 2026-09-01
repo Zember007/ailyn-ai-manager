@@ -653,6 +653,11 @@ function shouldAcceptExtractedFact(
   if (!isValidRouteFactValue(fact.key, fact.value)) return false;
   const currentValue = currentFacts[fact.key];
   if (currentValue === undefined || currentValue === null || valuesEqual(currentValue, fact.value)) return true;
+  // Family status is a direct client correction in ordinary language. Accept
+  // a high-confidence replacement even when a provider omitted the optional
+  // changedFacts echo; otherwise a valid answer can be discarded and the old
+  // spouse-consent question is repeated.
+  if ((fact.key === "familyStatus" || fact.key === "ownerFamilyStatus") && fact.confidence >= 0.8) return true;
   if (!hasHighConfidenceCorrection(extraction, fact.key, fact.value)) return false;
   if (proposedRoute.kind === "set_fact" && proposedRoute.fact === fact.key) {
     return acceptedRoute.kind === "set_fact" &&
