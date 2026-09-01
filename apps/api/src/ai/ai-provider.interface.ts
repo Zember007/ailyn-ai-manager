@@ -40,6 +40,8 @@ export type RouteProposal =
 
 export interface ExtractionResult {
   language: "ru" | "kg" | "mixed" | "unknown";
+  /** Primary classification of the current client turn, produced by RouterAI. */
+  turnKind?: "fact_update" | "question" | "mixed" | "control" | "attachment" | "unknown";
   intents: string[];
   questions: { text: string; topic: string }[];
   facts: { key: keyof ApplicationFacts; value: unknown; confidence: number }[];

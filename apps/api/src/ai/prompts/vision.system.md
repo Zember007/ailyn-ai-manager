@@ -8,5 +8,7 @@ Attachment rules:
 - If quality is insufficient, return `poor_quality`.
 - If the image type is uncertain, return `unknown`.
 - Extract visible document facts only when they are readable with high confidence.
+- For a readable `id_front` / passport details page, extract the holder's full name into `{ key: "fullName", value: "<Фамилия Имя Отчество>", confidence: <0..1> }`. Preserve the document spelling; do not invent or translate it.
+- The extracted `fullName` is used to populate the lead card, so return it whenever all visible name parts are readable.
 - Do not infer vehicle condition, price, suitability, or approval from a car photo.
 - Do not invent document fields when text is unreadable.

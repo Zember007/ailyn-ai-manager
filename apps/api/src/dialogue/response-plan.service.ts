@@ -114,6 +114,9 @@ export class ResponsePlanService {
     // generic collection prompt duplicates that question and can make the
     // correction look optional.
     if (decision.rulesApplied.includes("future_vehicle_year_correction")) return [];
+    if (recovery?.unresolvedFacts.length) {
+      return buildRecoveryQuestions(recovery, facts, decision);
+    }
     const documentFollowUp = buildPartialDocumentFollowUp(facts);
     if (documentFollowUp.length > 0) return documentFollowUp;
     if (isFirstMessage && !shouldSuppressFirstContactIntroduction(decision, facts)) {
@@ -132,9 +135,6 @@ export class ResponsePlanService {
     }
     if (facts.requestedProgram === "without_storage" && decision.rulesApplied.includes("other_region_guarantor_unavailable")) {
       questionByFact.requestedProgram = "Хотите продолжить по программе с постановкой автомобиля на охраняемую стоянку?";
-    }
-    if (recovery?.unresolvedFacts.length) {
-      return buildRecoveryQuestions(recovery, facts, decision);
     }
     if (shouldOfferParkingAfterLimit(facts, decision, intents)) {
       return [PARKING_AFTER_WITHOUT_STORAGE_LIMIT_OFFER];

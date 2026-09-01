@@ -480,7 +480,7 @@ function detectQuestions(text: string): ExtractionResult["questions"] {
 }
 
 function looksLikeClientQuestion(text: string): boolean {
-  return /(?:\?\s*$|^\s*(?:что|какая|какой|какие|где|когда|как|можно|почему|сколько)\b|\bчто\s+(?:вообще\s+)?такое\b)/iu.test(text.trim());
+  return /(?:\?\s*$|^\s*(?:что|какая|какой|какие|где|когда|как|можно|почему|сколько)\b|\bчто\s+(?:вообще\s+)?такое\b|\bне\s+понял(?:а)?\b)/iu.test(text.trim());
 }
 
 function questionTopic(text: string): string {
@@ -541,6 +541,7 @@ function normalizeExtractionResult(payload: unknown, input?: ExtractionInput): E
   const source = isRecord(payload) ? payload : {};
   const normalized: ExtractionResult = {
     language: normalizeLanguage(source.language),
+    turnKind: normalizeTurnKind(source.turnKind),
     intents: normalizeStringArray(source.intents),
     questions: normalizeQuestions(source.questions),
     facts: normalizeFacts(source.facts),
@@ -721,6 +722,12 @@ function isImageBase64(contentBase64: string | undefined): boolean {
 
 function normalizeLanguage(value: unknown): ExtractionResult["language"] {
   return value === "ru" || value === "kg" || value === "mixed" || value === "unknown" ? value : "unknown";
+}
+
+function normalizeTurnKind(value: unknown): ExtractionResult["turnKind"] {
+  return value === "fact_update" || value === "question" || value === "mixed" || value === "control" || value === "attachment" || value === "unknown"
+    ? value
+    : undefined;
 }
 
 function normalizeStringArray(value: unknown): string[] {

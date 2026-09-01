@@ -8,11 +8,12 @@ import { SettingsModule } from "../settings/settings.module.js";
 import { KnowledgeModule } from "../knowledge/knowledge.module.js";
 import { KnowledgeBaseResolverService } from "./knowledge-base-resolver.service.js";
 import { DeferredIntegrationsService } from "./deferred-integrations.service.js";
+import { DocumentationKnowledgeService } from "./documentation-knowledge.service.js";
 
 @Global()
 @Module({
   imports: [AiModule, SettingsModule, KnowledgeModule],
-  providers: [DialogueOrchestratorService, ResponsePlanService, ResponseValidatorService, Stage1StoreService, KnowledgeBaseResolverService, DeferredIntegrationsService],
+  providers: [DialogueOrchestratorService, ResponsePlanService, ResponseValidatorService, Stage1StoreService, KnowledgeBaseResolverService, DocumentationKnowledgeService, DeferredIntegrationsService],
   exports: [DialogueOrchestratorService, Stage1StoreService]
 })
 export class DialogueModule {}

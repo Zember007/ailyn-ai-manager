@@ -1,10 +1,14 @@
 import { Injectable } from "@nestjs/common";
 import { KnowledgeService } from "../knowledge/knowledge.service.js";
 import type { KnowledgeAnswer } from "./pipeline.contracts.js";
+import { DocumentationKnowledgeService } from "./documentation-knowledge.service.js";
 
 @Injectable()
 export class KnowledgeBaseResolverService {
-  constructor(private readonly knowledge: KnowledgeService) {}
+  constructor(
+    private readonly knowledge: KnowledgeService,
+    private readonly documentation: DocumentationKnowledgeService
+  ) {}
 
   async resolve(questions: { text: string }[], language: "ru" | "kg"): Promise<KnowledgeAnswer[]> {
     const answers: KnowledgeAnswer[] = [];
@@ -15,6 +19,11 @@ export class KnowledgeBaseResolverService {
         answers.push({ key: item.key, text: language === "kg" && item.answerKg ? item.answerKg : item.answerRu, exact: true });
         }
       } else {
+        const documentationAnswer = this.documentation.resolve(question.text);
+        if (documentationAnswer) {
+          answers.push({ ...documentationAnswer, exact: true });
+          continue;
+        }
         const fallback = await this.knowledge.fallback();
         answers.push({ key: fallback.key, text: fallback.answerRu, exact: true, blocked: true });
       }

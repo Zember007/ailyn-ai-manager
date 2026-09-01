@@ -29,6 +29,15 @@ describe("KnowledgeService approved resolution", () => {
     expect(answers.map((answer) => answer.key)).toContain("interest_rates_overview");
   });
 
+  it("answers what the company does before continuing a document workflow", async () => {
+    const service = new KnowledgeService(createMemoryPrisma() as any);
+    const answers = await service.resolveAll("Не понял, а чем вы вообще занимаетесь", "ru");
+
+    expect(answers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: "company_activity", answerRu: "Мы оформляем новые займы под залог автомобиля." })
+    ]));
+  });
+
   it("creates seeds through the legacy title/body schema without crashing", async () => {
     const prisma = createMemoryPrisma({ legacyTitleRequired: true, legacyBodyColumn: true });
     const service = new KnowledgeService(prisma as any);

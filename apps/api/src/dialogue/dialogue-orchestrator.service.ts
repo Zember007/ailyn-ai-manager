@@ -198,7 +198,12 @@ export class DialogueOrchestratorService {
       }
 
       const documentFacts = await this.processAttachments(conversation.id, inbound.id, message.attachments);
-      const changedFactKeys = await this.store.updateFacts(application, mergeFacts(incomingFacts, fxResolution.facts, documentFacts.facts)) ?? [];
+      const changedFactKeys = await this.store.updateFacts(application, mergeFacts(
+        { documents: application.facts.documents },
+        incomingFacts,
+        fxResolution.facts,
+        documentFacts.facts
+      )) ?? [];
       application = (await this.store.getApplication(application.id)) ?? application;
       const decision = evaluateApplication(application.facts, businessRuleSettings);
       const recovery = buildFxRecoveryHint(application.facts, decision.requiredFacts, fxResolution.blockedRoles) ??
@@ -272,14 +277,19 @@ export class DialogueOrchestratorService {
         }
       });
 
+      const clientQuestions = extraction.questions.length > 0
+        ? extraction.questions
+        : (extraction.turnKind === "question" || extraction.turnKind === "mixed") && extractionText
+          ? [{ text: extractionText, topic: "general" }]
+          : [];
       const knowledgeAnswers = this.knowledge
-        ? await this.knowledge.resolve(extraction.questions, extraction.language === "kg" ? "kg" : "ru")
+        ? await this.knowledge.resolve(clientQuestions, extraction.language === "kg" ? "kg" : "ru")
         : [];
       const plan = this.responsePlan.build({
         facts: application.facts,
         decision,
         isFirstMessage: isFirstClientTurn,
-        questions: extraction.questions,
+        questions: clientQuestions,
         intents: extraction.intents,
         recovery,
         fxConversions: fxResolution.traces,
@@ -811,9 +821,6 @@ function mapVisionTypeToDocument(type: string): DocumentCode | undefined {
   }
   if (type === "car") {
     return "car_photo";
-  }
-  if (type === "unknown" || type === "poor_quality") {
-    return "unknown";
   }
   return undefined;
 }

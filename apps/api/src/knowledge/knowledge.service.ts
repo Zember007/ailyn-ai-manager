@@ -39,6 +39,16 @@ const seeds: Omit<KnowledgeItemDto, "id">[] = [
     active: true
   },
   {
+    key: "company_activity",
+    category: "company",
+    aliases: ["чем вы занимаетесь", "чем вы вообще занимаетесь", "чем вообще занимаетесь", "чем занимается компания", "что вы делаете", "какие услуги оказываете"],
+    answerRu: "Мы оформляем новые займы под залог автомобиля.",
+    priority: 100,
+    status: "approved",
+    version: 1,
+    active: true
+  },
+  {
     key: "office_location",
     category: "office",
     aliases: ["адрес", "где вы", "где находится офис", "где ваш офис", "офис", "как доехать"],
@@ -72,10 +82,10 @@ const seeds: Omit<KnowledgeItemDto, "id">[] = [
     key: "unknown_fallback",
     category: "fallback",
     aliases: [],
-    answerRu: "К сожалению, у меня нет достоверной информации по этому вопросу. Когда Вы приедете, сотрудники с удовольствием подскажут Вам.",
+    answerRu: "К сожалению, у меня нет достоверной информации по этому вопросу. Вы можете связаться с менеджером или приехать в офис — сотрудники с удовольствием подскажут Вам.",
     priority: 1,
     status: "approved",
-    version: 1,
+    version: 2,
     active: true
   },
   {

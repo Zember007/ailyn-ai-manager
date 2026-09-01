@@ -106,6 +106,31 @@ describe("ResponsePlanService first contact", () => {
     ]);
   });
 
+  it("keeps accepted documents and explains an unreadable new upload using only the remaining sides", () => {
+    const service = new ResponsePlanService();
+    const facts = {
+      vehicleMake: "Toyota", vehicleModel: "Camry", vehicleYear: 2021,
+      vehicleValue: 1_500_000, requestedAmount: 500_000,
+      requestedProgram: "parking", residenceRegion: "Бишкек",
+      documents: { id_front: "received" as const }
+    };
+    const plan = service.build({
+      facts,
+      decision: evaluateApplication(facts),
+      isFirstMessage: false,
+      questions: [],
+      recovery: {
+        reason: "attachment_issue",
+        unresolvedFacts: ["id_back", "vehicle_registration_front", "vehicle_registration_back"]
+      }
+    });
+
+    expect(plan.nextQuestions).toEqual([
+      "Я не смогла надёжно распознать документы. Если удобно, пришлите, пожалуйста, фото: обратную сторону ID, лицевую сторону свидетельства о регистрации ТС, обратную сторону свидетельства о регистрации ТС."
+    ]);
+    expect(plan.nextQuestions.join(" ")).not.toContain("лицевую сторону ID, обратную");
+  });
+
   it("uses natural owner residence wording", () => {
     const service = new ResponsePlanService();
     const facts = {

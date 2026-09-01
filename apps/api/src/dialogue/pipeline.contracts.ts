@@ -11,6 +11,7 @@ export const routeProposalSchema = z.discriminatedUnion("kind", [
 ]);
 export const extractionSchema = z.object({
   language: languageSchema,
+  turnKind: z.enum(["fact_update", "question", "mixed", "control", "attachment", "unknown"]).optional(),
   intents: z.array(z.string()).default([]),
   questions: z.array(questionSchema).default([]),
   facts: z.array(z.object({ key: z.string(), value: z.unknown(), confidence: z.number().min(0).max(1) })).default([]),
