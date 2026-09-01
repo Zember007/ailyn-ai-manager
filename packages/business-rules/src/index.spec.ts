@@ -28,6 +28,7 @@ describe("business rules", () => {
     expect(evaluateApplication({ vehicleRegistrationRegion: "10" }).rulesApplied).toContain("region_10_refusal");
     expect(evaluateApplication({ vehicleInCredit: true }).rulesApplied).toContain("credit_or_pledge_refusal");
     expect(evaluateApplication({ ownerCanVisit: false }).rulesApplied).toContain("owner_presence_required");
+    expect(evaluateApplication({ vehicleInCredit: true }).refusalReason).toBe("К сожалению, такой автомобиль мы принять в залог не можем.");
   });
 
   it("does not save or calculate with a future vehicle year", () => {

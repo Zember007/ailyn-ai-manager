@@ -503,7 +503,7 @@ function firstRefusal(
   }
   if (facts.vehicleInCredit || facts.vehiclePledged) {
     rulesApplied.push("credit_or_pledge_refusal");
-    return "Если автомобиль в кредите или залоге, оформить займ нельзя.";
+    return "К сожалению, такой автомобиль мы принять в залог не можем.";
   }
   if (facts.vehicleArrested || facts.registrationRestricted) {
     rulesApplied.push("arrest_or_restriction_refusal");

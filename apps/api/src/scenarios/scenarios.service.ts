@@ -365,7 +365,7 @@ function evaluateContractScenario(scenario: Stage1Scenario): ScenarioEvaluation 
     ownership: () => ({
       pass:
         contracts.businessRules.includes("owner_presence_required") &&
-        contracts.responsePlan.includes("Какая прописка у собственника автомобиля?"),
+        contracts.responsePlan.includes("Где прописан собственник автомобиля?"),
       assertions: ["owner_presence_rule_present", "owner_residence_question_present"],
       actual: "Проверены правила собственника и сбор его данных."
     }),

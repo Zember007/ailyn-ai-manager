@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import { evaluateApplication, type ApplicationFacts, type DecisionResult, type DocumentCode } from "@ailyn/business-rules";
 import { RouterAiProvider } from "../../apps/api/src/ai/router-ai/router-ai.provider.js";
 import type { InboundAttachment } from "../../apps/api/src/ai/ai-provider.interface.js";
-import { normalizeTurnFacts } from "../../apps/api/src/dialogue/fact-normalizer.js";
 import type { FxConversionTrace } from "../../apps/api/src/dialogue/pipeline.contracts.js";
 import { ResponsePlanService } from "../../apps/api/src/dialogue/response-plan.service.js";
 import { ResponseValidatorService } from "../../apps/api/src/dialogue/response-validator.service.js";
@@ -39,7 +38,6 @@ class DialogueHarness {
   async send(text: string, attachments: InboundAttachment[] = []): Promise<string> {
     const pendingFacts = this.decision.requiredFacts;
     const extraction = await this.ai.extract({ text, attachments, facts: this.facts, pendingFacts });
-    const normalized = normalizeTurnFacts({ text, pendingFacts, currentFacts: this.facts });
     const extractedFacts = extraction.facts.reduce<Partial<ApplicationFacts>>((acc, fact) => {
       (acc as Record<string, unknown>)[fact.key] = fact.value;
       return acc;
@@ -68,12 +66,12 @@ class DialogueHarness {
       });
       return acc;
     }, []);
-    if (normalized.residenceNeedsClarification) {
+    if (extractedFacts.residenceNeedsClarification) {
       delete extractedFacts.residenceRegion;
       delete extractedFacts.residenceCategory;
     }
 
-    this.facts = { ...this.facts, ...extractedFacts, ...normalized, documents: { ...(this.facts.documents ?? {}) } };
+    this.facts = { ...this.facts, ...extractedFacts, documents: { ...(this.facts.documents ?? {}) } };
     for (const attachment of attachments) {
       const vision = await this.ai.analyzeImage({ attachment });
       const documentKey = vision.type === "car" ? "car_photo" : vision.type === "poor_quality" ? "unknown" : vision.type;

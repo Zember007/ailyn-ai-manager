@@ -25,17 +25,18 @@ export class ResponsePlanService {
     const language = input.facts.language === "kg" ? "kg" : "ru";
     const previousAssistantMessages = input.previousAssistantMessages ?? [];
     const fxAnswer = buildFxAnswer(input.fxConversions ?? []);
-    const decisionAnswers = this.answerDecision(input.decision, input.facts)
+    const specialAnswers = buildSpecialAnswers(input.facts, input.decision, input.questions);
+    const decisionAnswers = this.answerDecision(input.decision, input.facts, input.intents ?? [])
       .filter((answer) => !previousAssistantMessages.some((message) => message.includes(answer.text)));
     const requiredAnswers = input.decision.requiredStatements
       .filter(isClientFacingRequiredStatement)
       .filter((statement) => !previousAssistantMessages.some((message) => message.includes(statement)))
       .map((text, index) => ({ key: `required_statement_${index}`, text, exact: true }));
-    const answers = [fxAnswer, ...(input.knowledgeAnswers ?? []), ...decisionAnswers, ...requiredAnswers]
+    const answers = [fxAnswer, ...specialAnswers, ...(input.knowledgeAnswers ?? []), ...decisionAnswers, ...requiredAnswers]
       .filter((answer): answer is KnowledgeAnswer => Boolean(answer))
       .filter((answer) => !previousAssistantMessages.some((message) => message.includes(answer.text)))
       .map((answer) => ({ topic: answer.key, meaning: answer.text, exactText: answer.text, ...answer }));
-    const nextQuestions = this.nextQuestions(input.decision, input.facts, input.isFirstMessage, input.recovery);
+    const nextQuestions = this.nextQuestions(input.decision, input.facts, input.isFirstMessage, input.recovery, input.intents ?? []);
     const hasPersonalLimit = answers.some((answer) => answer.topic === "personal_limits");
     return {
       answers,
@@ -59,7 +60,7 @@ export class ResponsePlanService {
     };
   }
 
-  private answerDecision(decision: DecisionResult, facts: ApplicationFacts): KnowledgeAnswer[] {
+  private answerDecision(decision: DecisionResult, facts: ApplicationFacts, intents: string[]): KnowledgeAnswer[] {
     if (decision.status === "refuse") return [{ key: "refusal", text: decision.refusalReason ?? "По этим условиям оформить займ нельзя.", exact: true }];
     if (decision.status === "redirect_existing_contract") return [{ key: "existing_contract", text: "Я Айлин — виртуальный помощник по вопросам оформления новых займов. Если у Вас уже оформлен займ, пожалуйста, позвоните по телефону +996 502 108 108 или напишите в WhatsApp +996 776 108 108. Наши специалисты проверят информацию по Вашему договору и помогут решить Ваш вопрос.", exact: true }];
     if (decision.nextAction === "arrived") return [{ key: "client_arrived", text: "Вы можете пройти в офис, сотрудники встретят Вас и помогут с оформлением.", exact: true }];
@@ -67,7 +68,21 @@ export class ResponsePlanService {
     const answers: KnowledgeAnswer[] = [];
     if (facts.requestedProgram && facts.residenceRegion && (decision.calculatedLimits.withoutStorage || decision.calculatedLimits.parking)) {
       const limit = facts.requestedProgram === "without_storage" ? decision.calculatedLimits.withoutStorage : decision.calculatedLimits.parking;
-      if (limit) answers.push({ key: "personal_limits", text: `Предварительно возможная сумма — до ${formatMoney(limit)} сом. Окончательная сумма определяется после осмотра автомобиля и проверки документов.`, exact: true });
+      const needsLimitOptions = facts.requestedProgram === "without_storage" &&
+        !decision.rulesApplied.includes("other_region_guarantor_unavailable") &&
+        typeof limit === "number" &&
+        typeof decision.calculatedLimits.parking === "number" &&
+        decision.calculatedLimits.parking > limit &&
+        (intents.some((intent) => intent === "limit_objection" || intent === "clarification_request") || (typeof facts.requestedAmount === "number" && facts.requestedAmount > limit));
+      if (needsLimitOptions) {
+        answers.push({
+          key: "personal_limit_options",
+          text: `По программе без изъятия предварительно возможная сумма — до ${formatMoney(limit)} сом. По программе со стоянкой предварительно возможная сумма — до ${formatMoney(decision.calculatedLimits.parking ?? 0)} сом. Окончательная сумма определяется после осмотра автомобиля и проверки документов.`,
+          exact: true
+        });
+      } else if (limit) {
+        answers.push({ key: "personal_limits", text: `Предварительно возможная сумма — до ${formatMoney(limit)} сом. Окончательная сумма определяется после осмотра автомобиля и проверки документов.`, exact: true });
+      }
     }
     if (facts.visitDate && facts.visitTime) {
       answers.push({ key: "visit_confirmation", text: visitConfirmationText(facts), exact: true });
@@ -83,16 +98,19 @@ export class ResponsePlanService {
     recovery?: {
       unresolvedFacts: string[];
       reason: "unrecognized_reply" | "attachment_issue" | "fx_unavailable";
-    }
+    },
+    intents: string[] = []
   ): string[] {
     if (["refuse", "redirect_existing_contract", "pause", "target_reached", "on_the_way", "arrived"].includes(decision.nextAction)) return [];
-    if (isFirstMessage) {
+    const documentFollowUp = buildPartialDocumentFollowUp(facts);
+    if (documentFollowUp.length > 0) return documentFollowUp;
+    if (isFirstMessage && !shouldSuppressFirstContactIntroduction(decision, facts)) {
       const missing = this.firstContactMissingFacts(facts);
       if (missing.length === 3) return [firstContactMessage];
       if (missing.length > 0) return [`${firstContactIntroduction}\n\n${formatFirstContactRequest(missing)}`];
     }
     const questionByFact: Record<string, string> = {
-      vehicleMake: "Подскажите, пожалуйста, модель и год выпуска автомобиля.", vehicleModel: "Подскажите, пожалуйста, модель автомобиля.", vehicleYear: "Подскажите, пожалуйста, год выпуска автомобиля.", vehicleValue: "Какая ориентировочная стоимость автомобиля?", requestedAmount: "Какая сумма займа Вам необходима?", requestedProgram: "Подскажите, пожалуйста, Вас интересует займ без изъятия автомобиля или с постановкой автомобиля на охраняемую стоянку?", residenceRegion: "Какая прописка у собственника автомобиля?", ownerFullName: "Подскажите, пожалуйста, ФИО собственника автомобиля.", ownerResidenceRegion: "Какая прописка у собственника автомобиля?", ownerCanVisit: "Сможет ли собственник лично приехать на осмотр автомобиля и выдачу займа?", ownerFamilyStatus: "Подскажите, пожалуйста, собственник автомобиля состоит в браке, никогда не состоял в браке или в разводе?", id_front: "Пришлите, пожалуйста, фото лицевой стороны ID.", id_back: "Пришлите, пожалуйста, фото обратной стороны ID.", vehicle_registration_front: "Пришлите, пожалуйста, лицевую сторону свидетельства о регистрации ТС.", vehicle_registration_back: "Пришлите, пожалуйста, обратную сторону свидетельства о регистрации ТС.", familyStatus: "Подскажите, пожалуйста, собственник автомобиля состоит в браке, никогда не состоял в браке или в разводе?", vehicleBoughtDuringMarriage: "Автомобиль был приобретён во время брака или после развода?", spouseConsentReady: facts.spouseConsentReady === false ? "Сообщите, пожалуйста, когда нотариальное согласие будет готово. Его можно оформить у любого нотариуса или у нотариуса в нашем здании." : "Нотариальное согласие супруга или супруги уже оформлено?", divorceCertificateReady: "Свидетельство о разводе уже есть?", guarantorAvailable: "Подскажите, пожалуйста, есть ли у Вас поручитель?", visitDate: "На какую дату Вам удобно приехать?", visitTime: "Уточните, пожалуйста, конкретное время визита. Для оформления нужно приехать не позднее 18:00."
+      vehicleMake: "Подскажите, пожалуйста, модель и год выпуска автомобиля.", vehicleModel: "Подскажите, пожалуйста, модель автомобиля.", vehicleYear: "Подскажите, пожалуйста, год выпуска автомобиля.", vehicleValue: "Какая ориентировочная стоимость автомобиля?", requestedAmount: "Какая сумма займа Вам необходима?", requestedProgram: "Подскажите, пожалуйста, Вас интересует займ без изъятия автомобиля или с постановкой автомобиля на охраняемую стоянку?", residenceRegion: "Где прописан собственник автомобиля?", ownerFullName: "Подскажите, пожалуйста, ФИО собственника автомобиля.", ownerResidenceRegion: "Где прописан собственник автомобиля?", ownerCanVisit: "Сможет ли собственник лично приехать на осмотр автомобиля и выдачу займа?", ownerFamilyStatus: "Подскажите, пожалуйста, собственник автомобиля состоит в браке, никогда не состоял в браке или в разводе?", id_front: "Пришлите, пожалуйста, фото лицевой стороны ID.", id_back: "Пришлите, пожалуйста, фото обратной стороны ID.", vehicle_registration_front: "Пришлите, пожалуйста, лицевую сторону свидетельства о регистрации ТС.", vehicle_registration_back: "Пришлите, пожалуйста, обратную сторону свидетельства о регистрации ТС.", familyStatus: "Подскажите, пожалуйста, собственник автомобиля состоит в браке, никогда не состоял в браке или в разводе?", vehicleBoughtDuringMarriage: "Автомобиль был приобретён во время брака или после развода?", spouseConsentReady: facts.spouseConsentReady === false ? "Сообщите, пожалуйста, когда нотариальное согласие будет готово. Его можно оформить у любого нотариуса или у нотариуса в нашем здании." : "Нотариальное согласие супруга или супруги уже оформлено?", divorceCertificateReady: "Свидетельство о разводе уже есть?", guarantorAvailable: "Подскажите, пожалуйста, есть ли у Вас поручитель?", visitDate: "На какую дату Вам удобно приехать?", visitTime: "Уточните, пожалуйста, конкретное время визита. Для оформления нужно приехать не позднее 18:00."
     };
     if (facts.residenceNeedsClarification) {
       questionByFact.residenceRegion = "Уточните, пожалуйста, в каком городе или области прописан собственник автомобиля?";
@@ -104,9 +122,14 @@ export class ResponsePlanService {
     if (recovery?.unresolvedFacts.length) {
       return buildRecoveryQuestions(recovery, facts, decision);
     }
+    if (shouldOfferParkingAfterLimit(facts, decision, intents)) {
+      return ["Если Вам нужна сумма больше лимита без изъятия, можем продолжить по программе с постановкой автомобиля на охраняемую стоянку?"];
+    }
     if (decision.nextAction === "collect_documents") return [documentsRequest(decision.requiredFacts.map(String))];
     const questions = decision.requiredFacts.map((fact) => questionByFact[String(fact)]).filter((item): item is string => Boolean(item));
-    if (isFirstMessage && questions.length) return [`${firstContactIntroduction}\n\n${questions.join(" ")}`];
+    if (isFirstMessage && questions.length && !shouldSuppressFirstContactIntroduction(decision, facts)) {
+      return [`${firstContactIntroduction}\n\n${questions.join(" ")}`];
+    }
     return [...new Set(questions)];
   }
 
@@ -117,6 +140,16 @@ export class ResponsePlanService {
     if (facts.requestedAmount === undefined) missing.push("requestedAmount");
     return missing;
   }
+}
+
+function shouldOfferParkingAfterLimit(facts: ApplicationFacts, decision: DecisionResult, intents: string[]): boolean {
+  if (facts.requestedProgram !== "without_storage") return false;
+  if (decision.rulesApplied.includes("other_region_guarantor_unavailable")) return false;
+  if (!facts.residenceRegion) return false;
+  const withoutStorage = decision.calculatedLimits.withoutStorage;
+  const parking = decision.calculatedLimits.parking;
+  if (typeof withoutStorage !== "number" || typeof parking !== "number" || parking <= withoutStorage) return false;
+  return intents.includes("limit_objection") || (typeof facts.requestedAmount === "number" && facts.requestedAmount > withoutStorage);
 }
 
 function isClientFacingRequiredStatement(statement: string): boolean {
@@ -138,6 +171,128 @@ function visitConfirmationText(facts: ApplicationFacts): string {
     "https://maps.app.goo.gl/9xiWLVvdyRgn3Sx4A",
     ...reminders
   ].join("\n");
+}
+
+function buildSpecialAnswers(
+  facts: ApplicationFacts,
+  decision: DecisionResult,
+  questions: { topic: string; text: string }[]
+): KnowledgeAnswer[] {
+  const answers: KnowledgeAnswer[] = [];
+
+  if (facts.declinedDocuments) {
+    answers.push({
+      key: "documents_declined",
+      text: "Хорошо, поняла. При визите в офис, пожалуйста, возьмите с собой оригиналы документов.",
+      exact: true
+    });
+  }
+
+  if (facts.familyStatus === "married" && decision.nextAction !== "refuse") {
+    answers.push({
+      key: "family_married_guidance",
+      text: "Для оформления потребуется оригинал нотариального согласия супруга или супруги. Его можно оформить у любого нотариуса или у нотариуса в нашем здании. Ориентировочная стоимость оформления согласия — 1500 сом.",
+      exact: true
+    });
+  }
+
+  if (facts.familyStatus === "single") {
+    answers.push({
+      key: "family_single_guidance",
+      text: "Поняла, нотариальное согласие супруга или супруги в таком случае не требуется. Можем перейти к следующему этапу оформления.",
+      exact: true
+    });
+  }
+
+  if (facts.familyStatus === "divorced" && facts.vehicleBoughtDuringMarriage === undefined) {
+    answers.push({
+      key: "family_divorced_guidance",
+      text: "Нотариальное согласие бывшего супруга или супруги не требуется. Подскажите, пожалуйста, автомобиль был приобретён во время брака или после развода?",
+      exact: true
+    });
+  }
+
+  if (facts.familyStatus === "divorced" && facts.vehicleBoughtDuringMarriage) {
+    answers.push({
+      key: "family_divorce_certificate",
+      text: "Для визита потребуется оригинал свидетельства о расторжении брака. Если удобно, можете заранее прислать его фотографию.",
+      exact: true
+    });
+  }
+
+  if (facts.familyStatus === "divorced" && facts.vehicleBoughtDuringMarriage === false) {
+    answers.push({
+      key: "family_after_divorce_guidance",
+      text: "Поняла, в таком случае свидетельство о расторжении брака для этого условия не требуется. Можем перейти к следующему этапу оформления.",
+      exact: true
+    });
+  }
+
+  const visitAnswer = buildVisitAnswer(facts, decision);
+  if (visitAnswer) answers.push(visitAnswer);
+
+  if (questions.some((question) => /когда[^?]*менеджер[^?]*позвон/i.test(question.text))) {
+    answers.push({
+      key: "manager_callback_timing",
+      text: facts.visitDate && facts.visitTime
+        ? "Обычно менеджер связывается с клиентами в течение часа."
+        : "Менеджер свяжется с Вами до 12:00 первого рабочего дня.",
+      exact: true
+    });
+  }
+
+  if (questions.some((question) => /wi.?fi|wifi/i.test(question.text)) && questions.some((question) => /парков/i.test(question.text))) {
+    answers.push({
+      key: "office_amenities",
+      text: "По Wi-Fi и парковке точную информацию лучше уточнить у сотрудников при визите в офис.",
+      exact: true
+    });
+  }
+
+  return answers;
+}
+
+function buildVisitAnswer(facts: ApplicationFacts, decision: DecisionResult): KnowledgeAnswer | undefined {
+  if (!facts.visitRequested && !facts.visitDate && !facts.visitTime) return undefined;
+  if (facts.visitDate && !isWorkingDayText(facts.visitDate)) {
+    const nextWorkingDate = nextWorkingDateFrom(facts.visitDate);
+    return {
+      key: "visit_non_working_day_guidance",
+      text: `Воскресенье, ${facts.visitDate}, у нас выходной. Ближайший рабочий день — ${nextWorkingDate}. Мы работаем ПН–ПТ 11:00–19:00. Для оформления нужно подъехать не позднее 18:00.`,
+      exact: true
+    };
+  }
+  if (facts.visitTime && facts.visitTime > "18:00") {
+    return {
+      key: "visit_latest_arrival_guidance",
+      text: "Мы работаем ПН–ПТ 11:00–19:00. Для оформления нужно подъехать не позднее 18:00. Подскажите, пожалуйста, другое конкретное время.",
+      exact: true
+    };
+  }
+  if (facts.visitRequested && facts.visitDate && !facts.visitTime) {
+    return {
+      key: "visit_time_required_guidance",
+      text: "Мы работаем ПН–ПТ 11:00–19:00. Для оформления нужно подъехать не позднее 18:00. Уточните, пожалуйста, конкретное время визита.",
+      exact: true
+    };
+  }
+  if (facts.visitRequested && !facts.visitDate && !facts.visitTime) {
+    return {
+      key: "visit_schedule_guidance",
+      text: "Мы работаем ПН–ПТ 11:00–19:00. Для оформления нужно подъехать не позднее 18:00. Уточните, пожалуйста, конкретные дату и время визита.",
+      exact: true
+    };
+  }
+  if (facts.visitDate && facts.visitTime && decision.nextAction !== "refuse") {
+    return { key: "visit_confirmation", text: visitConfirmationText(facts), exact: true };
+  }
+  return undefined;
+}
+
+function shouldSuppressFirstContactIntroduction(decision: DecisionResult, facts: ApplicationFacts): boolean {
+  if (["collect_owner", "collect_family_status", "schedule_visit", "arrived", "on_the_way"].includes(decision.nextAction)) return true;
+  if (facts.declinedDocuments || facts.familyStatus || facts.visitRequested || facts.visitDate || facts.visitTime) return true;
+  return false;
 }
 
 const firstContactIntroduction = "Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10.";
@@ -245,4 +400,43 @@ function documentsRecoveryRequest(requiredFacts: string[]): string {
 
 function isDocumentFact(value: string): boolean {
   return value === "id_front" || value === "id_back" || value === "vehicle_registration_front" || value === "vehicle_registration_back";
+}
+
+function buildPartialDocumentFollowUp(facts: ApplicationFacts): string[] {
+  const docs = facts.documents ?? {};
+  const receivedMissing: string[] = [];
+  if (docs.id_front === "received" && docs.id_back !== "received") receivedMissing.push("обратной стороны ID");
+  if (docs.id_back === "received" && docs.id_front !== "received") receivedMissing.push("лицевой стороны ID");
+  if (docs.vehicle_registration_front === "received" && docs.vehicle_registration_back !== "received") receivedMissing.push("обратной стороны свидетельства о регистрации ТС");
+  if (docs.vehicle_registration_back === "received" && docs.vehicle_registration_front !== "received") receivedMissing.push("лицевой стороны свидетельства о регистрации ТС");
+  if (receivedMissing.length > 0) {
+    return [`Пришлите, пожалуйста, фото ${receivedMissing.join(", ")}.`];
+  }
+  if (docs.vehicle_registration_front === "poor_quality") {
+    return ["Пришлите, пожалуйста, более качественное фото лицевой стороны свидетельства о регистрации ТС."];
+  }
+  if (docs.vehicle_registration_back === "poor_quality") {
+    return ["Пришлите, пожалуйста, более качественное фото обратной стороны свидетельства о регистрации ТС."];
+  }
+  if (docs.id_front === "poor_quality") {
+    return ["Пришлите, пожалуйста, более качественное фото лицевой стороны ID."];
+  }
+  if (docs.id_back === "poor_quality") {
+    return ["Пришлите, пожалуйста, более качественное фото обратной стороны ID."];
+  }
+  return [];
+}
+
+function isWorkingDayText(value: string): boolean {
+  const date = new Date(`${value}T12:00:00Z`);
+  const day = date.getUTCDay();
+  return day >= 1 && day <= 5;
+}
+
+function nextWorkingDateFrom(value: string): string {
+  const next = new Date(`${value}T12:00:00Z`);
+  do {
+    next.setUTCDate(next.getUTCDate() + 1);
+  } while (!isWorkingDayText(next.toISOString().slice(0, 10)));
+  return next.toISOString().slice(0, 10);
 }

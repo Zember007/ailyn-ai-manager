@@ -1,7 +1,11 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { RouterAiProvider } from "./router-ai.provider.js";
 
 describe("RouterAiProvider", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("normalizes sparse extraction payloads from RouterAI", async () => {
     process.env.DATABASE_URL ??= "postgresql://test:test@localhost:5432/ailyn";
     process.env.REDIS_URL ??= "redis://localhost:6379";
@@ -149,6 +153,38 @@ describe("RouterAiProvider", () => {
     expect(result.facts).not.toEqual(expect.arrayContaining([expect.objectContaining({ key: "requestedAmount" })]));
   });
 
+  it("detects generalized correction and limit-objection intents without exact phrase matching", async () => {
+    const provider = new RouterAiProvider({ isConfigured: vi.fn().mockReturnValue(false) } as any);
+    const correction = await provider.extract({
+      text: "нет, теперь нужно 450 000",
+      attachments: [],
+      facts: { vehicleValue: 1_500_000, requestedAmount: 300_000 }
+    });
+    const objection = await provider.extract({
+      text: "почему так мало, мне нужно 800 тысяч",
+      attachments: [],
+      facts: {
+        vehicleValue: 1_749_000,
+        requestedAmount: 874_500,
+        requestedProgram: "without_storage",
+        residenceRegion: "Бишкек"
+      },
+      pendingFacts: ["id_front", "id_back", "vehicle_registration_front", "vehicle_registration_back"]
+    } as any);
+    const alreadyProvided = await provider.extract({
+      text: "я выше уже писал",
+      attachments: [],
+      facts: {},
+      pendingFacts: ["vehicleValue"]
+    } as any);
+
+    expect(correction.intents).toContain("correction");
+    expect(correction.facts).toEqual(expect.arrayContaining([expect.objectContaining({ key: "requestedAmount", value: 450_000 })]));
+    expect(objection.intents).toEqual(expect.arrayContaining(["limit_objection", "clarification_request"]));
+    expect(objection.facts).toEqual(expect.arrayContaining([expect.objectContaining({ key: "requestedAmount", value: 800_000 })]));
+    expect(alreadyProvided.intents).toContain("already_provided");
+  });
+
   it("does not mark the vehicle as pledged from a generic new-loan phrase", async () => {
     const provider = new RouterAiProvider({ isConfigured: vi.fn().mockReturnValue(false) } as any);
     const generic = await provider.extract({ text: "Хочу займ под залог автомобиля", attachments: [], facts: {} });
@@ -156,6 +192,39 @@ describe("RouterAiProvider", () => {
 
     expect(generic.facts).not.toEqual(expect.arrayContaining([expect.objectContaining({ key: "vehicleInCredit", value: true })]));
     expect(explicit.facts).toEqual(expect.arrayContaining([expect.objectContaining({ key: "vehicleInCredit", value: true })]));
+  });
+
+  it("extracts refusal, ownership, and existing-contract facts from short special-flow turns", async () => {
+    const provider = new RouterAiProvider({ isConfigured: vi.fn().mockReturnValue(false) } as any);
+
+    const foreignVehicle = await provider.extract({ text: "Машина зарегистрирована в Казахстане.", attachments: [], facts: {} });
+    const foreignCitizen = await provider.extract({ text: "Я гражданин Казахстана, машина на кыргызских номерах.", attachments: [], facts: {} });
+    const ownerCannotVisit = await provider.extract({ text: "Собственник приехать не сможет.", attachments: [], facts: {} });
+    const existingContract = await provider.extract({ text: "Сколько у меня осталось долга по договору?", attachments: [], facts: {} });
+
+    expect(foreignVehicle.facts).toEqual(expect.arrayContaining([expect.objectContaining({ key: "vehicleRegistrationCountry", value: "KZ" })]));
+    expect(foreignCitizen.facts).toEqual(expect.arrayContaining([expect.objectContaining({ key: "citizenship", value: "KZ" })]));
+    expect(ownerCannotVisit.facts).toEqual(expect.arrayContaining([expect.objectContaining({ key: "ownerCanVisit", value: false })]));
+    expect(existingContract.facts).toEqual(expect.arrayContaining([expect.objectContaining({ key: "existingContractQuestion", value: true })]));
+  });
+
+  it("extracts family follow-ups and relative visit dates from special replies", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-31T12:00:00.000Z"));
+    const provider = new RouterAiProvider({ isConfigured: vi.fn().mockReturnValue(false) } as any);
+
+    const single = await provider.extract({ text: "Никогда не был женат.", attachments: [], facts: {} });
+    const tomorrowVisit = await provider.extract({ text: "Я могу приехать завтра.", attachments: [], facts: {} });
+    const sundayVisit = await provider.extract({ text: "Приеду в воскресенье.", attachments: [], facts: {} });
+    const divorcedFlow = await provider.extract({ text: "В браке.", attachments: [], facts: { familyStatus: "divorced" } as any });
+
+    expect(single.facts).toEqual(expect.arrayContaining([expect.objectContaining({ key: "familyStatus", value: "single" })]));
+    expect(tomorrowVisit.facts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: "visitRequested", value: true }),
+      expect.objectContaining({ key: "visitDate", value: "2026-09-01" })
+    ]));
+    expect(sundayVisit.facts).toEqual(expect.arrayContaining([expect.objectContaining({ key: "visitDate", value: "2026-09-06" })]));
+    expect(divorcedFlow.facts).toEqual(expect.arrayContaining([expect.objectContaining({ key: "vehicleBoughtDuringMarriage", value: true })]));
   });
 
   it("extracts attachment facts from text documents and classifies them conservatively", async () => {
@@ -176,6 +245,28 @@ describe("RouterAiProvider", () => {
     expect(result.extractedFacts).toEqual(expect.arrayContaining([expect.objectContaining({ key: "fullName", value: "Иванов Иван Иванович" })]));
   });
 
+  it("keeps unknown images unknown and preserves poor-quality registration classification", async () => {
+    const provider = new RouterAiProvider({ isConfigured: vi.fn().mockReturnValue(false) } as any);
+
+    const cat = await provider.analyzeImage({
+      attachment: {
+        id: "att-cat",
+        fileName: "cat.jpg",
+        mimeType: "image/jpeg"
+      }
+    });
+    const poorRegistration = await provider.analyzeImage({
+      attachment: {
+        id: "att-reg",
+        fileName: "registration-front-poor.jpg",
+        mimeType: "image/jpeg"
+      }
+    });
+
+    expect(cat).toEqual(expect.objectContaining({ type: "unknown" }));
+    expect(poorRegistration).toEqual(expect.objectContaining({ type: "vehicle_registration_front", quality: "poor" }));
+  });
+
   it("extracts an explicit borrower full name and phone from text when RouterAI extraction falls back", async () => {
     const provider = new RouterAiProvider({ isConfigured: vi.fn().mockReturnValue(false) } as any);
     const result = await provider.extract({
@@ -190,10 +281,44 @@ describe("RouterAiProvider", () => {
     ]));
   });
 
-  it("uses local extraction immediately when the message is already deterministically understood", async () => {
+  it("calls RouterAI first even when local fallback could understand the message", async () => {
     const client = {
       isConfigured: vi.fn().mockReturnValue(true),
-      createChatCompletion: vi.fn()
+      createChatCompletion: vi.fn().mockResolvedValue({
+        model: "routerai-text",
+        choices: [{ message: { content: JSON.stringify({
+          language: "ru",
+          facts: [
+            { key: "vehicleMake", value: "Toyota", confidence: 0.96 },
+            { key: "vehicleModel", value: "Camry", confidence: 0.96 },
+            { key: "vehicleYear", value: 2018, confidence: 0.96 },
+            { key: "vehicleValue", value: 1_500_000, confidence: 0.96 },
+            { key: "requestedAmount", value: 500_000, confidence: 0.96 }
+          ],
+          moneyMentions: [
+            {
+              sourceText: "1.5 млн",
+              amount: 1_500_000,
+              normalizedAmount: 1_500_000,
+              currency: "KGS",
+              roleCandidate: "vehicleValue",
+              confidence: 0.96,
+              start: 25,
+              end: 32
+            },
+            {
+              sourceText: "500к",
+              amount: 500_000,
+              normalizedAmount: 500_000,
+              currency: "KGS",
+              roleCandidate: "requestedAmount",
+              confidence: 0.96,
+              start: 40,
+              end: 44
+            }
+          ]
+        }) } }]
+      })
     } as any;
 
     const provider = new RouterAiProvider(client);
@@ -203,7 +328,7 @@ describe("RouterAiProvider", () => {
       facts: {}
     });
 
-    expect(client.createChatCompletion).not.toHaveBeenCalled();
+    expect(client.createChatCompletion).toHaveBeenCalledTimes(1);
     expect(result.facts).toEqual(expect.arrayContaining([
       expect.objectContaining({ key: "vehicleMake", value: "Toyota" }),
       expect.objectContaining({ key: "vehicleModel", value: "Camry" }),
@@ -211,6 +336,37 @@ describe("RouterAiProvider", () => {
       expect.objectContaining({ key: "vehicleValue", value: 1_500_000 }),
       expect.objectContaining({ key: "requestedAmount", value: 500_000 })
     ]));
+  });
+
+  it("calls RouterAI vision before local attachment inference when configured", async () => {
+    const client = {
+      isConfigured: vi.fn().mockReturnValue(true),
+      createChatCompletion: vi.fn().mockResolvedValue({
+        model: "routerai-vision",
+        choices: [{ message: { content: JSON.stringify({
+          type: "id_front",
+          quality: "good",
+          extractedFacts: [{ key: "fullName", value: "Иванов Иван Иванович", confidence: 0.91 }]
+        }) } }]
+      })
+    } as any;
+
+    const provider = new RouterAiProvider(client);
+    const result = await provider.analyzeImage({
+      attachment: {
+        id: "att-1",
+        fileName: "passport-front.txt",
+        mimeType: "text/plain",
+        textContent: "ID FRONT\nФИО: Иванов Иван Иванович"
+      }
+    });
+
+    expect(client.createChatCompletion).toHaveBeenCalledTimes(1);
+    expect(result).toEqual({
+      type: "id_front",
+      quality: "good",
+      extractedFacts: [{ key: "fullName", value: "Иванов Иван Иванович", confidence: 0.91 }]
+    });
   });
 
   it("falls back to local response when RouterAI errors", async () => {

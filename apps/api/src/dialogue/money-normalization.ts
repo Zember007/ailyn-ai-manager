@@ -24,21 +24,27 @@ export interface ResolvedMoneyFacts {
   vehicleValueConfidence: number;
 }
 
+// Emergency fallback and numeric post-processing only. Do not expand this into
+// a natural-language understanding layer; RouterAI owns flexible wording.
 const moneyPattern =
-  /(?:(\$|€|₸|₽|usd|eur|kzt|kgs?\.?|rub|доллар(?:ов|а|ы)?|евро|тенге|сом(?:а|ов)?|руб(?:ль|ля|лей)?)\s*)?(\d{1,3}(?:[ \u00a0.,]\d{3})+|\d+(?:[.,]\d+)?)(?:\s*)(млн|миллион(?:а|ов)?|тыс(?:яч[аи]?)?|тыщ|к)?(?:\s*)(\$|€|₸|₽|usd|eur|kzt|kgs?\.?|rub|доллар(?:ов|а|ы)?|евро|тенге|сом(?:а|ов)?|руб(?:ль|ля|лей)?)?/giu;
-const requestedCuePattern = /(нужн|надо|сумм|займ|получить|оформить|хочу|хотел(?:ось)?|надобно)/i;
-const vehicleCuePattern = /(стоит|стоимость|цена|оцен|машина|авто|автомобил)/i;
+  /(?:(\$|€|₸|₽|usd|eur|kzt|kgs?\.?|rub|доллар(?:ов|а|ы)?|евро|тенге|сом(?:а|ов)?|руб(?:ль|ля|лей)?)\s*)?(\d{1,3}(?:[ \u00a0.,]\d{3})+|\d+(?:[.,]\d+)?)(?:\s*)(млн|миллион(?:а|ов)?|тыс(?:яч[аи]?)?|тыщ|[kк])?(?:\s*)(\$|€|₸|₽|usd|eur|kzt|kgs?\.?|rub|доллар(?:ов|а|ы)?|евро|тенге|сом(?:а|ов)?|руб(?:ль|ля|лей)?)?/giu;
+const requestedCuePattern = /(нужн|надо|сумм|займ|получить|оформить|хочу|хотел(?:ось)?|надобно|требуется|дайте|выдайте)/i;
+const vehicleCuePattern = /(стоит|стоимость|цена|оцен|машина|авто|автомобил|рыночн)/i;
+const requestedCorrectionPattern = /(?:уже|теперь|нет|не\s+так|точнее|лучше|надо\s+больше|нужно\s+больше|хочу\s+больше)[^.!?]{0,40}(?:нужн|надо|сумм|займ|получить|хочу)?/i;
+const vehicleCorrectionPattern = /(?:уже|теперь|нет|не\s+так|точнее|ошиб(?:ся|лась)|сто(?:ит|имость)|цен[ауы])[^.!?]{0,40}(?:сто(?:ит|имость)|цен[ауы]|оцен)/i;
 
 export function resolveMoneyFacts(input: {
   text?: string;
   currentFacts: ApplicationFacts;
+  pendingFacts?: (keyof ApplicationFacts)[];
 }): ResolvedMoneyFacts {
   const mentions = detectMoneyMentions(input.text ?? "");
-  const vehicle = chooseMoneyMention("vehicleValue", mentions, input.currentFacts);
+  const context = getMoneyContext(input.text ?? "", input.currentFacts, input.pendingFacts ?? []);
+  const vehicle = chooseMoneyMention("vehicleValue", mentions, input.currentFacts, context);
   if (vehicle && vehicle.roleCandidate === "unknown") {
     vehicle.roleCandidate = "vehicleValue";
   }
-  const requested = chooseMoneyMention("requestedAmount", mentions, input.currentFacts, vehicle ? [vehicle] : []);
+  const requested = chooseMoneyMention("requestedAmount", mentions, input.currentFacts, context, vehicle ? [vehicle] : []);
   if (requested && requested.roleCandidate === "unknown") {
     requested.roleCandidate = "requestedAmount";
   }
@@ -107,12 +113,13 @@ function chooseMoneyMention(
   role: Extract<MoneyRoleCandidate, "requestedAmount" | "vehicleValue">,
   mentions: MoneyMention[],
   currentFacts: ApplicationFacts,
+  context: MoneyContext,
   excluded: MoneyMention[] = []
 ): MoneyMention | undefined {
-  if (role === "requestedAmount" && currentFacts.requestedAmount !== undefined) {
+  if (role === "requestedAmount" && currentFacts.requestedAmount !== undefined && !context.allowRequestedRevision) {
     return undefined;
   }
-  if (role === "vehicleValue" && currentFacts.vehicleValue !== undefined) {
+  if (role === "vehicleValue" && currentFacts.vehicleValue !== undefined && !context.allowVehicleRevision) {
     return undefined;
   }
 
@@ -125,11 +132,14 @@ function chooseMoneyMention(
   }
 
   if (available.length === 1 && (available[0].roleCandidate === "unknown" || available[0].roleCandidate === role)) {
+    if (context.pendingRole && context.pendingRole !== role && available[0].roleCandidate === "unknown") {
+      return undefined;
+    }
     return available[0];
   }
 
-  const unresolvedRequested = currentFacts.requestedAmount === undefined;
-  const unresolvedVehicle = currentFacts.vehicleValue === undefined;
+  const unresolvedRequested = currentFacts.requestedAmount === undefined || context.allowRequestedRevision;
+  const unresolvedVehicle = currentFacts.vehicleValue === undefined || context.allowVehicleRevision;
   if (available.length >= 2 && unresolvedRequested && unresolvedVehicle) {
     const sorted = [...available].sort((left, right) => right.normalizedAmount - left.normalizedAmount || left.start - right.start);
     return role === "vehicleValue" ? sorted[0] : sorted[sorted.length - 1];
@@ -170,7 +180,7 @@ function parseNormalizedAmount(rawNumber: string, unit: string): number | undefi
   const normalizedUnit = unit.toLocaleLowerCase("ru-RU");
   const multiplier = normalizedUnit.startsWith("млн") || normalizedUnit.startsWith("миллион")
     ? 1_000_000
-    : normalizedUnit.startsWith("тыс") || normalizedUnit.startsWith("тыщ") || normalizedUnit === "к"
+    : normalizedUnit.startsWith("тыс") || normalizedUnit.startsWith("тыщ") || normalizedUnit === "к" || normalizedUnit === "k"
       ? 1_000
       : 1;
   return Math.round(numericValue * multiplier);
@@ -239,4 +249,30 @@ function dedupeMentions(mentions: MoneyMention[]): MoneyMention[] {
     seen.add(key);
     return true;
   });
+}
+
+interface MoneyContext {
+  pendingRole?: Extract<MoneyRoleCandidate, "requestedAmount" | "vehicleValue">;
+  allowRequestedRevision: boolean;
+  allowVehicleRevision: boolean;
+}
+
+function getMoneyContext(
+  text: string,
+  currentFacts: ApplicationFacts,
+  pendingFacts: (keyof ApplicationFacts)[]
+): MoneyContext {
+  const normalized = text.toLocaleLowerCase("ru-RU");
+  const pendingRole = pendingFacts.includes("requestedAmount")
+    ? "requestedAmount"
+    : pendingFacts.includes("vehicleValue")
+      ? "vehicleValue"
+      : undefined;
+  const allowRequestedRevision =
+    requestedCorrectionPattern.test(normalized) ||
+    (currentFacts.requestedAmount !== undefined && requestedCuePattern.test(normalized) && !vehicleCuePattern.test(normalized));
+  const allowVehicleRevision =
+    vehicleCorrectionPattern.test(normalized) ||
+    (currentFacts.vehicleValue !== undefined && vehicleCuePattern.test(normalized) && !requestedCuePattern.test(normalized));
+  return { pendingRole, allowRequestedRevision, allowVehicleRevision };
 }

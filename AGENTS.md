@@ -26,7 +26,7 @@ If a value is not approved, mark the related rule or scenario as `BLOCKED`. Do n
 
 ## Architecture
 
-Message transport goes through a normalized channel message into `DialogueOrchestratorService`. The orchestrator saves the inbound message, loads conversation/application facts, analyzes attachments, calls RouterAI for structured extraction, validates extraction, updates facts/history, evaluates deterministic TypeScript business rules, resolves knowledge, builds a response plan, calls RouterAI for response text, validates output, persists the decision and answer, then returns a channel response.
+Message transport goes through a normalized channel message into `DialogueOrchestratorService`. The orchestrator saves the inbound message, loads conversation/application facts, calls RouterAI to understand client text, context, questions, short replies, corrections, and attachments as structured JSON, validates the structured extraction, updates facts/history, evaluates deterministic TypeScript business rules, resolves knowledge, builds a response plan, calls RouterAI for response text, validates output, persists the decision and answer, then returns a channel response.
 
 ## AI Provider
 
@@ -58,14 +58,18 @@ Dialogue core receives normalized `InboundMessage` objects and does not know whe
 
 Use two RouterAI calls:
 
-1. Understanding/extraction: structured output only, no client-facing answer.
+1. Understanding/extraction: structured output only, no client-facing answer. RouterAI is the primary interpreter of natural client language, typos, transliteration, mixed Russian/Kyrgyz text, short contextual replies, user questions, attachment hints, OCR/text extracted from documents, and what information is still missing.
 2. Response generation: turns an immutable `ResponsePlan` into a natural answer.
 
-Do not pass the entire specification, all scenarios, all knowledge, or full conversation history to the model.
+Pass enough bounded runtime context for RouterAI to behave like a human operator reading the current application: current facts, pending facts, current user text, attachment metadata/text where available, and the allowed structured schema. Do not pass the entire specification, all scenarios, all knowledge, or unrestricted full conversation history.
+
+Do not expand local phrase dictionaries, spelling-variant lists, or regular-expression parsers to make the agent "understand" more message variants. Local parsing is allowed only for emergency fallback when RouterAI is unavailable or returns invalid JSON, for schema/contract validation, for channel metadata normalization such as phone numbers, and for deterministic numeric post-processing of values that RouterAI already extracted.
+
+RouterAI may extract numbers, currencies, dates, documents, facts, questions, corrections, and intent labels. RouterAI must not calculate loan eligibility, loan limits, refusal decisions, guarantor requirements, document sufficiency, visit admissibility, or final business outcomes.
 
 ## Deterministic Business Rules
 
-Critical decisions live in `packages/business-rules`. RouterAI must not calculate eligibility, loan limits, refusal reasons, vehicle suitability, regional constraints, owner rules, guarantor requirements, family-status rules, document requirements, or visit admissibility.
+Critical decisions live in `packages/business-rules`. RouterAI must not calculate eligibility, loan limits, refusal reasons, vehicle suitability, regional constraints, owner rules, guarantor requirements, family-status rules, document requirements, or visit admissibility. Code may calculate and normalize values needed by these rules, but it must not duplicate human-language understanding with brittle keyword maps while RouterAI is available.
 
 ## State And Database
 

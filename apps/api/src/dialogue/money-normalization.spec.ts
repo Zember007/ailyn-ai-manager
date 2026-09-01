@@ -19,10 +19,11 @@ describe("money normalization", () => {
   });
 
   it("supports spaced, compact, suffix, and decimal money formats", () => {
-    expect(detectMoneyMentions("нужно 10 000, можно и 10000, бывает 10к, машина стоит 1.5 млн или 250.000сом")).toEqual(expect.arrayContaining([
+    expect(detectMoneyMentions("нужно 10 000, можно и 10000, бывает 10к и 10 k, машина стоит 1.5 млн или 250.000сом")).toEqual(expect.arrayContaining([
       expect.objectContaining({ sourceText: "10 000", normalizedAmount: 10_000 }),
       expect.objectContaining({ sourceText: "10000", normalizedAmount: 10_000 }),
       expect.objectContaining({ sourceText: "10к", normalizedAmount: 10_000 }),
+      expect.objectContaining({ sourceText: "10 k", normalizedAmount: 10_000 }),
       expect.objectContaining({ sourceText: "1.5 млн", normalizedAmount: 1_500_000 }),
       expect.objectContaining({ sourceText: "250.000сом", normalizedAmount: 250_000, currency: "KGS" })
     ]));
@@ -52,5 +53,26 @@ describe("money normalization", () => {
     expect(amountOnly.requestedAmountCurrency).toBe("KGS");
     expect(valueOnly.vehicleValue).toBe(2_000_000);
     expect(valueOnly.vehicleValueCurrency).toBe("RUB");
+  });
+
+  it("uses pending facts and correction cues instead of freezing the first saved amount", () => {
+    const pendingAmount = resolveMoneyFacts({
+      text: "800 тысяч",
+      currentFacts: { vehicleValue: 1_700_000 },
+      pendingFacts: ["requestedAmount"]
+    });
+    const correctedAmount = resolveMoneyFacts({
+      text: "нет, теперь нужно 450 000",
+      currentFacts: { vehicleValue: 1_500_000, requestedAmount: 300_000 }
+    });
+    const ambiguousWithPendingValue = resolveMoneyFacts({
+      text: "10",
+      currentFacts: { requestedAmount: 100_000 },
+      pendingFacts: ["vehicleValue"]
+    });
+
+    expect(pendingAmount.requestedAmount).toBe(800_000);
+    expect(correctedAmount.requestedAmount).toBe(450_000);
+    expect(ambiguousWithPendingValue.vehicleValue).toBeUndefined();
   });
 });

@@ -9,7 +9,6 @@ import { Stage1StoreService, type Stage1Application, type Stage1Conversation } f
 import { SettingsService } from "../settings/settings.service.js";
 import { BackendLogsService } from "../logs/backend-logs.service.js";
 import { KnowledgeBaseResolverService } from "./knowledge-base-resolver.service.js";
-import { normalizeTurnFacts } from "./fact-normalizer.js";
 import { DeferredIntegrationsService } from "./deferred-integrations.service.js";
 import type { FxConversionTrace } from "./pipeline.contracts.js";
 import type { MoneyMention } from "./money-normalization.js";
@@ -65,6 +64,8 @@ export class DialogueOrchestratorService {
       // Web Admin may pre-create an empty conversation. A first contact is defined
       // by the absence of prior messages, not by whether the DB row already exists.
       const isFirstClientTurn = conversation.messages.length === 0;
+      const voiceContext = getVoiceContext(message.attachments);
+      const extractionText = [message.text?.trim(), voiceContext.transcript].filter(Boolean).join("\n").trim() || undefined;
 
       void this.logs.debug("dialogue.receive", "Conversation resolved", {
         conversationId,
@@ -89,7 +90,7 @@ export class DialogueOrchestratorService {
 
       const inbound = await this.store.addMessage(conversation, {
         author: "client",
-        body: message.text ?? "",
+        body: extractionText ?? "",
         attachmentIds: message.attachments.map((attachment) => attachment.id),
         attachments: [],
         metadata: {
@@ -112,10 +113,17 @@ export class DialogueOrchestratorService {
         }
       });
       const pendingFacts = application.decision?.requiredFacts ?? [];
+      if (voiceContext.requiresRetry && !message.text?.trim()) {
+        return await this.respondWithVoiceRetry({
+          conversation,
+          application,
+          inboundMessageId: inbound.id
+        });
+      }
       const [businessRuleSettings, extraction] = await Promise.all([
         this.settings.getBusinessRuleSettings(),
         this.ai.getProvider().extract({
-          text: message.text,
+          text: extractionText,
           attachments: message.attachments,
           facts: application.facts,
           pendingFacts
@@ -143,25 +151,13 @@ export class DialogueOrchestratorService {
           incomingFacts.reportedInvalidVehicleYear = null;
         }
       }
-      const text = (message.text ?? "").toLowerCase();
-      if (text.includes("сменился собственник") || text.includes("другой собственник")) {
-        incomingFacts.ownerChanged = true;
-      }
-      if (text.includes("сменился номер") || text.includes("другой госномер") || text.includes("новый госномер")) {
-        incomingFacts.plateChanged = true;
-      }
-      const contextualFacts = normalizeTurnFacts({
-        text: message.text,
-        pendingFacts,
-        currentFacts: application.facts
-      });
-      if (!incomingFacts.phone && !contextualFacts.phone) {
+      if (!incomingFacts.phone) {
         const contactPhone = normalizePhoneLikeValue(message.externalContactId);
         if (contactPhone) {
           incomingFacts.phone = contactPhone;
         }
       }
-      if (contextualFacts.residenceNeedsClarification) {
+      if (incomingFacts.residenceNeedsClarification) {
         delete incomingFacts.residenceRegion;
         delete incomingFacts.residenceCategory;
       }
@@ -183,7 +179,7 @@ export class DialogueOrchestratorService {
       }
 
       const documentFacts = await this.processAttachments(conversation.id, inbound.id, message.attachments);
-      const changedFactKeys = await this.store.updateFacts(application, mergeFacts(incomingFacts, contextualFacts, fxResolution.facts, documentFacts.facts)) ?? [];
+      const changedFactKeys = await this.store.updateFacts(application, mergeFacts(incomingFacts, fxResolution.facts, documentFacts.facts)) ?? [];
       application = (await this.store.getApplication(application.id)) ?? application;
       const decision = evaluateApplication(application.facts, businessRuleSettings);
       const recovery = buildFxRecoveryHint(application.facts, decision.requiredFacts, fxResolution.blockedRoles) ?? detectRecoveryHint({
@@ -193,7 +189,8 @@ export class DialogueOrchestratorService {
         changedFactKeys,
         currentRequiredFacts: decision.requiredFacts.map(String),
         extractionQuestions: extraction.questions.length,
-        text: message.text,
+        intents: extraction.intents,
+        text: extractionText,
         attachments: message.attachments,
         attachmentIssueDetected: documentFacts.hasRecognitionIssue
       });
@@ -285,7 +282,7 @@ export class DialogueOrchestratorService {
         }
       });
       const generated = await this.ai.getProvider().generateResponse({
-        userText: message.text,
+        userText: extractionText,
         facts: application.facts,
         decision,
         responsePlan: plan
@@ -382,6 +379,22 @@ export class DialogueOrchestratorService {
     const extractedFacts: Partial<ApplicationFacts> = {};
     let hasRecognitionIssue = false;
     for (const attachment of attachments) {
+      if (isAudioAttachment(attachment)) {
+        await this.store.addAttachment({
+          conversationId,
+          messageId,
+          type: "voice",
+          status: attachment.textContent?.trim() ? "received" : "blocked",
+          fileName: attachment.fileName,
+          mimeType: attachment.mimeType,
+          byteSize: typeof attachment.metadata?.byteSize === "number" ? attachment.metadata.byteSize : undefined,
+          storageKey: typeof attachment.metadata?.storageKey === "string" ? attachment.metadata.storageKey : undefined
+        });
+        if (!attachment.textContent?.trim()) {
+          hasRecognitionIssue = true;
+        }
+        continue;
+      }
       const vision = await this.ai.getProvider().analyzeImage({ attachment });
       const docCode = mapVisionTypeToDocument(vision.type);
       if (docCode) {
@@ -407,6 +420,38 @@ export class DialogueOrchestratorService {
     return {
       facts: mergeFacts(Object.keys(documents).length > 0 ? { documents } : {}, extractedFacts),
       hasRecognitionIssue
+    };
+  }
+
+  private async respondWithVoiceRetry(input: {
+    conversation: Stage1Conversation;
+    application: Stage1Application;
+    inboundMessageId: string;
+  }): Promise<DialogueResult> {
+    const reply = "Извините, не удалось полностью понять Ваше сообщение. Пожалуйста, повторите его ещё раз.";
+    const validation = { passed: true, errors: [] };
+    await this.store.addMessage(input.conversation, {
+      author: "ai",
+      body: reply,
+      attachmentIds: [],
+      attachments: [],
+      metadata: {
+        sourceMessageId: input.inboundMessageId,
+        routerAiModel: "stage1-voice-retry",
+        promptVersion: "stage1-voice-retry-v1",
+        validation
+      }
+    });
+    const refreshedConversation = (await this.store.getConversation(input.conversation.id)) ?? input.conversation;
+    const refreshedApplication =
+      (await this.store.getApplication(input.application.id)) ?? refreshedConversation.application ?? input.application;
+    return {
+      conversation: refreshedConversation,
+      application: refreshedApplication,
+      reply,
+      validation,
+      routerAiModel: "stage1-voice-retry",
+      promptVersion: "stage1-voice-retry-v1"
     };
   }
 }
@@ -485,19 +530,21 @@ async function resolveForeignCurrencyFacts(input: {
   return { facts, traces, blockedRoles: [...blockedRoles] };
 }
 
-function detectRecoveryHint(input: {
+export function detectRecoveryHint(input: {
   previousFacts: ApplicationFacts;
   currentFacts: ApplicationFacts;
   pendingFacts: (keyof ApplicationFacts | DocumentCode)[];
   changedFactKeys: string[];
   currentRequiredFacts: string[];
   extractionQuestions: number;
+  intents: string[];
   text?: string;
   attachments: InboundMessage["attachments"];
   attachmentIssueDetected: boolean;
 }): RecoveryHint | undefined {
   if (input.pendingFacts.length === 0) return undefined;
   if (input.extractionQuestions > 0) return undefined;
+  if (input.intents.some((intent) => intent === "limit_objection" || intent === "clarification_request")) return undefined;
   if (!input.text?.trim() && input.attachments.length === 0) return undefined;
 
   const unresolvedFacts = input.pendingFacts.filter((fact) => !isFactSatisfied(input.currentFacts, fact)).map(String);
@@ -511,6 +558,10 @@ function detectRecoveryHint(input: {
 
   if (input.attachments.length > 0 && input.attachmentIssueDetected) {
     return { unresolvedFacts, reason: "attachment_issue" };
+  }
+
+  if (unresolvedFacts.every((fact) => isDocumentCode(fact as keyof ApplicationFacts | DocumentCode))) {
+    return undefined;
   }
 
   if (input.changedFactKeys.length === 0 || unresolvedFacts.length === input.pendingFacts.length) {
@@ -571,4 +622,21 @@ function normalizePhoneLikeValue(value: string | undefined): string | undefined 
   if (digits.length === 12 && digits.startsWith("996")) return `+${digits}`;
   if (digits.length === 10 && digits.startsWith("0")) return `+996${digits.slice(1)}`;
   return undefined;
+}
+
+function isAudioAttachment(attachment: InboundMessage["attachments"][number]): boolean {
+  return String(attachment.mimeType ?? "").toLowerCase().startsWith("audio/");
+}
+
+function getVoiceContext(attachments: InboundMessage["attachments"]): { transcript?: string; requiresRetry: boolean } {
+  const audioAttachments = attachments.filter(isAudioAttachment);
+  const transcript = audioAttachments
+    .map((attachment) => attachment.textContent?.trim())
+    .filter((value): value is string => Boolean(value))
+    .join("\n")
+    .trim();
+  return {
+    transcript: transcript || undefined,
+    requiresRetry: audioAttachments.length > 0 && !transcript
+  };
 }

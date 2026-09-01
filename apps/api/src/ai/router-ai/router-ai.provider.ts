@@ -25,13 +25,8 @@ export class RouterAiProvider implements AiProvider {
   constructor(private readonly client: RouterAiClient) {}
 
   async extract(input: ExtractionInput): Promise<ExtractionResult> {
-    const localResult = localExtract(input);
-    if (shouldUseLocalExtractionFastPath(input, localResult)) {
-      return localResult;
-    }
-
     if (!this.client.isConfigured()) {
-      return localResult;
+      return localExtract(input);
     }
 
     try {
@@ -55,7 +50,7 @@ export class RouterAiProvider implements AiProvider {
       return normalizeExtractionResult(parsed.data);
     } catch (error) {
       this.logger.warn(`RouterAI extraction fallback activated: ${formatError(error)}`);
-      return localResult;
+      return localExtract(input);
     }
   }
 
@@ -110,8 +105,53 @@ export class RouterAiProvider implements AiProvider {
   }
 
   async analyzeImage(input: VisionInput): Promise<VisionResult> {
-    return inferAttachmentVision(input);
+    if (!this.client.isConfigured()) {
+      return inferAttachmentVision(input);
+    }
+
+    try {
+      const response = await this.client.createChatCompletion(
+        {
+          model: this.config.routerAiVisionModel ?? this.config.routerAiTextModel ?? "routerai-vision-model-not-configured",
+          temperature: 0,
+          response_format: { type: "json_object" },
+          messages: [
+            {
+              role: "system",
+              content: [loadPrompt("core.system.md"), loadPrompt("vision.system.md")].join("\n\n")
+            },
+            { role: "user", content: JSON.stringify(buildVisionPromptInput(input)) }
+          ]
+        },
+        { timeoutMs: getStage1Timeout(this.config.routerAiTimeoutMs, 30_000) }
+      );
+      return normalizeVisionResult(JSON.parse(response.choices?.[0]?.message?.content ?? "{}"));
+    } catch (error) {
+      this.logger.warn(`RouterAI vision fallback activated: ${formatError(error)}`);
+      return inferAttachmentVision(input);
+    }
   }
+}
+
+function buildVisionPromptInput(input: VisionInput): Record<string, unknown> {
+  const attachmentText = readAttachmentText(input.attachment);
+  return {
+    attachment: {
+      id: input.attachment.id,
+      fileName: input.attachment.fileName,
+      mimeType: input.attachment.mimeType,
+      kindHint: input.attachment.kindHint,
+      metadata: input.attachment.metadata,
+      textContent: attachmentText || undefined,
+      hasImagePayload: isImageBase64(input.attachment.contentBase64),
+      hasBinaryPayload: Boolean(input.attachment.contentBase64)
+    },
+    responseContract: {
+      type: ["id_front", "id_back", "vehicle_registration_front", "vehicle_registration_back", "car", "unknown", "poor_quality"],
+      quality: ["good", "poor", "unknown"],
+      extractedFacts: "Array<{ key: ApplicationFacts key; value: unknown; confidence: 0..1 }>"
+    }
+  };
 }
 
 function inferAttachmentVision(input: VisionInput): VisionResult {
@@ -121,23 +161,26 @@ function inferAttachmentVision(input: VisionInput): VisionResult {
   const hint = [name, mimeType, attachmentText.toLowerCase()].join(" ");
   const extractedFacts = extractFactsFromAttachmentText(attachmentText);
 
-  if (hint.includes("poor") || hint.includes("blur") || hint.includes("low-quality")) {
-    return { type: "poor_quality", extractedFacts, quality: "poor" };
-  }
+  const quality: VisionResult["quality"] = hint.includes("poor") || hint.includes("blur") || hint.includes("low-quality")
+    ? "poor"
+    : "good";
   if (hint.includes("id-front") || hint.includes("passport-front") || hint.includes("idcard-front") || looksLikeIdFront(hint)) {
-    return { type: "id_front", extractedFacts, quality: "good" };
+    return { type: "id_front", extractedFacts, quality };
   }
   if (hint.includes("id-back") || hint.includes("passport-back") || hint.includes("idcard-back") || looksLikeIdBack(hint)) {
-    return { type: "id_back", extractedFacts, quality: "good" };
+    return { type: "id_back", extractedFacts, quality };
   }
   if (hint.includes("registration-front") || hint.includes("sts-front") || looksLikeRegistrationFront(hint)) {
-    return { type: "vehicle_registration_front", extractedFacts, quality: "good" };
+    return { type: "vehicle_registration_front", extractedFacts, quality };
   }
   if (hint.includes("registration-back") || hint.includes("sts-back") || looksLikeRegistrationBack(hint)) {
-    return { type: "vehicle_registration_back", extractedFacts, quality: "good" };
+    return { type: "vehicle_registration_back", extractedFacts, quality };
   }
-  if (hint.includes("car") || hint.includes("vehicle") || hint.includes("авто") || mimeType.startsWith("image/") || isImageBase64(input.attachment.contentBase64)) {
+  if (hint.includes("car-photo") || hint.includes("car_") || hint.includes("car-") || hint.includes("vehicle-photo") || hint.includes("авто") || hint.includes("машин")) {
     return { type: "car", extractedFacts, quality: "good" };
+  }
+  if (mimeType.startsWith("image/") || isImageBase64(input.attachment.contentBase64)) {
+    return { type: "unknown", extractedFacts, quality: quality === "poor" ? "poor" : "unknown" };
   }
   return { type: "unknown", extractedFacts, quality: "unknown" };
 }
@@ -147,8 +190,16 @@ function localExtract(input: ExtractionInput): ExtractionResult {
   const facts: ExtractionResult["facts"] = [];
   const intents: string[] = [];
   const questions: ExtractionResult["questions"] = [];
+  const language = detectLanguage(input.text ?? "");
+  const pendingOwnerResidence = input.pendingFacts?.includes("ownerResidenceRegion") === true;
 
-  const money = resolveMoneyFacts({ text: input.text, currentFacts: input.facts });
+  intents.push(...detectTurnIntents(input.text ?? "", input.pendingFacts ?? [], input.facts));
+
+  const money = resolveMoneyFacts({
+    text: input.text,
+    currentFacts: input.facts,
+    pendingFacts: (input.pendingFacts ?? []).filter((fact): fact is keyof ApplicationFacts => !isDocumentCode(fact))
+  });
   if (money.requestedAmount !== undefined && money.requestedAmountCurrency === "KGS") {
     facts.push({ key: "requestedAmount", value: money.requestedAmount, confidence: money.requestedAmountConfidence });
   }
@@ -175,19 +226,38 @@ function localExtract(input: ExtractionInput): ExtractionResult {
     facts.push({ key: "vehicleMake", value: "Toyota", confidence: 0.8 });
   }
 
-  if (text.includes("бишкек")) {
+  if (text.includes("бишкек") || text.includes("бишкекте") || text.includes("бишкеке") || text.includes("bishkek")) {
     facts.push({ key: "residenceRegion", value: "Бишкек", confidence: 0.9 });
+    if (pendingOwnerResidence) facts.push({ key: "ownerResidenceRegion", value: "Бишкек", confidence: 0.9 });
     facts.push({ key: "residenceCategory", value: "BISHKEK", confidence: 0.9 });
   }
-  if (text.includes("чуй")) {
+  if (/(?:\bчуй\b|чүй|чуйская)/i.test(text)) {
     facts.push({ key: "residenceRegion", value: "Чуйская область", confidence: 0.9 });
+    if (pendingOwnerResidence) facts.push({ key: "ownerResidenceRegion", value: "Чуйская область", confidence: 0.9 });
     facts.push({ key: "residenceCategory", value: "CHUY", confidence: 0.9 });
   }
-  if (text.includes(" ош") || text === "ош" || text.includes("в оше")) {
+  if (/(?:^|[^А-ЯЁа-яёA-Za-z])ош(?:$|[^А-ЯЁа-яёA-Za-z]|то|ко|те)|(?:^|[^A-Za-z])osh(?:$|[^A-Za-z])/i.test(text)) {
     facts.push({ key: "residenceRegion", value: "Ош", confidence: 0.8 });
+    if (pendingOwnerResidence) facts.push({ key: "ownerResidenceRegion", value: "Ош", confidence: 0.8 });
     facts.push({ key: "residenceCategory", value: "OTHER_KG", confidence: 0.8 });
   }
+  if ((input.pendingFacts?.includes("residenceRegion") || pendingOwnerResidence) && /(?:городская|сельская|временная|постоянная|местная)/i.test(text)) {
+    facts.push({ key: "residenceText", value: input.text?.trim() ?? text, confidence: 0.75 });
+    facts.push({ key: "residenceNeedsClarification", value: true, confidence: 0.75 });
+  }
   if (text.includes("регион 10")) facts.push({ key: "vehicleRegistrationRegion", value: "10", confidence: 0.9 });
+  if ((text.includes("зарегистр") || text.includes("учет")) && (text.includes("казахстан") || text.includes("казахстанд"))) {
+    facts.push({ key: "vehicleRegistrationCountry", value: "KZ", confidence: 0.9 });
+  }
+  if (/(?:зарегистрир\w+|учет\w*)[^.!?]{0,30}(?:кыргызстан|кыргыз республикасы|кыргызской республике)/i.test(text)) {
+    facts.push({ key: "vehicleRegistrationCountry", value: "KG", confidence: 0.85 });
+  }
+  if ((text.includes("гражданин") || text.includes("гражданка")) && (text.includes("казахстан") || text.includes("казахстанд"))) {
+    facts.push({ key: "citizenship", value: "KZ", confidence: 0.9 });
+  }
+  if (/(?:гражданин|гражданка)[^.!?]{0,20}(?:кыргызстана|кыргызской республики|кыргыз\s+республики|кыргызстан)/i.test(text)) {
+    facts.push({ key: "citizenship", value: "KG", confidence: 0.85 });
+  }
   if (text.includes("без изъятия") || text.includes("без изятия")) facts.push({ key: "requestedProgram", value: "without_storage", confidence: 0.9 });
   if (text.includes("стоянк") || text.includes("на парковк")) facts.push({ key: "requestedProgram", value: "parking", confidence: 0.9 });
   if (text.includes("груз")) facts.push({ key: "vehicleType", value: "truck", confidence: 0.8 });
@@ -201,27 +271,41 @@ function localExtract(input: ExtractionInput): ExtractionResult {
   if (text.includes("арест") || text.includes("огранич")) facts.push({ key: "vehicleArrested", value: true, confidence: 0.9 });
   if (text.includes("рефинанс")) facts.push({ key: "refinancingRequested", value: true, confidence: 0.9 });
   if (text.includes("выкуп")) facts.push({ key: "buyoutRequested", value: true, confidence: 0.9 });
-  if (/(?:я\s+оплатил|проверьте\s+оплату|остаток\s+долга|задолженность|реквизит|действующ(?:ий|ему)\s+договор|не\s+работает\s+gps|вернуть\s+документ)/i.test(text)) {
+  if (/(?:я\s+оплатил|проверьте\s+оплату|остаток\s+долга|остал(?:ось|ся)\s+долг[а]?|задолженность|долга\s+по\s+договору|реквизит|действующ(?:ий|ему)\s+договор|не\s+работает\s+gps|перестал\s+работать\s+gps|вернуть\s+документ)/i.test(text)) {
     facts.push({ key: "existingContractQuestion", value: true, confidence: 0.9 });
   }
   if (/(?:я\s+оплатил|проверьте\s+оплату)/i.test(text)) facts.push({ key: "existingContractPaymentMessage", value: true, confidence: 0.9 });
-  if (text.includes("не женат") || text.includes("не замужем") || text.includes("никогда не состоял") || text.includes("никогда не состояла")) {
+  if (/(?:не\s+женат|не\s+замужем|никогда\s+не\s+состоял(?:а)?|никогда\s+не\s+был\s+женат|никогда\s+не\s+была\s+замужем)/i.test(text)) {
     facts.push({ key: "familyStatus", value: "single", confidence: 0.9 });
-  } else if (text.includes("разведен") || text.includes("разведён") || text.includes("разведена") || text.includes("в разводе")) {
+  } else if (/(?:развед[её]н|разведена|в\s+разводе)/i.test(text)) {
     facts.push({ key: "familyStatus", value: "divorced", confidence: 0.9 });
-  } else if (text.includes("женат") || text.includes("замужем") || text.includes("состою в браке")) {
+  } else if (/(?:женат|замужем|состою\s+в\s+браке)/i.test(text)) {
     facts.push({ key: "familyStatus", value: "married", confidence: 0.9 });
   }
   if (/(?:согласие|документ)[^.!?]{0,30}(?:готово|есть|оформлено)/i.test(text)) facts.push({ key: "spouseConsentReady", value: true, confidence: 0.85 });
   if (/(?:согласие)[^.!?]{0,30}(?:нет|не готово|не оформлено)/i.test(text)) facts.push({ key: "spouseConsentReady", value: false, confidence: 0.85 });
+  if (/(?:свидетельств\w*\s+о\s+разводе|свидетельств\w*\s+о\s+расторжении\s+брака)[^.!?]{0,20}(?:есть|готово|на руках)/i.test(text)) {
+    facts.push({ key: "divorceCertificateReady", value: true, confidence: 0.85 });
+  }
+  if (/(?:свидетельств\w*\s+о\s+разводе|свидетельств\w*\s+о\s+расторжении\s+брака)[^.!?]{0,20}(?:нет|не готово)/i.test(text)) {
+    facts.push({ key: "divorceCertificateReady", value: false, confidence: 0.85 });
+  }
+  if (/(?:в\s+браке|во\s+время\s+брака)/i.test(text) && input.facts.familyStatus === "divorced") {
+    facts.push({ key: "vehicleBoughtDuringMarriage", value: true, confidence: 0.9 });
+  }
+  if (/(?:после\s+развода)/i.test(text) && input.facts.familyStatus === "divorced") {
+    facts.push({ key: "vehicleBoughtDuringMarriage", value: false, confidence: 0.9 });
+  }
   if (/(?:супруг|супруга|муж|жена)[^.!?]{0,30}(?:за границей|в другом городе|не здесь)/i.test(text)) facts.push({ key: "spouseAway", value: true, confidence: 0.85 });
   if (/(?:поручитель)[^.!?]{0,20}(?:есть|будет|найду)/i.test(text) || /^(?:да|есть)$/i.test(text.trim()) && input.pendingFacts?.includes("guarantorAvailable")) facts.push({ key: "guarantorAvailable", value: true, confidence: 0.85 });
   if (/(?:поручител)[^.!?]{0,20}(?:нет|не будет)|^нет$/i.test(text.trim()) && input.pendingFacts?.includes("guarantorAvailable")) facts.push({ key: "guarantorAvailable", value: false, confidence: 0.85 });
   if (/(?:не\s+могу|не\s+буду|не\s+хочу|нет\s+возможности)[^.!?]{0,40}(?:прислать|отправить)[^.!?]{0,20}(?:документ|фото)/i.test(text)) facts.push({ key: "declinedDocuments", value: true, confidence: 0.9 });
   if (/(?:авто|машин)[^.!?]{0,25}(?:мужа|жены|супруга|супруги|брата|друга|не\s+моя)|оформлен[ао]?\s+на\s+(?:мужа|жену|другого)/i.test(text)) facts.push({ key: "borrowerIsOwner", value: false, confidence: 0.9 });
-  if (/(?:собственник)[^.!?]{0,25}(?:приедет|сможет приехать)/i.test(text)) facts.push({ key: "ownerCanVisit", value: true, confidence: 0.85 });
-  if (/(?:собственник)[^.!?]{0,25}(?:не приедет|не сможет приехать)/i.test(text)) facts.push({ key: "ownerCanVisit", value: false, confidence: 0.9 });
-  if (text.includes("приеду") || text.includes("визит") || text.includes("уже еду") || text.includes("хочу приехать")) facts.push({ key: "visitRequested", value: true, confidence: 0.8 });
+  if (/(?:собственник)[^.!?]{0,25}(?:приедет|сможет приехать)|(?:сможет\s+ли\s+собственник\s+приехать)[^.!?]{0,10}(?:да|сможет)/i.test(text)) facts.push({ key: "ownerCanVisit", value: true, confidence: 0.85 });
+  if (/(?:собственник)[^.!?]{0,25}(?:не\s+приедет|не\s+сможет\s+приехать)|(?:собственник\s+приехать\s+не\s+сможет)/i.test(text)) facts.push({ key: "ownerCanVisit", value: false, confidence: 0.9 });
+  if (/(?:приеду|могу\s+приехать|давайте|визит|уже\s+еду|хочу\s+приехать|кел[еэ]\s+алам|келе\s+аламбы)/i.test(text)) {
+    facts.push({ key: "visitRequested", value: true, confidence: 0.8 });
+  }
   if (/(?:уже\s+еду|я\s+в\s+пути|выехал)/i.test(text)) facts.push({ key: "onTheWay", value: true, confidence: 0.9 });
   if (/(?:уже\s+приехал|я\s+у\s+офиса|стою\s+у\s+офиса|я\s+на\s+месте)/i.test(text)) facts.push({ key: "arrivedAtOffice", value: true, confidence: 0.9 });
   const visitDate = parseVisitDate(text);
@@ -230,14 +314,14 @@ function localExtract(input: ExtractionInput): ExtractionResult {
   if (visitTime) facts.push({ key: "visitTime", value: `${visitTime[1].padStart(2, "0")}:${visitTime[2]}`, confidence: 0.9 });
   if (text.includes("подумаю") || text.includes("позже")) facts.push({ key: "clientPaused", value: true, confidence: 0.8 });
 
-  if (text.includes("?") || text.includes("какие") || text.includes("сколько") || text.includes("можно ли") || text.includes("где ")) {
+  if (text.includes("?") || text.includes("какие") || text.includes("сколько") || text.includes("можно ли") || text.includes("где ") || text.includes("почему") || text.includes("откуда")) {
     questions.push(...detectQuestions(input.text ?? ""));
     intents.push("question");
   }
 
   return {
-    language: "ru",
-    intents,
+    language,
+    intents: [...new Set(intents)],
     questions,
     facts,
     moneyMentions: money.mentions,
@@ -253,7 +337,56 @@ function parseVisitDate(text: string): string | undefined {
   if (explicit) {
     return `${explicit[3]}-${explicit[2].padStart(2, "0")}-${explicit[1].padStart(2, "0")}`;
   }
+  const today = currentLocalDate();
+  if (text.includes("завтра") || text.includes("эртең")) {
+    return addDays(today, 1);
+  }
+
+  const weekdayOffset = parseRelativeWeekday(text, today);
+  if (weekdayOffset !== undefined) {
+    return addDays(today, weekdayOffset);
+  }
   return undefined;
+}
+
+function detectLanguage(text: string): ExtractionResult["language"] {
+  const normalized = text.toLocaleLowerCase("ru-RU");
+  const kyrgyzSignals = /(менин|каттоом|кандай|эртең|келе\s+аламбы|салам|машинам|керек|сом\b)/i.test(normalized);
+  const russianSignals = /[а-яё]/i.test(normalized) && /(здравствуйте|нужно|машина|процент|приехать|документ|браке|разводе|собственник)/i.test(normalized);
+  if (kyrgyzSignals && russianSignals) return "mixed";
+  if (kyrgyzSignals) return "kg";
+  if (russianSignals) return "ru";
+  return /[а-яё]/i.test(normalized) ? "ru" : "unknown";
+}
+
+function parseRelativeWeekday(text: string, referenceDate: string): number | undefined {
+  const normalized = text.toLocaleLowerCase("ru-RU");
+  const weekdays: Array<{ pattern: RegExp; day: number }> = [
+    { pattern: /понедельник|дүйшөмбү/i, day: 1 },
+    { pattern: /вторник|шейшемби/i, day: 2 },
+    { pattern: /сред[ау]|шаршемби/i, day: 3 },
+    { pattern: /четверг|бейшемби/i, day: 4 },
+    { pattern: /пятниц[ау]|жума/i, day: 5 },
+    { pattern: /суббот[ау]|ишемби/i, day: 6 },
+    { pattern: /воскресенье|жекшемби/i, day: 0 }
+  ];
+  const target = weekdays.find((item) => item.pattern.test(normalized));
+  if (!target) return undefined;
+
+  const currentDay = new Date(`${referenceDate}T12:00:00Z`).getUTCDay();
+  let delta = (target.day - currentDay + 7) % 7;
+  if (delta === 0) delta = 7;
+  return delta;
+}
+
+function currentLocalDate(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function addDays(date: string, days: number): string {
+  const next = new Date(`${date}T12:00:00Z`);
+  next.setUTCDate(next.getUTCDate() + days);
+  return next.toISOString().slice(0, 10);
 }
 
 function parseExplicitFullName(text: string): string | undefined {
@@ -279,9 +412,47 @@ function questionTopic(text: string): string {
   if (/ставк|процент/.test(normalized)) return "interest_rate";
   if (/адрес|где.*офис|как доехать/.test(normalized)) return "office_location";
   if (/документ|что нужно взять/.test(normalized)) return "documents_required";
-  if (/сумм|лимит|сколько.*получ/.test(normalized)) return "possible_amount";
+  if (/сумм|лимит|сколько.*получ|почему.*мало|откуда.*сумм|что.*мало/.test(normalized)) return "possible_amount";
   if (/график|когда работает|время работы/.test(normalized)) return "office_hours";
+  if (/когда[^?]*менеджер[^?]*позвон/.test(normalized)) return "manager_callback_timing";
+  if (/wi.?fi|wifi/.test(normalized) || /парков/.test(normalized)) return "office_amenities";
   return "general";
+}
+
+function detectTurnIntents(
+  text: string,
+  pendingFacts: ExtractionInput["pendingFacts"],
+  facts: ApplicationFacts
+): string[] {
+  const normalized = text.trim().toLocaleLowerCase("ru-RU");
+  if (!normalized) return [];
+  const intents: string[] = [];
+  if (/(?:^|[\s,.!?;:])(?:нет|не\s+так|точнее|теперь|уже|ошиб(?:ся|лась)|исправ|лучше)(?:$|[\s,.!?;:])/.test(normalized)) {
+    intents.push("correction");
+  }
+  if (
+    /(?:надо|нужно|хочу|дайте|выдайте)\s+больше|(?:мало|маловато|почему\s+так\s+мало|что\s+так\s+мало|а\s+что\s+так\s+мало|откуда\s+(?:эта|такая)\s+сумма)/.test(normalized) ||
+    (facts.requestedProgram === "without_storage" && facts.residenceRegion && /(?:мне\s+)?(?:надо|нужно|хочу)\s+\d/.test(normalized))
+  ) {
+    intents.push("limit_objection");
+  }
+  if (/(?:я\s+)?(?:уже\s+)?(?:написал|писал|сказал|говорил|отправлял|указывал)|выше\s+(?:писал|написал|сказал)/.test(normalized)) {
+    intents.push("already_provided");
+  }
+  if (/(?:почему|откуда|как\s+счит|как\s+рассчит|из-за\s+чего|по\s+какой\s+причине)/.test(normalized)) {
+    intents.push("clarification_request");
+  }
+  if (/(?:не\s+могу|не\s+буду|не\s+хочу|нет\s+возможности|не\s+получится)[^.!?]{0,70}(?:прислать|отправить|скинуть)?[^.!?]{0,30}(?:документ|фото|техпаспорт|id|айди)/.test(normalized)) {
+    intents.push("document_unavailable");
+  }
+  if (
+    normalized.length <= 4 &&
+    !/\d/.test(normalized) &&
+    (pendingFacts?.length ?? 0) > 0
+  ) {
+    intents.push("ambiguous_reply");
+  }
+  return intents;
 }
 
 function normalizeExtractionResult(payload: unknown): ExtractionResult {
@@ -309,16 +480,6 @@ function buildLocalResponse(input: ResponseGenerationInput): string {
   return [...new Set(parts)].filter(Boolean).join(" ").trim() || "Уточните, пожалуйста, модель, год автомобиля, ориентировочную стоимость и нужную сумму.";
 }
 
-function shouldUseLocalExtractionFastPath(input: ExtractionInput, localResult: ExtractionResult): boolean {
-  if (input.attachments.length > 0) return false;
-  if (localResult.promptInjectionDetected) return true;
-  if (localResult.facts.length > 0) return true;
-  if (localResult.moneyMentions.length > 0) return true;
-  if (localResult.questions.length > 0) return true;
-  if (localResult.intents.length > 0) return true;
-  return false;
-}
-
 function shouldUseDeterministicResponseFastPath(input: ResponseGenerationInput): boolean {
   const exactAnswers = input.responsePlan.answers.every((answer) => typeof answer.exactText === "string" && answer.exactText.trim().length > 0);
   const hasDeterministicContent =
@@ -327,6 +488,10 @@ function shouldUseDeterministicResponseFastPath(input: ResponseGenerationInput):
     input.responsePlan.requiredStatements.some((statement) => !statement.startsWith("Попросить"));
 
   return exactAnswers && hasDeterministicContent;
+}
+
+function isDocumentCode(value: keyof ApplicationFacts | import("@ailyn/business-rules").DocumentCode): boolean {
+  return value === "id_front" || value === "id_back" || value === "vehicle_registration_front" || value === "vehicle_registration_back" || value === "car_photo" || value === "unknown";
 }
 
 function getStage1Timeout(configuredTimeoutMs: number, maxTimeoutMs: number): number {
@@ -559,6 +724,22 @@ function isAttachmentType(value: string): value is ExtractionResult["attachments
     value === "unknown" ||
     value === "poor_quality"
   );
+}
+
+function normalizeVisionResult(payload: unknown): VisionResult {
+  if (!isRecord(payload)) {
+    throw new Error("RouterAI vision response is not an object");
+  }
+  const type = typeof payload.type === "string" && isAttachmentType(payload.type) ? payload.type : undefined;
+  const quality = payload.quality === "good" || payload.quality === "poor" || payload.quality === "unknown" ? payload.quality : undefined;
+  if (!type || !quality) {
+    throw new Error("RouterAI vision response does not match structured schema");
+  }
+  return {
+    type,
+    quality,
+    extractedFacts: normalizeFacts(payload.extractedFacts)
+  };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

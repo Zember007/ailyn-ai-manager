@@ -1,0 +1,4452 @@
+{
+  "apiUrl": "http://localhost:3001/api",
+  "runId": "dialog-e2e-1788244792565",
+  "currentDate": "2026-08-31",
+  "workingHoursContext": "Run date: 2026-08-31 (Monday).",
+  "summary": {
+    "total": 55,
+    "pass": 36,
+    "fail": 19,
+    "error": 0
+  },
+  "results": [
+    {
+      "status": "PASS",
+      "lastReply": "Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10.\n\nПодскажите, пожалуйста:\n- модель и год выпуска автомобиля;\n- ориентировочную стоимость автомобиля;\n- какая сумма займа Вам необходима?",
+      "stepReplies": [
+        "Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10.\n\nПодскажите, пожалуйста:\n- модель и год выпуска автомобиля;\n- ориентировочную стоимость автомобиля;\n- какая сумма займа Вам необходима?"
+      ],
+      "application": {
+        "id": "30c42dab-4537-4b9c-b73d-af71823048c6",
+        "conversationId": "868b956a-b05e-444e-bfa7-31b2ba5ebef6",
+        "contactId": "d3a821f6-9c9a-4ae2-a2b9-9b371051ed33",
+        "status": "need_more_data",
+        "stage": "COLLECTING_VEHICLE",
+        "facts": {
+          "language": "ru"
+        },
+        "factHistory": [
+          {
+            "key": "language",
+            "previousValue": null,
+            "newValue": "ru",
+            "changedAt": "2026-09-01T06:40:04.466Z"
+          }
+        ],
+        "decision": {
+          "stage": "COLLECTING_VEHICLE",
+          "status": "need_more_data",
+          "nextAction": "collect_vehicle",
+          "blockedRules": [],
+          "rulesApplied": [],
+          "requiredFacts": [
+            "vehicleMake",
+            "vehicleModel",
+            "vehicleYear"
+          ],
+          "calculatedLimits": {},
+          "eligiblePrograms": [
+            "without_storage",
+            "parking"
+          ],
+          "requiredStatements": [],
+          "forbiddenStatements": [
+            "окончательно одобрено",
+            "гарантированно одобрено",
+            "можно оформить по доверенности",
+            "рефинансирование возможно",
+            "выкупим займ",
+            "можно свободно выезжать за границу"
+          ]
+        },
+        "createdAt": "2026-09-01T06:39:52.650Z",
+        "updatedAt": "2026-09-01T06:40:04.478Z"
+      },
+      "conversationId": "868b956a-b05e-444e-bfa7-31b2ba5ebef6",
+      "id": "TC-001",
+      "title": "Новый клиент пишет «Здравствуйте»",
+      "durationMs": 11916
+    },
+    {
+      "status": "PASS",
+      "lastReply": "По программе без изъятия ставка определяется индивидуально после осмотра автомобиля. По программе со стоянкой ставка составляет 2,4% в месяц, дополнительно оплачивается парковка 130 сом в сутки. Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10.\n\nПодскажите, пожалуйста:\n- модель и год выпуска автомобиля;\n- ориентировочную стоимость автомобиля;\n- какая сумма займа Вам необходима?",
+      "stepReplies": [
+        "По программе без изъятия ставка определяется индивидуально после осмотра автомобиля. По программе со стоянкой ставка составляет 2,4% в месяц, дополнительно оплачивается парковка 130 сом в сутки. Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10.\n\nПодскажите, пожалуйста:\n- модель и год выпуска автомобиля;\n- ориентировочную стоимость автомобиля;\n- какая сумма займа Вам необходима?"
+      ],
+      "application": {
+        "id": "456e22c7-8c01-485f-a2f2-3d32a9621e8f",
+        "conversationId": "334ff0ce-9d71-4723-8db1-3df966863afd",
+        "contactId": "1d022533-95f2-4769-89f2-dea9402a00c1",
+        "status": "need_more_data",
+        "stage": "COLLECTING_VEHICLE",
+        "facts": {
+          "language": "ru"
+        },
+        "factHistory": [
+          {
+            "key": "language",
+            "previousValue": null,
+            "newValue": "ru",
+            "changedAt": "2026-09-01T06:40:04.589Z"
+          }
+        ],
+        "decision": {
+          "stage": "COLLECTING_VEHICLE",
+          "status": "need_more_data",
+          "nextAction": "collect_vehicle",
+          "blockedRules": [],
+          "rulesApplied": [],
+          "requiredFacts": [
+            "vehicleMake",
+            "vehicleModel",
+            "vehicleYear"
+          ],
+          "calculatedLimits": {},
+          "eligiblePrograms": [
+            "without_storage",
+            "parking"
+          ],
+          "requiredStatements": [],
+          "forbiddenStatements": [
+            "окончательно одобрено",
+            "гарантированно одобрено",
+            "можно оформить по доверенности",
+            "рефинансирование возможно",
+            "выкупим займ",
+            "можно свободно выезжать за границу"
+          ]
+        },
+        "createdAt": "2026-09-01T06:40:04.543Z",
+        "updatedAt": "2026-09-01T06:40:04.598Z"
+      },
+      "conversationId": "334ff0ce-9d71-4723-8db1-3df966863afd",
+      "id": "TC-002",
+      "title": "Первый контакт сразу с вопросом",
+      "durationMs": 144
+    },
+    {
+      "status": "PASS",
+      "lastReply": "Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10.\n\nПодскажите, пожалуйста, Вас интересует займ без изъятия автомобиля или с постановкой автомобиля на охраняемую стоянку?",
+      "stepReplies": [
+        "Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10.\n\nПодскажите, пожалуйста, Вас интересует займ без изъятия автомобиля или с постановкой автомобиля на охраняемую стоянку?"
+      ],
+      "application": {
+        "id": "037dc418-b629-4c91-b867-3bf922561f31",
+        "conversationId": "08b63949-4b9c-4cf7-8bf1-f7b4fb30d933",
+        "contactId": "dfff6abd-df45-411f-bf7f-7c698df9f17b",
+        "status": "need_more_data",
+        "stage": "ELIGIBILITY_CHECK",
+        "facts": {
+          "vehicleModel": "Camry",
+          "vehicleMake": "Toyota",
+          "vehicleYear": 2021,
+          "vehicleValue": 1500000,
+          "requestedAmount": 500000,
+          "language": "ru"
+        },
+        "factHistory": [
+          {
+            "key": "language",
+            "previousValue": null,
+            "newValue": "ru",
+            "changedAt": "2026-09-01T06:40:04.713Z"
+          },
+          {
+            "key": "requestedAmount",
+            "previousValue": null,
+            "newValue": 500000,
+            "changedAt": "2026-09-01T06:40:04.718Z"
+          },
+          {
+            "key": "vehicleValue",
+            "previousValue": null,
+            "newValue": 1500000,
+            "changedAt": "2026-09-01T06:40:04.722Z"
+          },
+          {
+            "key": "vehicleYear",
+            "previousValue": null,
+            "newValue": 2021,
+            "changedAt": "2026-09-01T06:40:04.726Z"
+          },
+          {
+            "key": "vehicleMake",
+            "previousValue": null,
+            "newValue": "Toyota",
+            "changedAt": "2026-09-01T06:40:04.729Z"
+          },
+          {
+            "key": "vehicleModel",
+            "previousValue": null,
+            "newValue": "Camry",
+            "changedAt": "2026-09-01T06:40:04.732Z"
+          }
+        ],
+        "decision": {
+          "stage": "ELIGIBILITY_CHECK",
+          "status": "need_more_data",
+          "nextAction": "collect_residence",
+          "blockedRules": [],
+          "rulesApplied": [],
+          "requiredFacts": [
+            "requestedProgram"
+          ],
+          "calculatedLimits": {},
+          "eligiblePrograms": [],
+          "requiredStatements": [],
+          "forbiddenStatements": [
+            "окончательно одобрено",
+            "гарантированно одобрено",
+            "можно оформить по доверенности",
+            "рефинансирование возможно",
+            "выкупим займ",
+            "можно свободно выезжать за границу"
+          ]
+        },
+        "createdAt": "2026-09-01T06:40:04.683Z",
+        "updatedAt": "2026-09-01T06:40:04.737Z"
+      },
+      "conversationId": "08b63949-4b9c-4cf7-8bf1-f7b4fb30d933",
+      "id": "TC-003",
+      "title": "Клиент сразу дал стартовые данные",
+      "durationMs": 78
+    },
+    {
+      "status": "FAIL",
+      "lastReply": "Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10.\n\nПодскажите, пожалуйста:\n- ориентировочную стоимость автомобиля;\n- какая сумма займа Вам необходима?",
+      "stepReplies": [
+        "Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10.\n\nПодскажите, пожалуйста:\n- ориентировочную стоимость автомобиля;\n- какая сумма займа Вам необходима?"
+      ],
+      "application": {
+        "id": "8cf5b1df-56b6-4977-ad72-d6a1e3a8d303",
+        "conversationId": "61808eb5-fd0e-4420-bd9e-91e82c8b12b6",
+        "contactId": "522ec2c7-814e-49a7-876c-69f0254b0b99",
+        "status": "need_more_data",
+        "stage": "COLLECTING_VALUE",
+        "facts": {
+          "vehicleModel": "Camry",
+          "vehicleMake": "Toyota",
+          "language": "unknown"
+        },
+        "factHistory": [
+          {
+            "key": "language",
+            "previousValue": null,
+            "newValue": "unknown",
+            "changedAt": "2026-09-01T06:40:04.788Z"
+          },
+          {
+            "key": "vehicleMake",
+            "previousValue": null,
+            "newValue": "Toyota",
+            "changedAt": "2026-09-01T06:40:04.791Z"
+          },
+          {
+            "key": "vehicleModel",
+            "previousValue": null,
+            "newValue": "Camry",
+            "changedAt": "2026-09-01T06:40:04.795Z"
+          }
+        ],
+        "decision": {
+          "stage": "COLLECTING_VALUE",
+          "status": "need_more_data",
+          "nextAction": "collect_value",
+          "blockedRules": [],
+          "rulesApplied": [],
+          "requiredFacts": [
+            "vehicleValue"
+          ],
+          "calculatedLimits": {},
+          "eligiblePrograms": [
+            "without_storage",
+            "parking"
+          ],
+          "requiredStatements": [],
+          "forbiddenStatements": [
+            "окончательно одобрено",
+            "гарантированно одобрено",
+            "можно оформить по доверенности",
+            "рефинансирование возможно",
+            "выкупим займ",
+            "можно свободно выезжать за границу"
+          ]
+        },
+        "createdAt": "2026-09-01T06:40:04.760Z",
+        "updatedAt": "2026-09-01T06:40:04.800Z"
+      },
+      "conversationId": "61808eb5-fd0e-4420-bd9e-91e82c8b12b6",
+      "error": "Scenario TC-004 did not satisfy scripted assertions. Last reply: Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10. Подскажите, пожалуйста: - ориентировочную стоимость автомобиля; - какая сумма займа Вам необходима?",
+      "id": "TC-004",
+      "title": "Указана только модель",
+      "durationMs": 60
+    },
+    {
+      "status": "FAIL",
+      "lastReply": "Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10.\n\nПодскажите, пожалуйста:\n- ориентировочную стоимость автомобиля;\n- какая сумма займа Вам необходима?",
+      "stepReplies": [
+        "Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10.\n\nПодскажите, пожалуйста:\n- ориентировочную стоимость автомобиля;\n- какая сумма займа Вам необходима?"
+      ],
+      "application": {
+        "id": "2eef505b-c898-44a6-8f1e-c3726962b627",
+        "conversationId": "8641d909-6a4e-4480-a950-f440b94c6996",
+        "contactId": "1dca3db9-96d7-4d53-b02d-836771230de6",
+        "status": "need_more_data",
+        "stage": "COLLECTING_VALUE",
+        "facts": {
+          "vehicleMake": "Toyota",
+          "language": "unknown"
+        },
+        "factHistory": [
+          {
+            "key": "language",
+            "previousValue": null,
+            "newValue": "unknown",
+            "changedAt": "2026-09-01T06:40:04.846Z"
+          },
+          {
+            "key": "vehicleMake",
+            "previousValue": null,
+            "newValue": "Toyota",
+            "changedAt": "2026-09-01T06:40:04.850Z"
+          }
+        ],
+        "decision": {
+          "stage": "COLLECTING_VALUE",
+          "status": "need_more_data",
+          "nextAction": "collect_value",
+          "blockedRules": [],
+          "rulesApplied": [],
+          "requiredFacts": [
+            "vehicleValue"
+          ],
+          "calculatedLimits": {},
+          "eligiblePrograms": [
+            "without_storage",
+            "parking"
+          ],
+          "requiredStatements": [],
+          "forbiddenStatements": [
+            "окончательно одобрено",
+            "гарантированно одобрено",
+            "можно оформить по доверенности",
+            "рефинансирование возможно",
+            "выкупим займ",
+            "можно свободно выезжать за границу"
+          ]
+        },
+        "createdAt": "2026-09-01T06:40:04.821Z",
+        "updatedAt": "2026-09-01T06:40:04.855Z"
+      },
+      "conversationId": "8641d909-6a4e-4480-a950-f440b94c6996",
+      "error": "Scenario TC-005 did not satisfy scripted assertions. Last reply: Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10. Подскажите, пожалуйста: - ориентировочную стоимость автомобиля; - какая сумма займа Вам необходима?",
+      "id": "TC-005",
+      "title": "Указана только марка",
+      "durationMs": 54
+    },
+    {
+      "status": "FAIL",
+      "lastReply": "Подскажите, пожалуйста, Вы, возможно, допустили опечатку. Автомобиля 2032 года выпуска пока не существует. Напишите, пожалуйста, правильный год выпуска автомобиля. Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10.\n\nПодскажите, пожалуйста:\n- ориентировочную стоимость автомобиля;\n- какая сумма займа Вам необходима?",
+      "stepReplies": [
+        "Подскажите, пожалуйста, Вы, возможно, допустили опечатку. Автомобиля 2032 года выпуска пока не существует. Напишите, пожалуйста, правильный год выпуска автомобиля. Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10.\n\nПодскажите, пожалуйста:\n- ориентировочную стоимость автомобиля;\n- какая сумма займа Вам необходима?"
+      ],
+      "application": {
+        "id": "74735402-97df-480d-808f-8b6de7e62024",
+        "conversationId": "da06a0c9-7ef2-49db-b38d-2797c44d75c7",
+        "contactId": "68067b6d-0f21-4992-be96-82c7c807fb80",
+        "status": "need_more_data",
+        "stage": "COLLECTING_VEHICLE",
+        "facts": {
+          "vehicleYear": 2032,
+          "reportedInvalidVehicleYear": 2032,
+          "vehicleModel": "Camry",
+          "vehicleMake": "Toyota",
+          "language": "ru"
+        },
+        "factHistory": [
+          {
+            "key": "language",
+            "previousValue": null,
+            "newValue": "ru",
+            "changedAt": "2026-09-01T06:40:04.897Z"
+          },
+          {
+            "key": "vehicleMake",
+            "previousValue": null,
+            "newValue": "Toyota",
+            "changedAt": "2026-09-01T06:40:04.900Z"
+          },
+          {
+            "key": "vehicleModel",
+            "previousValue": null,
+            "newValue": "Camry",
+            "changedAt": "2026-09-01T06:40:04.908Z"
+          },
+          {
+            "key": "reportedInvalidVehicleYear",
+            "previousValue": null,
+            "newValue": 2032,
+            "changedAt": "2026-09-01T06:40:04.916Z"
+          },
+          {
+            "key": "vehicleYear",
+            "previousValue": null,
+            "newValue": 2032,
+            "changedAt": "2026-09-01T06:40:04.920Z"
+          }
+        ],
+        "decision": {
+          "stage": "COLLECTING_VEHICLE",
+          "status": "need_more_data",
+          "nextAction": "collect_vehicle",
+          "blockedRules": [],
+          "rulesApplied": [
+            "future_vehicle_year_correction"
+          ],
+          "requiredFacts": [
+            "vehicleYear"
+          ],
+          "calculatedLimits": {},
+          "eligiblePrograms": [],
+          "requiredStatements": [
+            "Подскажите, пожалуйста, Вы, возможно, допустили опечатку. Автомобиля 2032 года выпуска пока не существует. Напишите, пожалуйста, правильный год выпуска автомобиля."
+          ],
+          "forbiddenStatements": [
+            "окончательно одобрено",
+            "гарантированно одобрено",
+            "можно оформить по доверенности",
+            "рефинансирование возможно",
+            "выкупим займ",
+            "можно свободно выезжать за границу"
+          ]
+        },
+        "createdAt": "2026-09-01T06:40:04.876Z",
+        "updatedAt": "2026-09-01T06:40:04.924Z"
+      },
+      "conversationId": "da06a0c9-7ef2-49db-b38d-2797c44d75c7",
+      "error": "Scenario TC-006 did not satisfy scripted assertions. Last reply: Подскажите, пожалуйста, Вы, возможно, допустили опечатку. Автомобиля 2032 года выпуска пока не существует. Напишите, пожалуйста, правильный год выпуска автомобиля. Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10. Подскажите, пожалуйста: - ориентировочную стоимость автомобиля; - какая сумма займа Вам необходима?",
+      "id": "TC-006",
+      "title": "Год из будущего",
+      "durationMs": 70
+    },
+    {
+      "status": "PASS",
+      "lastReply": "По программе без изъятия ставка определяется индивидуально после осмотра автомобиля. По программе со стоянкой ставка составляет 2,4% в месяц, дополнительно оплачивается парковка 130 сом в сутки. Подскажите, пожалуйста, модель и год выпуска автомобиля. Подскажите, пожалуйста, модель автомобиля. Подскажите, пожалуйста, год выпуска автомобиля.",
+      "stepReplies": [
+        "Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10.\n\nПодскажите, пожалуйста:\n- модель и год выпуска автомобиля;\n- ориентировочную стоимость автомобиля;\n- какая сумма займа Вам необходима?",
+        "По программе без изъятия ставка определяется индивидуально после осмотра автомобиля. По программе со стоянкой ставка составляет 2,4% в месяц, дополнительно оплачивается парковка 130 сом в сутки. Подскажите, пожалуйста, модель и год выпуска автомобиля. Подскажите, пожалуйста, модель автомобиля. Подскажите, пожалуйста, год выпуска автомобиля."
+      ],
+      "application": {
+        "id": "d8fc5d82-cd57-4787-b2a7-389a609d5d4d",
+        "conversationId": "1cdf6018-6a00-487c-a5b8-93c9c3035864",
+        "contactId": "a1e5871a-4e58-4bc4-853a-88d0fbe2556e",
+        "status": "need_more_data",
+        "stage": "COLLECTING_VEHICLE",
+        "facts": {
+          "language": "ru"
+        },
+        "factHistory": [
+          {
+            "key": "language",
+            "previousValue": null,
+            "newValue": "ru",
+            "changedAt": "2026-09-01T06:40:19.057Z"
+          }
+        ],
+        "decision": {
+          "stage": "COLLECTING_VEHICLE",
+          "status": "need_more_data",
+          "nextAction": "collect_vehicle",
+          "blockedRules": [],
+          "rulesApplied": [],
+          "requiredFacts": [
+            "vehicleMake",
+            "vehicleModel",
+            "vehicleYear"
+          ],
+          "calculatedLimits": {},
+          "eligiblePrograms": [
+            "without_storage",
+            "parking"
+          ],
+          "requiredStatements": [],
+          "forbiddenStatements": [
+            "окончательно одобрено",
+            "гарантированно одобрено",
+            "можно оформить по доверенности",
+            "рефинансирование возможно",
+            "выкупим займ",
+            "можно свободно выезжать за границу"
+          ]
+        },
+        "createdAt": "2026-09-01T06:40:04.944Z",
+        "updatedAt": "2026-09-01T06:40:19.124Z"
+      },
+      "conversationId": "1cdf6018-6a00-487c-a5b8-93c9c3035864",
+      "id": "TC-007",
+      "title": "Клиент вместо ответа задаёт вопрос",
+      "durationMs": 14248
+    },
+    {
+      "status": "PASS",
+      "lastReply": "Я не до конца поняла, какая программа Вам нужна. Уточните, пожалуйста, Вас интересует займ без изъятия автомобиля или с постановкой автомобиля на охраняемую стоянку?",
+      "stepReplies": [
+        "Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10.\n\nПодскажите, пожалуйста, Вас интересует займ без изъятия автомобиля или с постановкой автомобиля на охраняемую стоянку?",
+        "Я не до конца поняла, какая программа Вам нужна. Уточните, пожалуйста, Вас интересует займ без изъятия автомобиля или с постановкой автомобиля на охраняемую стоянку?"
+      ],
+      "application": {
+        "id": "d299a269-186e-4546-af34-110587731d18",
+        "conversationId": "7cf37ad9-c8ed-4a15-a069-550045054f48",
+        "contactId": "dc23598a-b6b9-4e6b-87a8-403a43dc59c4",
+        "status": "need_more_data",
+        "stage": "ELIGIBILITY_CHECK",
+        "facts": {
+          "requestedAmount": 450000,
+          "vehicleModel": "Camry",
+          "vehicleMake": "Toyota",
+          "vehicleYear": 2021,
+          "vehicleValue": 1500000,
+          "language": "ru"
+        },
+        "factHistory": [
+          {
+            "key": "language",
+            "previousValue": null,
+            "newValue": "ru",
+            "changedAt": "2026-09-01T06:40:19.217Z"
+          },
+          {
+            "key": "requestedAmount",
+            "previousValue": null,
+            "newValue": 300000,
+            "changedAt": "2026-09-01T06:40:19.220Z"
+          },
+          {
+            "key": "vehicleValue",
+            "previousValue": null,
+            "newValue": 1500000,
+            "changedAt": "2026-09-01T06:40:19.223Z"
+          },
+          {
+            "key": "vehicleYear",
+            "previousValue": null,
+            "newValue": 2021,
+            "changedAt": "2026-09-01T06:40:19.226Z"
+          },
+          {
+            "key": "vehicleMake",
+            "previousValue": null,
+            "newValue": "Toyota",
+            "changedAt": "2026-09-01T06:40:19.230Z"
+          },
+          {
+            "key": "vehicleModel",
+            "previousValue": null,
+            "newValue": "Camry",
+            "changedAt": "2026-09-01T06:40:19.233Z"
+          },
+          {
+            "key": "requestedAmount",
+            "previousValue": 300000,
+            "newValue": 450000,
+            "changedAt": "2026-09-01T06:40:19.277Z"
+          }
+        ],
+        "decision": {
+          "stage": "ELIGIBILITY_CHECK",
+          "status": "need_more_data",
+          "nextAction": "collect_residence",
+          "blockedRules": [],
+          "rulesApplied": [],
+          "requiredFacts": [
+            "requestedProgram"
+          ],
+          "calculatedLimits": {},
+          "eligiblePrograms": [],
+          "requiredStatements": [],
+          "forbiddenStatements": [
+            "окончательно одобрено",
+            "гарантированно одобрено",
+            "можно оформить по доверенности",
+            "рефинансирование возможно",
+            "выкупим займ",
+            "можно свободно выезжать за границу"
+          ]
+        },
+        "createdAt": "2026-09-01T06:40:19.193Z",
+        "updatedAt": "2026-09-01T06:40:19.282Z"
+      },
+      "conversationId": "7cf37ad9-c8ed-4a15-a069-550045054f48",
+      "id": "TC-008",
+      "title": "Клиент изменил сумму",
+      "durationMs": 108
+    },
+    {
+      "status": "PASS",
+      "lastReply": "Подскажите, пожалуйста, Вас интересует займ без изъятия автомобиля или с постановкой автомобиля на охраняемую стоянку?",
+      "stepReplies": [
+        "Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10.\n\nПодскажите, пожалуйста:\n- ориентировочную стоимость автомобиля;\n- какая сумма займа Вам необходима?",
+        "Я не до конца поняла ориентировочную стоимость автомобиля. Напишите, пожалуйста, примерную стоимость в сомах.",
+        "Какая сумма займа Вам необходима?",
+        "Подскажите, пожалуйста, Вас интересует займ без изъятия автомобиля или с постановкой автомобиля на охраняемую стоянку?"
+      ],
+      "application": {
+        "id": "15b21365-7d6f-48e7-879d-10080c22849e",
+        "conversationId": "abed827b-a1f6-4fe6-b71b-e177553c4ba8",
+        "contactId": "3c1282dd-abb2-45b7-9124-fd164771349c",
+        "status": "need_more_data",
+        "stage": "ELIGIBILITY_CHECK",
+        "facts": {
+          "requestedAmount": 500000,
+          "vehicleValue": 1500000,
+          "language": "ru",
+          "vehicleYear": 2021,
+          "vehicleModel": "Camry",
+          "vehicleMake": "Toyota"
+        },
+        "factHistory": [
+          {
+            "key": "language",
+            "previousValue": null,
+            "newValue": "unknown",
+            "changedAt": "2026-09-01T06:40:19.327Z"
+          },
+          {
+            "key": "vehicleMake",
+            "previousValue": null,
+            "newValue": "Toyota",
+            "changedAt": "2026-09-01T06:40:19.331Z"
+          },
+          {
+            "key": "vehicleModel",
+            "previousValue": null,
+            "newValue": "Camry",
+            "changedAt": "2026-09-01T06:40:19.334Z"
+          },
+          {
+            "key": "vehicleYear",
+            "previousValue": null,
+            "newValue": 2021,
+            "changedAt": "2026-09-01T06:40:19.370Z"
+          },
+          {
+            "key": "language",
+            "previousValue": "unknown",
+            "newValue": "ru",
+            "changedAt": "2026-09-01T06:40:19.408Z"
+          },
+          {
+            "key": "vehicleValue",
+            "previousValue": null,
+            "newValue": 1500000,
+            "changedAt": "2026-09-01T06:40:19.411Z"
+          },
+          {
+            "key": "requestedAmount",
+            "previousValue": null,
+            "newValue": 500000,
+            "changedAt": "2026-09-01T06:40:19.448Z"
+          }
+        ],
+        "decision": {
+          "stage": "ELIGIBILITY_CHECK",
+          "status": "need_more_data",
+          "nextAction": "collect_residence",
+          "blockedRules": [],
+          "rulesApplied": [],
+          "requiredFacts": [
+            "requestedProgram"
+          ],
+          "calculatedLimits": {},
+          "eligiblePrograms": [],
+          "requiredStatements": [],
+          "forbiddenStatements": [
+            "окончательно одобрено",
+            "гарантированно одобрено",
+            "можно оформить по доверенности",
+            "рефинансирование возможно",
+            "выкупим займ",
+            "можно свободно выезжать за границу"
+          ]
+        },
+        "createdAt": "2026-09-01T06:40:19.301Z",
+        "updatedAt": "2026-09-01T06:40:19.453Z"
+      },
+      "conversationId": "abed827b-a1f6-4fe6-b71b-e177553c4ba8",
+      "id": "TC-009",
+      "title": "Несколько сообщений подряд",
+      "durationMs": 170
+    },
+    {
+      "status": "FAIL",
+      "lastReply": "Обычно оформление занимает 1 час. Присланные Вами документы помогут нам сократить время выдачи денег. Если офис работает и документы в порядке, оформление возможно в день обращения. Мы работаем до 19:00. Вам надо подъехать до 18:00, чтобы успеть всё оформить. Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10.\n\nПодскажите, пожалуйста:\n- модель и год выпуска автомобиля;\n- ориентировочную стоимость автомобиля;\n- какая сумма займа Вам необходима?",
+      "stepReplies": [
+        "Обычно оформление занимает 1 час. Присланные Вами документы помогут нам сократить время выдачи денег. Если офис работает и документы в порядке, оформление возможно в день обращения. Мы работаем до 19:00. Вам надо подъехать до 18:00, чтобы успеть всё оформить. Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10.\n\nПодскажите, пожалуйста:\n- модель и год выпуска автомобиля;\n- ориентировочную стоимость автомобиля;\n- какая сумма займа Вам необходима?"
+      ],
+      "application": {
+        "id": "4f5c9873-22b1-42d0-a0cc-5b1b392beac1",
+        "conversationId": "66198eed-7bdc-4def-9a6e-9b82b04e2400",
+        "contactId": "66c45b41-b51d-4788-a166-c28c89b8585b",
+        "status": "need_more_data",
+        "stage": "COLLECTING_VEHICLE",
+        "facts": {
+          "language": "ru"
+        },
+        "factHistory": [
+          {
+            "key": "language",
+            "previousValue": null,
+            "newValue": "ru",
+            "changedAt": "2026-09-01T06:40:19.490Z"
+          }
+        ],
+        "decision": {
+          "stage": "COLLECTING_VEHICLE",
+          "status": "need_more_data",
+          "nextAction": "collect_vehicle",
+          "blockedRules": [],
+          "rulesApplied": [],
+          "requiredFacts": [
+            "vehicleMake",
+            "vehicleModel",
+            "vehicleYear"
+          ],
+          "calculatedLimits": {},
+          "eligiblePrograms": [
+            "without_storage",
+            "parking"
+          ],
+          "requiredStatements": [],
+          "forbiddenStatements": [
+            "окончательно одобрено",
+            "гарантированно одобрено",
+            "можно оформить по доверенности",
+            "рефинансирование возможно",
+            "выкупим займ",
+            "можно свободно выезжать за границу"
+          ]
+        },
+        "createdAt": "2026-09-01T06:40:19.471Z",
+        "updatedAt": "2026-09-01T06:40:19.495Z"
+      },
+      "conversationId": "66198eed-7bdc-4def-9a6e-9b82b04e2400",
+      "error": "Scenario TC-010 did not satisfy scripted assertions. Last reply: Обычно оформление занимает 1 час. Присланные Вами документы помогут нам сократить время выдачи денег. Если офис работает и документы в порядке, оформление возможно в день обращения. Мы работаем до 19:00. Вам надо подъехать до 18:00, чтобы успеть всё оформить. Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10. Подскажите, пожалуйста: - модель и год выпуска автомобиля; - ориентировочную стоимость автомобиля; - какая сумма займа Вам необходима?",
+      "id": "TC-010",
+      "title": "Несколько вопросов в одном сообщении",
+      "durationMs": 89
+    },
+    {
+      "status": "PASS",
+      "lastReply": "Предварительно возможная сумма — до 600 000 сом. Окончательная сумма определяется после осмотра автомобиля и проверки документов. Пришлите, пожалуйста, фото лицевой стороны ID, обратной стороны ID, лицевой стороны свидетельства о регистрации ТС, обратной стороны свидетельства о регистрации ТС.",
+      "stepReplies": [
+        "Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10.\n\nПодскажите, пожалуйста, Вас интересует займ без изъятия автомобиля или с постановкой автомобиля на охраняемую стоянку?",
+        "Где прописан собственник автомобиля?",
+        "Предварительно возможная сумма — до 600 000 сом. Окончательная сумма определяется после осмотра автомобиля и проверки документов. Пришлите, пожалуйста, фото лицевой стороны ID, обратной стороны ID, лицевой стороны свидетельства о регистрации ТС, обратной стороны свидетельства о регистрации ТС."
+      ],
+      "application": {
+        "id": "c2c14770-a983-4643-bd75-895d29c062de",
+        "conversationId": "2f761b24-03d8-4b78-9440-e993aad31442",
+        "contactId": "1410ae1d-0b6e-4a24-ba66-f4c329399135",
+        "status": "need_more_data",
+        "stage": "COLLECTING_DOCUMENTS",
+        "facts": {
+          "residenceNeedsClarification": false,
+          "residenceText": "Бишкек",
+          "residenceCategory": "BISHKEK",
+          "residenceRegion": "Бишкек",
+          "requestedProgram": "without_storage",
+          "vehicleModel": "Camry",
+          "vehicleMake": "Toyota",
+          "vehicleYear": 2021,
+          "vehicleValue": 1500000,
+          "requestedAmount": 500000,
+          "language": "ru"
+        },
+        "factHistory": [
+          {
+            "key": "language",
+            "previousValue": null,
+            "newValue": "ru",
+            "changedAt": "2026-09-01T06:40:19.580Z"
+          },
+          {
+            "key": "requestedAmount",
+            "previousValue": null,
+            "newValue": 500000,
+            "changedAt": "2026-09-01T06:40:19.584Z"
+          },
+          {
+            "key": "vehicleValue",
+            "previousValue": null,
+            "newValue": 1500000,
+            "changedAt": "2026-09-01T06:40:19.587Z"
+          },
+          {
+            "key": "vehicleYear",
+            "previousValue": null,
+            "newValue": 2021,
+            "changedAt": "2026-09-01T06:40:19.591Z"
+          },
+          {
+            "key": "vehicleMake",
+            "previousValue": null,
+            "newValue": "Toyota",
+            "changedAt": "2026-09-01T06:40:19.595Z"
+          },
+          {
+            "key": "vehicleModel",
+            "previousValue": null,
+            "newValue": "Camry",
+            "changedAt": "2026-09-01T06:40:19.598Z"
+          },
+          {
+            "key": "requestedProgram",
+            "previousValue": null,
+            "newValue": "without_storage",
+            "changedAt": "2026-09-01T06:40:19.634Z"
+          },
+          {
+            "key": "residenceRegion",
+            "previousValue": null,
+            "newValue": "Бишкек",
+            "changedAt": "2026-09-01T06:40:19.671Z"
+          },
+          {
+            "key": "residenceCategory",
+            "previousValue": null,
+            "newValue": "BISHKEK",
+            "changedAt": "2026-09-01T06:40:19.674Z"
+          },
+          {
+            "key": "residenceText",
+            "previousValue": null,
+            "newValue": "Бишкек",
+            "changedAt": "2026-09-01T06:40:19.677Z"
+          },
+          {
+            "key": "residenceNeedsClarification",
+            "previousValue": null,
+            "newValue": false,
+            "changedAt": "2026-09-01T06:40:19.680Z"
+          }
+        ],
+        "decision": {
+          "stage": "COLLECTING_DOCUMENTS",
+          "status": "need_more_data",
+          "nextAction": "collect_documents",
+          "blockedRules": [],
+          "rulesApplied": [],
+          "requiredFacts": [
+            "id_front",
+            "id_back",
+            "vehicle_registration_front",
+            "vehicle_registration_back"
+          ],
+          "calculatedLimits": {
+            "parking": 750000,
+            "withoutStorage": 600000
+          },
+          "eligiblePrograms": [
+            "without_storage",
+            "parking"
+          ],
+          "requiredStatements": [
+            "Попросить только недостающие документы."
+          ],
+          "forbiddenStatements": [
+            "окончательно одобрено",
+            "гарантированно одобрено",
+            "можно оформить по доверенности",
+            "рефинансирование возможно",
+            "выкупим займ",
+            "можно свободно выезжать за границу"
+          ]
+        },
+        "createdAt": "2026-09-01T06:40:19.559Z",
+        "updatedAt": "2026-09-01T06:40:19.686Z"
+      },
+      "conversationId": "2f761b24-03d8-4b78-9440-e993aad31442",
+      "id": "TC-011",
+      "title": "Бишкек, без изъятия, сумма допустима",
+      "durationMs": 156
+    },
+    {
+      "status": "PASS",
+      "lastReply": "По программе без изъятия предварительно возможная сумма — до 600 000 сом. По программе со стоянкой предварительно возможная сумма — до 1 000 000 сом. Окончательная сумма определяется после осмотра автомобиля и проверки документов. Если Вам нужна сумма больше лимита без изъятия, можем продолжить по программе с постановкой автомобиля на охраняемую стоянку?",
+      "stepReplies": [
+        "Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10.\n\nПодскажите, пожалуйста, Вас интересует займ без изъятия автомобиля или с постановкой автомобиля на охраняемую стоянку?",
+        "Где прописан собственник автомобиля?",
+        "По программе без изъятия предварительно возможная сумма — до 600 000 сом. По программе со стоянкой предварительно возможная сумма — до 1 000 000 сом. Окончательная сумма определяется после осмотра автомобиля и проверки документов. Если Вам нужна сумма больше лимита без изъятия, можем продолжить по программе с постановкой автомобиля на охраняемую стоянку?"
+      ],
+      "application": {
+        "id": "d50fd313-ede1-4313-99d7-2235479ddf4e",
+        "conversationId": "3c0e1134-c76a-4885-ac45-9d35c40df219",
+        "contactId": "b3783db2-41c2-4e34-b75d-661277290bde",
+        "status": "need_more_data",
+        "stage": "COLLECTING_DOCUMENTS",
+        "facts": {
+          "residenceNeedsClarification": false,
+          "residenceText": "Бишкек",
+          "residenceCategory": "BISHKEK",
+          "residenceRegion": "Бишкек",
+          "requestedProgram": "without_storage",
+          "vehicleModel": "Camry",
+          "vehicleMake": "Toyota",
+          "vehicleYear": 2021,
+          "vehicleValue": 2000000,
+          "requestedAmount": 900000,
+          "language": "ru"
+        },
+        "factHistory": [
+          {
+            "key": "language",
+            "previousValue": null,
+            "newValue": "ru",
+            "changedAt": "2026-09-01T06:40:19.735Z"
+          },
+          {
+            "key": "requestedAmount",
+            "previousValue": null,
+            "newValue": 900000,
+            "changedAt": "2026-09-01T06:40:19.738Z"
+          },
+          {
+            "key": "vehicleValue",
+            "previousValue": null,
+            "newValue": 2000000,
+            "changedAt": "2026-09-01T06:40:19.741Z"
+          },
+          {
+            "key": "vehicleYear",
+            "previousValue": null,
+            "newValue": 2021,
+            "changedAt": "2026-09-01T06:40:19.745Z"
+          },
+          {
+            "key": "vehicleMake",
+            "previousValue": null,
+            "newValue": "Toyota",
+            "changedAt": "2026-09-01T06:40:19.747Z"
+          },
+          {
+            "key": "vehicleModel",
+            "previousValue": null,
+            "newValue": "Camry",
+            "changedAt": "2026-09-01T06:40:19.751Z"
+          },
+          {
+            "key": "requestedProgram",
+            "previousValue": null,
+            "newValue": "without_storage",
+            "changedAt": "2026-09-01T06:40:19.789Z"
+          },
+          {
+            "key": "residenceRegion",
+            "previousValue": null,
+            "newValue": "Бишкек",
+            "changedAt": "2026-09-01T06:40:19.830Z"
+          },
+          {
+            "key": "residenceCategory",
+            "previousValue": null,
+            "newValue": "BISHKEK",
+            "changedAt": "2026-09-01T06:40:19.833Z"
+          },
+          {
+            "key": "residenceText",
+            "previousValue": null,
+            "newValue": "Бишкек",
+            "changedAt": "2026-09-01T06:40:19.836Z"
+          },
+          {
+            "key": "residenceNeedsClarification",
+            "previousValue": null,
+            "newValue": false,
+            "changedAt": "2026-09-01T06:40:19.839Z"
+          }
+        ],
+        "decision": {
+          "stage": "COLLECTING_DOCUMENTS",
+          "status": "need_more_data",
+          "nextAction": "collect_documents",
+          "blockedRules": [],
+          "rulesApplied": [],
+          "requiredFacts": [
+            "id_front",
+            "id_back",
+            "vehicle_registration_front",
+            "vehicle_registration_back"
+          ],
+          "calculatedLimits": {
+            "parking": 1000000,
+            "withoutStorage": 600000
+          },
+          "eligiblePrograms": [
+            "without_storage",
+            "parking"
+          ],
+          "requiredStatements": [
+            "Попросить только недостающие документы."
+          ],
+          "forbiddenStatements": [
+            "окончательно одобрено",
+            "гарантированно одобрено",
+            "можно оформить по доверенности",
+            "рефинансирование возможно",
+            "выкупим займ",
+            "можно свободно выезжать за границу"
+          ]
+        },
+        "createdAt": "2026-09-01T06:40:19.715Z",
+        "updatedAt": "2026-09-01T06:40:19.844Z"
+      },
+      "conversationId": "3c0e1134-c76a-4885-ac45-9d35c40df219",
+      "id": "TC-012",
+      "title": "Бишкек, без изъятия, сумма выше лимита",
+      "durationMs": 148
+    },
+    {
+      "status": "PASS",
+      "lastReply": "Предварительно возможная сумма — до 500 000 сом. Окончательная сумма определяется после осмотра автомобиля и проверки документов. Пришлите, пожалуйста, фото лицевой стороны ID, обратной стороны ID, лицевой стороны свидетельства о регистрации ТС, обратной стороны свидетельства о регистрации ТС.",
+      "stepReplies": [
+        "Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10.\n\nПодскажите, пожалуйста, Вас интересует займ без изъятия автомобиля или с постановкой автомобиля на охраняемую стоянку?",
+        "Где прописан собственник автомобиля?",
+        "Предварительно возможная сумма — до 500 000 сом. Окончательная сумма определяется после осмотра автомобиля и проверки документов. Пришлите, пожалуйста, фото лицевой стороны ID, обратной стороны ID, лицевой стороны свидетельства о регистрации ТС, обратной стороны свидетельства о регистрации ТС."
+      ],
+      "application": {
+        "id": "5864b87d-c43f-49f8-875e-37c954cefb1e",
+        "conversationId": "0a08cfec-dbc4-4ac5-a331-9bca922d446a",
+        "contactId": "8bc7cd7b-94a5-473c-988e-ecbbc8be6487",
+        "status": "need_more_data",
+        "stage": "COLLECTING_DOCUMENTS",
+        "facts": {
+          "residenceNeedsClarification": false,
+          "residenceText": "Бишкек",
+          "residenceCategory": "BISHKEK",
+          "residenceRegion": "Бишкек",
+          "requestedProgram": "parking",
+          "vehicleModel": "Camry",
+          "vehicleMake": "Toyota",
+          "vehicleYear": 2021,
+          "vehicleValue": 1000000,
+          "requestedAmount": 700000,
+          "language": "ru"
+        },
+        "factHistory": [
+          {
+            "key": "language",
+            "previousValue": null,
+            "newValue": "ru",
+            "changedAt": "2026-09-01T06:40:19.884Z"
+          },
+          {
+            "key": "requestedAmount",
+            "previousValue": null,
+            "newValue": 700000,
+            "changedAt": "2026-09-01T06:40:19.887Z"
+          },
+          {
+            "key": "vehicleValue",
+            "previousValue": null,
+            "newValue": 1000000,
+            "changedAt": "2026-09-01T06:40:19.890Z"
+          },
+          {
+            "key": "vehicleYear",
+            "previousValue": null,
+            "newValue": 2021,
+            "changedAt": "2026-09-01T06:40:19.893Z"
+          },
+          {
+            "key": "vehicleMake",
+            "previousValue": null,
+            "newValue": "Toyota",
+            "changedAt": "2026-09-01T06:40:19.896Z"
+          },
+          {
+            "key": "vehicleModel",
+            "previousValue": null,
+            "newValue": "Camry",
+            "changedAt": "2026-09-01T06:40:19.899Z"
+          },
+          {
+            "key": "requestedProgram",
+            "previousValue": null,
+            "newValue": "parking",
+            "changedAt": "2026-09-01T06:40:19.935Z"
+          },
+          {
+            "key": "residenceRegion",
+            "previousValue": null,
+            "newValue": "Бишкек",
+            "changedAt": "2026-09-01T06:40:19.971Z"
+          },
+          {
+            "key": "residenceCategory",
+            "previousValue": null,
+            "newValue": "BISHKEK",
+            "changedAt": "2026-09-01T06:40:19.974Z"
+          },
+          {
+            "key": "residenceText",
+            "previousValue": null,
+            "newValue": "Бишкек",
+            "changedAt": "2026-09-01T06:40:19.977Z"
+          },
+          {
+            "key": "residenceNeedsClarification",
+            "previousValue": null,
+            "newValue": false,
+            "changedAt": "2026-09-01T06:40:19.980Z"
+          }
+        ],
+        "decision": {
+          "stage": "COLLECTING_DOCUMENTS",
+          "status": "need_more_data",
+          "nextAction": "collect_documents",
+          "blockedRules": [],
+          "rulesApplied": [],
+          "requiredFacts": [
+            "id_front",
+            "id_back",
+            "vehicle_registration_front",
+            "vehicle_registration_back"
+          ],
+          "calculatedLimits": {
+            "parking": 500000,
+            "withoutStorage": 400000
+          },
+          "eligiblePrograms": [
+            "without_storage",
+            "parking"
+          ],
+          "requiredStatements": [
+            "Попросить только недостающие документы."
+          ],
+          "forbiddenStatements": [
+            "окончательно одобрено",
+            "гарантированно одобрено",
+            "можно оформить по доверенности",
+            "рефинансирование возможно",
+            "выкупим займ",
+            "можно свободно выезжать за границу"
+          ]
+        },
+        "createdAt": "2026-09-01T06:40:19.863Z",
+        "updatedAt": "2026-09-01T06:40:19.985Z"
+      },
+      "conversationId": "0a08cfec-dbc4-4ac5-a331-9bca922d446a",
+      "id": "TC-013",
+      "title": "Стоянка, расчёт от стоимости",
+      "durationMs": 140
+    },
+    {
+      "status": "FAIL",
+      "lastReply": "Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10.\n\nПодскажите, пожалуйста:\n- модель и год выпуска автомобиля;\n- какая сумма займа Вам необходима?",
+      "stepReplies": [
+        "Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10.\n\nПодскажите, пожалуйста:\n- модель и год выпуска автомобиля;\n- какая сумма займа Вам необходима?"
+      ],
+      "application": {
+        "id": "e4721c5a-d173-4a4a-8eea-32cd46c073ee",
+        "conversationId": "cd88fa46-7786-41b2-b3f2-3d3b021a8858",
+        "contactId": "e9af0358-3b1c-4598-a270-7a48e9209593",
+        "status": "need_more_data",
+        "stage": "COLLECTING_VEHICLE",
+        "facts": {
+          "vehicleValue": 30000,
+          "language": "ru"
+        },
+        "factHistory": [
+          {
+            "key": "language",
+            "previousValue": null,
+            "newValue": "ru",
+            "changedAt": "2026-09-01T06:40:20.023Z"
+          },
+          {
+            "key": "vehicleValue",
+            "previousValue": null,
+            "newValue": 30000,
+            "changedAt": "2026-09-01T06:40:20.026Z"
+          }
+        ],
+        "decision": {
+          "stage": "COLLECTING_VEHICLE",
+          "status": "need_more_data",
+          "nextAction": "collect_vehicle",
+          "blockedRules": [],
+          "rulesApplied": [],
+          "requiredFacts": [
+            "vehicleMake",
+            "vehicleModel",
+            "vehicleYear"
+          ],
+          "calculatedLimits": {
+            "parking": 15000,
+            "withoutStorage": 12000
+          },
+          "eligiblePrograms": [
+            "without_storage",
+            "parking"
+          ],
+          "requiredStatements": [],
+          "forbiddenStatements": [
+            "окончательно одобрено",
+            "гарантированно одобрено",
+            "можно оформить по доверенности",
+            "рефинансирование возможно",
+            "выкупим займ",
+            "можно свободно выезжать за границу"
+          ]
+        },
+        "createdAt": "2026-09-01T06:40:20.003Z",
+        "updatedAt": "2026-09-01T06:40:20.030Z"
+      },
+      "conversationId": "cd88fa46-7786-41b2-b3f2-3d3b021a8858",
+      "error": "Scenario TC-014 did not satisfy scripted assertions. Last reply: Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10. Подскажите, пожалуйста: - модель и год выпуска автомобиля; - какая сумма займа Вам необходима?",
+      "id": "TC-014",
+      "title": "Запрашиваемая сумма меньше минимума",
+      "durationMs": 43
+    },
+    {
+      "status": "PASS",
+      "lastReply": "Предварительно возможная сумма — до 200 000 сом. Окончательная сумма определяется после осмотра автомобиля и проверки документов. Для займа без изъятия за пределами Бишкека и Чуйской области нужен поручитель от 25 лет, который лично присутствует при выдаче займа и имеет с собой ID или паспорт. Подскажите, пожалуйста, есть ли у Вас поручитель?",
+      "stepReplies": [
+        "Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10.\n\nПодскажите, пожалуйста, Вас интересует займ без изъятия автомобиля или с постановкой автомобиля на охраняемую стоянку?",
+        "Где прописан собственник автомобиля?",
+        "Предварительно возможная сумма — до 200 000 сом. Окончательная сумма определяется после осмотра автомобиля и проверки документов. Для займа без изъятия за пределами Бишкека и Чуйской области нужен поручитель от 25 лет, который лично присутствует при выдаче займа и имеет с собой ID или паспорт. Подскажите, пожалуйста, есть ли у Вас поручитель?"
+      ],
+      "application": {
+        "id": "06ccdf58-efa4-4a84-9d8d-a1a3b41ce375",
+        "conversationId": "41a66fb6-b33f-456c-90ac-30c5f00d6df1",
+        "contactId": "818e301b-20d8-4b8e-8103-aa68f4b84f76",
+        "status": "need_more_data",
+        "stage": "CHECKING_GUARANTOR",
+        "facts": {
+          "residenceNeedsClarification": false,
+          "residenceCategory": "OTHER_KG",
+          "residenceRegion": "Ош",
+          "residenceText": "Ош",
+          "requestedProgram": "without_storage",
+          "vehicleModel": "Camry",
+          "vehicleMake": "Toyota",
+          "vehicleYear": 2021,
+          "vehicleValue": 1200000,
+          "requestedAmount": 180000,
+          "language": "ru"
+        },
+        "factHistory": [
+          {
+            "key": "language",
+            "previousValue": null,
+            "newValue": "ru",
+            "changedAt": "2026-09-01T06:40:20.066Z"
+          },
+          {
+            "key": "requestedAmount",
+            "previousValue": null,
+            "newValue": 180000,
+            "changedAt": "2026-09-01T06:40:20.069Z"
+          },
+          {
+            "key": "vehicleValue",
+            "previousValue": null,
+            "newValue": 1200000,
+            "changedAt": "2026-09-01T06:40:20.072Z"
+          },
+          {
+            "key": "vehicleYear",
+            "previousValue": null,
+            "newValue": 2021,
+            "changedAt": "2026-09-01T06:40:20.075Z"
+          },
+          {
+            "key": "vehicleMake",
+            "previousValue": null,
+            "newValue": "Toyota",
+            "changedAt": "2026-09-01T06:40:20.078Z"
+          },
+          {
+            "key": "vehicleModel",
+            "previousValue": null,
+            "newValue": "Camry",
+            "changedAt": "2026-09-01T06:40:20.090Z"
+          },
+          {
+            "key": "requestedProgram",
+            "previousValue": null,
+            "newValue": "without_storage",
+            "changedAt": "2026-09-01T06:40:20.127Z"
+          },
+          {
+            "key": "residenceText",
+            "previousValue": null,
+            "newValue": "Ош",
+            "changedAt": "2026-09-01T06:40:20.162Z"
+          },
+          {
+            "key": "residenceRegion",
+            "previousValue": null,
+            "newValue": "Ош",
+            "changedAt": "2026-09-01T06:40:20.165Z"
+          },
+          {
+            "key": "residenceCategory",
+            "previousValue": null,
+            "newValue": "OTHER_KG",
+            "changedAt": "2026-09-01T06:40:20.168Z"
+          },
+          {
+            "key": "residenceNeedsClarification",
+            "previousValue": null,
+            "newValue": false,
+            "changedAt": "2026-09-01T06:40:20.171Z"
+          }
+        ],
+        "decision": {
+          "stage": "CHECKING_GUARANTOR",
+          "status": "need_more_data",
+          "nextAction": "check_guarantor",
+          "blockedRules": [
+            "SPEC_CONFLICT_C1"
+          ],
+          "rulesApplied": [
+            "other_region_guarantor"
+          ],
+          "requiredFacts": [
+            "guarantorAvailable"
+          ],
+          "calculatedLimits": {
+            "parking": 600000,
+            "withoutStorage": 200000
+          },
+          "eligiblePrograms": [
+            "without_storage",
+            "parking"
+          ],
+          "requiredStatements": [
+            "Для займа без изъятия за пределами Бишкека и Чуйской области нужен поручитель от 25 лет, который лично присутствует при выдаче займа и имеет с собой ID или паспорт."
+          ],
+          "forbiddenStatements": [
+            "окончательно одобрено",
+            "гарантированно одобрено",
+            "можно оформить по доверенности",
+            "рефинансирование возможно",
+            "выкупим займ",
+            "можно свободно выезжать за границу"
+          ]
+        },
+        "createdAt": "2026-09-01T06:40:20.047Z",
+        "updatedAt": "2026-09-01T06:40:20.176Z"
+      },
+      "conversationId": "41a66fb6-b33f-456c-90ac-30c5f00d6df1",
+      "id": "TC-015",
+      "title": "Другой регион, без изъятия",
+      "durationMs": 149
+    },
+    {
+      "status": "FAIL",
+      "lastReply": "Пришлите, пожалуйста, фото лицевой стороны ID, обратной стороны ID, лицевой стороны свидетельства о регистрации ТС, обратной стороны свидетельства о регистрации ТС.",
+      "stepReplies": [
+        "Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10.\n\nПодскажите, пожалуйста, Вас интересует займ без изъятия автомобиля или с постановкой автомобиля на охраняемую стоянку?",
+        "Где прописан собственник автомобиля?",
+        "Пришлите, пожалуйста, фото лицевой стороны ID, обратной стороны ID, лицевой стороны свидетельства о регистрации ТС, обратной стороны свидетельства о регистрации ТС."
+      ],
+      "application": {
+        "id": "76f496aa-1acc-44c8-a7ca-9a34fbae079d",
+        "conversationId": "69621c5c-7d6e-4013-9cd0-2104b6845881",
+        "contactId": "808e3692-e6ab-4bea-8294-f598822eb404",
+        "status": "need_more_data",
+        "stage": "COLLECTING_DOCUMENTS",
+        "facts": {
+          "residenceNeedsClarification": false,
+          "residenceCategory": "OTHER_KG",
+          "residenceRegion": "Ош",
+          "residenceText": "Ош",
+          "requestedProgram": "without_storage",
+          "vehicleModel": "Camry",
+          "vehicleMake": "Toyota",
+          "vehicleYear": 2021,
+          "vehicleValue": 800000,
+          "requestedAmount": 180000,
+          "language": "ru"
+        },
+        "factHistory": [
+          {
+            "key": "language",
+            "previousValue": null,
+            "newValue": "ru",
+            "changedAt": "2026-09-01T06:40:20.216Z"
+          },
+          {
+            "key": "requestedAmount",
+            "previousValue": null,
+            "newValue": 180000,
+            "changedAt": "2026-09-01T06:40:20.219Z"
+          },
+          {
+            "key": "vehicleValue",
+            "previousValue": null,
+            "newValue": 800000,
+            "changedAt": "2026-09-01T06:40:20.222Z"
+          },
+          {
+            "key": "vehicleYear",
+            "previousValue": null,
+            "newValue": 2021,
+            "changedAt": "2026-09-01T06:40:20.225Z"
+          },
+          {
+            "key": "vehicleMake",
+            "previousValue": null,
+            "newValue": "Toyota",
+            "changedAt": "2026-09-01T06:40:20.228Z"
+          },
+          {
+            "key": "vehicleModel",
+            "previousValue": null,
+            "newValue": "Camry",
+            "changedAt": "2026-09-01T06:40:20.231Z"
+          },
+          {
+            "key": "requestedProgram",
+            "previousValue": null,
+            "newValue": "without_storage",
+            "changedAt": "2026-09-01T06:40:20.267Z"
+          },
+          {
+            "key": "residenceText",
+            "previousValue": null,
+            "newValue": "Ош",
+            "changedAt": "2026-09-01T06:40:20.303Z"
+          },
+          {
+            "key": "residenceRegion",
+            "previousValue": null,
+            "newValue": "Ош",
+            "changedAt": "2026-09-01T06:40:20.306Z"
+          },
+          {
+            "key": "residenceCategory",
+            "previousValue": null,
+            "newValue": "OTHER_KG",
+            "changedAt": "2026-09-01T06:40:20.309Z"
+          },
+          {
+            "key": "residenceNeedsClarification",
+            "previousValue": null,
+            "newValue": false,
+            "changedAt": "2026-09-01T06:40:20.312Z"
+          }
+        ],
+        "decision": {
+          "stage": "COLLECTING_DOCUMENTS",
+          "status": "need_more_data",
+          "nextAction": "collect_documents",
+          "blockedRules": [],
+          "rulesApplied": [],
+          "requiredFacts": [
+            "id_front",
+            "id_back",
+            "vehicle_registration_front",
+            "vehicle_registration_back"
+          ],
+          "calculatedLimits": {
+            "parking": 400000
+          },
+          "eligiblePrograms": [
+            "parking"
+          ],
+          "requiredStatements": [
+            "Попросить только недостающие документы."
+          ],
+          "forbiddenStatements": [
+            "окончательно одобрено",
+            "гарантированно одобрено",
+            "можно оформить по доверенности",
+            "рефинансирование возможно",
+            "выкупим займ",
+            "можно свободно выезжать за границу"
+          ]
+        },
+        "createdAt": "2026-09-01T06:40:20.196Z",
+        "updatedAt": "2026-09-01T06:40:20.317Z"
+      },
+      "conversationId": "69621c5c-7d6e-4013-9cd0-2104b6845881",
+      "error": "Scenario TC-016 did not satisfy scripted assertions. Last reply: Пришлите, пожалуйста, фото лицевой стороны ID, обратной стороны ID, лицевой стороны свидетельства о регистрации ТС, обратной стороны свидетельства о регистрации ТС.",
+      "id": "TC-016",
+      "title": "Другой регион, авто дешевле 1 млн",
+      "durationMs": 139
+    },
+    {
+      "status": "FAIL",
+      "lastReply": "Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10.\n\nПодскажите, пожалуйста:\n- ориентировочную стоимость автомобиля;\n- какая сумма займа Вам необходима?",
+      "stepReplies": [
+        "Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10.\n\nПодскажите, пожалуйста:\n- ориентировочную стоимость автомобиля;\n- какая сумма займа Вам необходима?"
+      ],
+      "application": {
+        "id": "886f2c13-53e4-43bb-b399-628ea23e7f5e",
+        "conversationId": "cedaf4de-af84-493f-9b4e-2b847420c339",
+        "contactId": "68650818-d725-40e4-b0f0-7676f3948f31",
+        "status": "need_more_data",
+        "stage": "COLLECTING_VALUE",
+        "facts": {
+          "vehicleModel": "Camry",
+          "vehicleMake": "Toyota",
+          "language": "ru"
+        },
+        "factHistory": [
+          {
+            "key": "language",
+            "previousValue": null,
+            "newValue": "ru",
+            "changedAt": "2026-09-01T06:40:20.354Z"
+          },
+          {
+            "key": "vehicleMake",
+            "previousValue": null,
+            "newValue": "Toyota",
+            "changedAt": "2026-09-01T06:40:20.358Z"
+          },
+          {
+            "key": "vehicleModel",
+            "previousValue": null,
+            "newValue": "Camry",
+            "changedAt": "2026-09-01T06:40:20.361Z"
+          }
+        ],
+        "decision": {
+          "stage": "COLLECTING_VALUE",
+          "status": "need_more_data",
+          "nextAction": "collect_value",
+          "blockedRules": [],
+          "rulesApplied": [],
+          "requiredFacts": [
+            "vehicleValue"
+          ],
+          "calculatedLimits": {},
+          "eligiblePrograms": [
+            "without_storage",
+            "parking"
+          ],
+          "requiredStatements": [],
+          "forbiddenStatements": [
+            "окончательно одобрено",
+            "гарантированно одобрено",
+            "можно оформить по доверенности",
+            "рефинансирование возможно",
+            "выкупим займ",
+            "можно свободно выезжать за границу"
+          ]
+        },
+        "createdAt": "2026-09-01T06:40:20.335Z",
+        "updatedAt": "2026-09-01T06:40:20.365Z"
+      },
+      "conversationId": "cedaf4de-af84-493f-9b4e-2b847420c339",
+      "error": "Scenario TC-017 did not satisfy scripted assertions. Last reply: Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10. Подскажите, пожалуйста: - ориентировочную стоимость автомобиля; - какая сумма займа Вам необходима?",
+      "id": "TC-017",
+      "title": "Регион 10",
+      "durationMs": 47
+    },
+    {
+      "status": "FAIL",
+      "lastReply": "Автомобиль должен быть зарегистрирован в Кыргызской Республике.",
+      "stepReplies": [
+        "Автомобиль должен быть зарегистрирован в Кыргызской Республике."
+      ],
+      "application": {
+        "id": "5be08349-9612-4b3d-a391-0911d9a1dd70",
+        "conversationId": "d4448cb8-67e8-4bed-8343-02d01030fc40",
+        "contactId": "95e1e70f-2ad0-4cdd-88a5-fc64a3707b19",
+        "status": "refuse",
+        "stage": "REFUSED",
+        "facts": {
+          "vehicleRegistrationCountry": "KZ",
+          "language": "ru"
+        },
+        "factHistory": [
+          {
+            "key": "language",
+            "previousValue": null,
+            "newValue": "ru",
+            "changedAt": "2026-09-01T06:40:20.402Z"
+          },
+          {
+            "key": "vehicleRegistrationCountry",
+            "previousValue": null,
+            "newValue": "KZ",
+            "changedAt": "2026-09-01T06:40:20.405Z"
+          }
+        ],
+        "decision": {
+          "stage": "REFUSED",
+          "status": "refuse",
+          "nextAction": "refuse",
+          "blockedRules": [],
+          "rulesApplied": [
+            "foreign_vehicle_registration"
+          ],
+          "refusalReason": "Автомобиль должен быть зарегистрирован в Кыргызской Республике.",
+          "requiredFacts": [],
+          "calculatedLimits": {},
+          "eligiblePrograms": [],
+          "requiredStatements": [
+            "Автомобиль должен быть зарегистрирован в Кыргызской Республике."
+          ],
+          "forbiddenStatements": [
+            "окончательно одобрено",
+            "гарантированно одобрено",
+            "можно оформить по доверенности",
+            "рефинансирование возможно",
+            "выкупим займ",
+            "можно свободно выезжать за границу"
+          ]
+        },
+        "createdAt": "2026-09-01T06:40:20.382Z",
+        "updatedAt": "2026-09-01T06:40:20.410Z"
+      },
+      "conversationId": "d4448cb8-67e8-4bed-8343-02d01030fc40",
+      "error": "Scenario TC-018 did not satisfy scripted assertions. Last reply: Автомобиль должен быть зарегистрирован в Кыргызской Республике.",
+      "id": "TC-018",
+      "title": "Автомобиль зарегистрирован в другой стране",
+      "durationMs": 45
+    },
+    {
+      "status": "FAIL",
+      "lastReply": "Займ оформляется только гражданам Кыргызской Республики.",
+      "stepReplies": [
+        "Займ оформляется только гражданам Кыргызской Республики."
+      ],
+      "application": {
+        "id": "4a5aa6bb-13d3-480e-8642-bb3f1686e35a",
+        "conversationId": "3725b9b2-346f-4f43-95fb-a3c00bc90199",
+        "contactId": "c11420e7-433d-4311-bb59-8530bad96805",
+        "status": "refuse",
+        "stage": "REFUSED",
+        "facts": {
+          "citizenship": "KZ",
+          "language": "ru"
+        },
+        "factHistory": [
+          {
+            "key": "language",
+            "previousValue": null,
+            "newValue": "ru",
+            "changedAt": "2026-09-01T06:40:20.446Z"
+          },
+          {
+            "key": "citizenship",
+            "previousValue": null,
+            "newValue": "KZ",
+            "changedAt": "2026-09-01T06:40:20.449Z"
+          }
+        ],
+        "decision": {
+          "stage": "REFUSED",
+          "status": "refuse",
+          "nextAction": "refuse",
+          "blockedRules": [],
+          "rulesApplied": [
+            "foreign_citizen"
+          ],
+          "refusalReason": "Займ оформляется только гражданам Кыргызской Республики.",
+          "requiredFacts": [],
+          "calculatedLimits": {},
+          "eligiblePrograms": [],
+          "requiredStatements": [
+            "Займ оформляется только гражданам Кыргызской Республики."
+          ],
+          "forbiddenStatements": [
+            "окончательно одобрено",
+            "гарантированно одобрено",
+            "можно оформить по доверенности",
+            "рефинансирование возможно",
+            "выкупим займ",
+            "можно свободно выезжать за границу"
+          ]
+        },
+        "createdAt": "2026-09-01T06:40:20.426Z",
+        "updatedAt": "2026-09-01T06:40:20.454Z"
+      },
+      "conversationId": "3725b9b2-346f-4f43-95fb-a3c00bc90199",
+      "error": "Scenario TC-019 did not satisfy scripted assertions. Last reply: Займ оформляется только гражданам Кыргызской Республики.",
+      "id": "TC-019",
+      "title": "Иностранный гражданин",
+      "durationMs": 43
+    },
+    {
+      "status": "PASS",
+      "lastReply": "К сожалению, такой автомобиль мы принять в залог не можем.",
+      "stepReplies": [
+        "К сожалению, такой автомобиль мы принять в залог не можем."
+      ],
+      "application": {
+        "id": "c642f463-ae4c-432a-89aa-cd3f297fe6a3",
+        "conversationId": "84f638e9-f3c6-4502-9d8f-f8364353a1e3",
+        "contactId": "cd8fbca0-aee1-401a-8814-0305db3f72ec",
+        "status": "refuse",
+        "stage": "REFUSED",
+        "facts": {
+          "vehicleInCredit": true,
+          "language": "ru"
+        },
+        "factHistory": [
+          {
+            "key": "language",
+            "previousValue": null,
+            "newValue": "ru",
+            "changedAt": "2026-09-01T06:40:20.489Z"
+          },
+          {
+            "key": "vehicleInCredit",
+            "previousValue": null,
+            "newValue": true,
+            "changedAt": "2026-09-01T06:40:20.491Z"
+          }
+        ],
+        "decision": {
+          "stage": "REFUSED",
+          "status": "refuse",
+          "nextAction": "refuse",
+          "blockedRules": [],
+          "rulesApplied": [
+            "credit_or_pledge_refusal"
+          ],
+          "refusalReason": "К сожалению, такой автомобиль мы принять в залог не можем.",
+          "requiredFacts": [],
+          "calculatedLimits": {},
+          "eligiblePrograms": [],
+          "requiredStatements": [
+            "К сожалению, такой автомобиль мы принять в залог не можем."
+          ],
+          "forbiddenStatements": [
+            "окончательно одобрено",
+            "гарантированно одобрено",
+            "можно оформить по доверенности",
+            "рефинансирование возможно",
+            "выкупим займ",
+            "можно свободно выезжать за границу"
+          ]
+        },
+        "createdAt": "2026-09-01T06:40:20.469Z",
+        "updatedAt": "2026-09-01T06:40:20.496Z"
+      },
+      "conversationId": "84f638e9-f3c6-4502-9d8f-f8364353a1e3",
+      "id": "TC-020",
+      "title": "Машина в кредите/залоге/под арестом",
+      "durationMs": 42
+    },
+    {
+      "status": "PASS",
+      "lastReply": "Компания оформляет займы только под легковые автомобили и минивэны.",
+      "stepReplies": [
+        "Компания оформляет займы только под легковые автомобили и минивэны."
+      ],
+      "application": {
+        "id": "16893c22-0aca-470b-97b5-78ee4b5f0639",
+        "conversationId": "8ae5a739-4d0a-4cdb-8b87-bba4b27cff70",
+        "contactId": "f6cb6797-4826-4a7b-8bf9-cd95e0ba048d",
+        "status": "refuse",
+        "stage": "REFUSED",
+        "facts": {
+          "vehicleType": "motorcycle",
+          "language": "ru"
+        },
+        "factHistory": [
+          {
+            "key": "language",
+            "previousValue": null,
+            "newValue": "ru",
+            "changedAt": "2026-09-01T06:40:20.532Z"
+          },
+          {
+            "key": "vehicleType",
+            "previousValue": null,
+            "newValue": "motorcycle",
+            "changedAt": "2026-09-01T06:40:20.535Z"
+          }
+        ],
+        "decision": {
+          "stage": "REFUSED",
+          "status": "refuse",
+          "nextAction": "refuse",
+          "blockedRules": [],
+          "rulesApplied": [
+            "unsupported_vehicle_type"
+          ],
+          "refusalReason": "Компания оформляет займы только под легковые автомобили и минивэны.",
+          "requiredFacts": [],
+          "calculatedLimits": {},
+          "eligiblePrograms": [],
+          "requiredStatements": [
+            "Компания оформляет займы только под легковые автомобили и минивэны."
+          ],
+          "forbiddenStatements": [
+            "окончательно одобрено",
+            "гарантированно одобрено",
+            "можно оформить по доверенности",
+            "рефинансирование возможно",
+            "выкупим займ",
+            "можно свободно выезжать за границу"
+          ]
+        },
+        "createdAt": "2026-09-01T06:40:20.512Z",
+        "updatedAt": "2026-09-01T06:40:20.539Z"
+      },
+      "conversationId": "8ae5a739-4d0a-4cdb-8b87-bba4b27cff70",
+      "id": "TC-021",
+      "title": "Мотоцикл или другой неподдерживаемый транспорт",
+      "durationMs": 43
+    },
+    {
+      "status": "FAIL",
+      "lastReply": "Подскажите, пожалуйста, ФИО собственника автомобиля. Где прописан собственник автомобиля? Сможет ли собственник лично приехать на осмотр автомобиля и выдачу займа? Подскажите, пожалуйста, собственник автомобиля состоит в браке, никогда не состоял в браке или в разводе?",
+      "stepReplies": [
+        "Подскажите, пожалуйста, ФИО собственника автомобиля. Где прописан собственник автомобиля? Сможет ли собственник лично приехать на осмотр автомобиля и выдачу займа? Подскажите, пожалуйста, собственник автомобиля состоит в браке, никогда не состоял в браке или в разводе?"
+      ],
+      "application": {
+        "id": "d00af632-9b59-4d2e-ad14-6c5675846970",
+        "conversationId": "91fc5bcf-a9cc-4106-ab65-220cb331cb52",
+        "contactId": "aef369d6-b6f9-4ce0-a17e-f9ad1fbae54d",
+        "status": "need_more_data",
+        "stage": "COLLECTING_RESIDENCE",
+        "facts": {
+          "borrowerIsOwner": false,
+          "language": "ru"
+        },
+        "factHistory": [
+          {
+            "key": "language",
+            "previousValue": null,
+            "newValue": "ru",
+            "changedAt": "2026-09-01T06:40:20.575Z"
+          },
+          {
+            "key": "borrowerIsOwner",
+            "previousValue": null,
+            "newValue": false,
+            "changedAt": "2026-09-01T06:40:20.578Z"
+          }
+        ],
+        "decision": {
+          "stage": "COLLECTING_RESIDENCE",
+          "status": "need_more_data",
+          "nextAction": "collect_owner",
+          "blockedRules": [],
+          "rulesApplied": [
+            "owner_flow"
+          ],
+          "requiredFacts": [
+            "ownerFullName",
+            "ownerResidenceRegion",
+            "ownerCanVisit",
+            "ownerFamilyStatus"
+          ],
+          "calculatedLimits": {},
+          "eligiblePrograms": [],
+          "requiredStatements": [],
+          "forbiddenStatements": [
+            "окончательно одобрено",
+            "гарантированно одобрено",
+            "можно оформить по доверенности",
+            "рефинансирование возможно",
+            "выкупим займ",
+            "можно свободно выезжать за границу"
+          ]
+        },
+        "createdAt": "2026-09-01T06:40:20.556Z",
+        "updatedAt": "2026-09-01T06:40:20.582Z"
+      },
+      "conversationId": "91fc5bcf-a9cc-4106-ab65-220cb331cb52",
+      "error": "Scenario TC-022 did not satisfy scripted assertions. Last reply: Подскажите, пожалуйста, ФИО собственника автомобиля. Где прописан собственник автомобиля? Сможет ли собственник лично приехать на осмотр автомобиля и выдачу займа? Подскажите, пожалуйста, собственник автомобиля состоит в браке, никогда не состоял в браке или в разводе?",
+      "id": "TC-022",
+      "title": "Авто оформлено на другого человека",
+      "durationMs": 45
+    },
+    {
+      "status": "FAIL",
+      "lastReply": "Собственник автомобиля должен присутствовать лично; по доверенности оформить займ нельзя.",
+      "stepReplies": [
+        "Собственник автомобиля должен присутствовать лично; по доверенности оформить займ нельзя."
+      ],
+      "application": {
+        "id": "9164546f-702c-4b1e-a77e-1db1fc81e6c6",
+        "conversationId": "b21678ec-5889-4787-85c0-c45af162c8a0",
+        "contactId": "61012ab1-5ef1-4141-a867-23972c2236cc",
+        "status": "refuse",
+        "stage": "REFUSED",
+        "facts": {
+          "ownerCanVisit": false,
+          "language": "ru"
+        },
+        "factHistory": [
+          {
+            "key": "language",
+            "previousValue": null,
+            "newValue": "ru",
+            "changedAt": "2026-09-01T06:40:20.622Z"
+          },
+          {
+            "key": "ownerCanVisit",
+            "previousValue": null,
+            "newValue": false,
+            "changedAt": "2026-09-01T06:40:20.625Z"
+          }
+        ],
+        "decision": {
+          "stage": "REFUSED",
+          "status": "refuse",
+          "nextAction": "refuse",
+          "blockedRules": [],
+          "rulesApplied": [
+            "owner_presence_required"
+          ],
+          "refusalReason": "Собственник автомобиля должен присутствовать лично; по доверенности оформить займ нельзя.",
+          "requiredFacts": [],
+          "calculatedLimits": {},
+          "eligiblePrograms": [],
+          "requiredStatements": [
+            "Собственник автомобиля должен присутствовать лично; по доверенности оформить займ нельзя."
+          ],
+          "forbiddenStatements": [
+            "окончательно одобрено",
+            "гарантированно одобрено",
+            "можно оформить по доверенности",
+            "рефинансирование возможно",
+            "выкупим займ",
+            "можно свободно выезжать за границу"
+          ]
+        },
+        "createdAt": "2026-09-01T06:40:20.601Z",
+        "updatedAt": "2026-09-01T06:40:20.629Z"
+      },
+      "conversationId": "b21678ec-5889-4787-85c0-c45af162c8a0",
+      "error": "Scenario TC-023 did not satisfy scripted assertions. Last reply: Собственник автомобиля должен присутствовать лично; по доверенности оформить займ нельзя.",
+      "id": "TC-023",
+      "title": "Собственник не сможет приехать",
+      "durationMs": 45
+    },
+    {
+      "status": "PASS",
+      "lastReply": "Пришлите, пожалуйста, фото обратной стороны ID.",
+      "stepReplies": [
+        "Пришлите, пожалуйста, фото обратной стороны ID."
+      ],
+      "application": {
+        "id": "a2bdc8f8-a11d-4b5f-9ca5-5b5e29794101",
+        "conversationId": "1e8b1ec5-0e8d-4b72-804e-54223a1d33f2",
+        "contactId": "65b57118-90f0-4f05-af43-4808586e8f31",
+        "status": "need_more_data",
+        "stage": "COLLECTING_VEHICLE",
+        "facts": {
+          "documents": {
+            "id_front": "received"
+          },
+          "language": "unknown"
+        },
+        "factHistory": [
+          {
+            "key": "language",
+            "previousValue": null,
+            "newValue": "unknown",
+            "changedAt": "2026-09-01T06:40:50.695Z"
+          },
+          {
+            "key": "documents",
+            "previousValue": null,
+            "newValue": {
+              "id_front": "received"
+            },
+            "changedAt": "2026-09-01T06:40:50.700Z"
+          }
+        ],
+        "decision": {
+          "stage": "COLLECTING_VEHICLE",
+          "status": "need_more_data",
+          "nextAction": "collect_vehicle",
+          "blockedRules": [],
+          "rulesApplied": [],
+          "requiredFacts": [
+            "vehicleMake",
+            "vehicleModel",
+            "vehicleYear"
+          ],
+          "calculatedLimits": {},
+          "eligiblePrograms": [
+            "without_storage",
+            "parking"
+          ],
+          "requiredStatements": [],
+          "forbiddenStatements": [
+            "окончательно одобрено",
+            "гарантированно одобрено",
+            "можно оформить по доверенности",
+            "рефинансирование возможно",
+            "выкупим займ",
+            "можно свободно выезжать за границу"
+          ]
+        },
+        "createdAt": "2026-09-01T06:40:20.645Z",
+        "updatedAt": "2026-09-01T06:40:50.707Z"
+      },
+      "conversationId": "1e8b1ec5-0e8d-4b72-804e-54223a1d33f2",
+      "id": "TC-024",
+      "title": "Клиент сразу прислал ID",
+      "durationMs": 30091
+    },
+    {
+      "status": "PASS",
+      "lastReply": "Пришлите, пожалуйста, фото обратной стороны ID.",
+      "stepReplies": [
+        "Пришлите, пожалуйста, фото обратной стороны ID."
+      ],
+      "application": {
+        "id": "3a39a4fc-045f-4676-805d-6ea3e0a40be6",
+        "conversationId": "9f6b1996-ed81-43ce-9db3-5b71693dec92",
+        "contactId": "938288f9-cf3b-4cbf-91cb-ff3e3e53264e",
+        "status": "need_more_data",
+        "stage": "COLLECTING_VEHICLE",
+        "facts": {
+          "documents": {
+            "id_front": "received"
+          },
+          "language": "unknown"
+        },
+        "factHistory": [
+          {
+            "key": "language",
+            "previousValue": null,
+            "newValue": "unknown",
+            "changedAt": "2026-09-01T06:41:20.811Z"
+          },
+          {
+            "key": "documents",
+            "previousValue": null,
+            "newValue": {
+              "id_front": "received"
+            },
+            "changedAt": "2026-09-01T06:41:20.816Z"
+          }
+        ],
+        "decision": {
+          "stage": "COLLECTING_VEHICLE",
+          "status": "need_more_data",
+          "nextAction": "collect_vehicle",
+          "blockedRules": [],
+          "rulesApplied": [],
+          "requiredFacts": [
+            "vehicleMake",
+            "vehicleModel",
+            "vehicleYear"
+          ],
+          "calculatedLimits": {},
+          "eligiblePrograms": [
+            "without_storage",
+            "parking"
+          ],
+          "requiredStatements": [],
+          "forbiddenStatements": [
+            "окончательно одобрено",
+            "гарантированно одобрено",
+            "можно оформить по доверенности",
+            "рефинансирование возможно",
+            "выкупим займ",
+            "можно свободно выезжать за границу"
+          ]
+        },
+        "createdAt": "2026-09-01T06:40:50.746Z",
+        "updatedAt": "2026-09-01T06:41:20.825Z"
+      },
+      "conversationId": "9f6b1996-ed81-43ce-9db3-5b71693dec92",
+      "id": "TC-025",
+      "title": "Получена только одна сторона ID",
+      "durationMs": 30171
+    },
+    {
+      "status": "PASS",
+      "lastReply": "Подскажите, пожалуйста, собственник автомобиля состоит в браке, никогда не состоял в браке или в разводе?",
+      "stepReplies": [
+        "Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10.\n\nПодскажите, пожалуйста, Вас интересует займ без изъятия автомобиля или с постановкой автомобиля на охраняемую стоянку?",
+        "Где прописан собственник автомобиля?",
+        "Предварительно возможная сумма — до 600 000 сом. Окончательная сумма определяется после осмотра автомобиля и проверки документов. Пришлите, пожалуйста, фото лицевой стороны ID, обратной стороны ID, лицевой стороны свидетельства о регистрации ТС, обратной стороны свидетельства о регистрации ТС.",
+        "Подскажите, пожалуйста, собственник автомобиля состоит в браке, никогда не состоял в браке или в разводе?"
+      ],
+      "application": {
+        "id": "67a173bd-2de5-44e7-9859-41039f0abf86",
+        "conversationId": "2cb744da-ab05-4c3a-b44b-66ee3e18e1cd",
+        "contactId": "ad79d69a-f7e1-4eee-923f-2acf9f86fe6e",
+        "status": "need_more_data",
+        "stage": "COLLECTING_FAMILY_STATUS",
+        "facts": {
+          "handedToManager": true,
+          "documents": {
+            "id_back": "received",
+            "id_front": "received",
+            "vehicle_registration_back": "received",
+            "vehicle_registration_front": "received"
+          },
+          "language": "unknown",
+          "residenceNeedsClarification": false,
+          "residenceText": "Бишкек",
+          "residenceCategory": "BISHKEK",
+          "residenceRegion": "Бишкек",
+          "requestedProgram": "without_storage",
+          "vehicleModel": "Camry",
+          "vehicleMake": "Toyota",
+          "vehicleYear": 2021,
+          "vehicleValue": 1500000,
+          "requestedAmount": 500000
+        },
+        "factHistory": [
+          {
+            "key": "language",
+            "previousValue": null,
+            "newValue": "ru",
+            "changedAt": "2026-09-01T06:41:20.960Z"
+          },
+          {
+            "key": "requestedAmount",
+            "previousValue": null,
+            "newValue": 500000,
+            "changedAt": "2026-09-01T06:41:20.964Z"
+          },
+          {
+            "key": "vehicleValue",
+            "previousValue": null,
+            "newValue": 1500000,
+            "changedAt": "2026-09-01T06:41:20.971Z"
+          },
+          {
+            "key": "vehicleYear",
+            "previousValue": null,
+            "newValue": 2021,
+            "changedAt": "2026-09-01T06:41:20.976Z"
+          },
+          {
+            "key": "vehicleMake",
+            "previousValue": null,
+            "newValue": "Toyota",
+            "changedAt": "2026-09-01T06:41:20.980Z"
+          },
+          {
+            "key": "vehicleModel",
+            "previousValue": null,
+            "newValue": "Camry",
+            "changedAt": "2026-09-01T06:41:20.984Z"
+          },
+          {
+            "key": "requestedProgram",
+            "previousValue": null,
+            "newValue": "without_storage",
+            "changedAt": "2026-09-01T06:41:21.037Z"
+          },
+          {
+            "key": "residenceRegion",
+            "previousValue": null,
+            "newValue": "Бишкек",
+            "changedAt": "2026-09-01T06:41:21.081Z"
+          },
+          {
+            "key": "residenceCategory",
+            "previousValue": null,
+            "newValue": "BISHKEK",
+            "changedAt": "2026-09-01T06:41:21.085Z"
+          },
+          {
+            "key": "residenceText",
+            "previousValue": null,
+            "newValue": "Бишкек",
+            "changedAt": "2026-09-01T06:41:21.088Z"
+          },
+          {
+            "key": "residenceNeedsClarification",
+            "previousValue": null,
+            "newValue": false,
+            "changedAt": "2026-09-01T06:41:21.092Z"
+          },
+          {
+            "key": "language",
+            "previousValue": "ru",
+            "newValue": "unknown",
+            "changedAt": "2026-09-01T06:41:51.169Z"
+          },
+          {
+            "key": "documents",
+            "previousValue": null,
+            "newValue": {
+              "id_back": "received",
+              "id_front": "received",
+              "vehicle_registration_back": "received",
+              "vehicle_registration_front": "received"
+            },
+            "changedAt": "2026-09-01T06:41:51.174Z"
+          },
+          {
+            "key": "handedToManager",
+            "previousValue": null,
+            "newValue": true,
+            "changedAt": "2026-09-01T06:41:51.201Z"
+          }
+        ],
+        "decision": {
+          "stage": "COLLECTING_FAMILY_STATUS",
+          "status": "need_more_data",
+          "nextAction": "collect_family_status",
+          "targetEvent": "documents",
+          "blockedRules": [],
+          "rulesApplied": [],
+          "requiredFacts": [
+            "familyStatus"
+          ],
+          "calculatedLimits": {
+            "parking": 750000,
+            "withoutStorage": 600000
+          },
+          "eligiblePrograms": [
+            "without_storage",
+            "parking"
+          ],
+          "requiredStatements": [],
+          "forbiddenStatements": [
+            "окончательно одобрено",
+            "гарантированно одобрено",
+            "можно оформить по доверенности",
+            "рефинансирование возможно",
+            "выкупим займ",
+            "можно свободно выезжать за границу"
+          ]
+        },
+        "createdAt": "2026-09-01T06:41:20.923Z",
+        "updatedAt": "2026-09-01T06:41:51.204Z"
+      },
+      "conversationId": "2cb744da-ab05-4c3a-b44b-66ee3e18e1cd",
+      "id": "TC-026",
+      "title": "Получены ID и техпаспорт",
+      "durationMs": 30324
+    },
+    {
+      "status": "FAIL",
+      "lastReply": "Пришлите, пожалуйста, более качественное фото лицевой стороны свидетельства о регистрации ТС.",
+      "stepReplies": [
+        "Пришлите, пожалуйста, более качественное фото лицевой стороны свидетельства о регистрации ТС.",
+        "Пришлите, пожалуйста, более качественное фото лицевой стороны свидетельства о регистрации ТС."
+      ],
+      "application": {
+        "id": "6dc01844-4564-4bac-aef0-51797c515d2c",
+        "conversationId": "827bfd30-88b8-4160-b8b9-7db54f037bbd",
+        "contactId": "bb3f8009-69eb-49b5-b9b5-cf8f20959aed",
+        "status": "need_more_data",
+        "stage": "COLLECTING_VEHICLE",
+        "facts": {
+          "language": "ru",
+          "documents": {
+            "vehicle_registration_front": "poor_quality"
+          }
+        },
+        "factHistory": [
+          {
+            "key": "language",
+            "previousValue": null,
+            "newValue": "unknown",
+            "changedAt": "2026-09-01T06:42:11.016Z"
+          },
+          {
+            "key": "documents",
+            "previousValue": null,
+            "newValue": {
+              "vehicle_registration_front": "poor_quality"
+            },
+            "changedAt": "2026-09-01T06:42:11.021Z"
+          },
+          {
+            "key": "language",
+            "previousValue": "unknown",
+            "newValue": "ru",
+            "changedAt": "2026-09-01T06:42:11.077Z"
+          }
+        ],
+        "decision": {
+          "stage": "COLLECTING_VEHICLE",
+          "status": "need_more_data",
+          "nextAction": "collect_vehicle",
+          "blockedRules": [],
+          "rulesApplied": [],
+          "requiredFacts": [
+            "vehicleMake",
+            "vehicleModel",
+            "vehicleYear"
+          ],
+          "calculatedLimits": {},
+          "eligiblePrograms": [
+            "without_storage",
+            "parking"
+          ],
+          "requiredStatements": [],
+          "forbiddenStatements": [
+            "окончательно одобрено",
+            "гарантированно одобрено",
+            "можно оформить по доверенности",
+            "рефинансирование возможно",
+            "выкупим займ",
+            "можно свободно выезжать за границу"
+          ]
+        },
+        "createdAt": "2026-09-01T06:41:51.238Z",
+        "updatedAt": "2026-09-01T06:42:11.082Z"
+      },
+      "conversationId": "827bfd30-88b8-4160-b8b9-7db54f037bbd",
+      "error": "Scenario TC-027 did not satisfy scripted assertions. Last reply: Пришлите, пожалуйста, более качественное фото лицевой стороны свидетельства о регистрации ТС.",
+      "id": "TC-027",
+      "title": "Плохое качество документа",
+      "durationMs": 19863
+    },
+    {
+      "status": "FAIL",
+      "lastReply": "Пришлите, пожалуйста, фото лицевой стороны ID, обратной стороны ID, лицевой стороны свидетельства о регистрации ТС, обратной стороны свидетельства о регистрации ТС.",
+      "stepReplies": [
+        "Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10.\n\nПодскажите, пожалуйста, Вас интересует займ без изъятия автомобиля или с постановкой автомобиля на охраняемую стоянку?",
+        "Где прописан собственник автомобиля?",
+        "Предварительно возможная сумма — до 600 000 сом. Окончательная сумма определяется после осмотра автомобиля и проверки документов. Пришлите, пожалуйста, фото лицевой стороны ID, обратной стороны ID, лицевой стороны свидетельства о регистрации ТС, обратной стороны свидетельства о регистрации ТС.",
+        "Пришлите, пожалуйста, фото лицевой стороны ID, обратной стороны ID, лицевой стороны свидетельства о регистрации ТС, обратной стороны свидетельства о регистрации ТС."
+      ],
+      "application": {
+        "id": "5836743e-13b5-4be2-a94f-7bbc39bdb530",
+        "conversationId": "b29886cf-e458-43bb-895f-43624b5d686d",
+        "contactId": "baa2fbb9-7cad-4aa2-a2c5-62c896beefa8",
+        "status": "need_more_data",
+        "stage": "COLLECTING_DOCUMENTS",
+        "facts": {
+          "residenceNeedsClarification": false,
+          "residenceText": "Бишкек",
+          "residenceCategory": "BISHKEK",
+          "residenceRegion": "Бишкек",
+          "requestedProgram": "without_storage",
+          "vehicleModel": "Camry",
+          "vehicleMake": "Toyota",
+          "vehicleYear": 2021,
+          "vehicleValue": 1500000,
+          "requestedAmount": 500000,
+          "language": "ru"
+        },
+        "factHistory": [
+          {
+            "key": "language",
+            "previousValue": null,
+            "newValue": "ru",
+            "changedAt": "2026-09-01T06:42:11.127Z"
+          },
+          {
+            "key": "requestedAmount",
+            "previousValue": null,
+            "newValue": 500000,
+            "changedAt": "2026-09-01T06:42:11.130Z"
+          },
+          {
+            "key": "vehicleValue",
+            "previousValue": null,
+            "newValue": 1500000,
+            "changedAt": "2026-09-01T06:42:11.133Z"
+          },
+          {
+            "key": "vehicleYear",
+            "previousValue": null,
+            "newValue": 2021,
+            "changedAt": "2026-09-01T06:42:11.136Z"
+          },
+          {
+            "key": "vehicleMake",
+            "previousValue": null,
+            "newValue": "Toyota",
+            "changedAt": "2026-09-01T06:42:11.139Z"
+          },
+          {
+            "key": "vehicleModel",
+            "previousValue": null,
+            "newValue": "Camry",
+            "changedAt": "2026-09-01T06:42:11.143Z"
+          },
+          {
+            "key": "requestedProgram",
+            "previousValue": null,
+            "newValue": "without_storage",
+            "changedAt": "2026-09-01T06:42:11.186Z"
+          },
+          {
+            "key": "residenceRegion",
+            "previousValue": null,
+            "newValue": "Бишкек",
+            "changedAt": "2026-09-01T06:42:11.229Z"
+          },
+          {
+            "key": "residenceCategory",
+            "previousValue": null,
+            "newValue": "BISHKEK",
+            "changedAt": "2026-09-01T06:42:11.232Z"
+          },
+          {
+            "key": "residenceText",
+            "previousValue": null,
+            "newValue": "Бишкек",
+            "changedAt": "2026-09-01T06:42:11.237Z"
+          },
+          {
+            "key": "residenceNeedsClarification",
+            "previousValue": null,
+            "newValue": false,
+            "changedAt": "2026-09-01T06:42:11.240Z"
+          }
+        ],
+        "decision": {
+          "stage": "COLLECTING_DOCUMENTS",
+          "status": "need_more_data",
+          "nextAction": "collect_documents",
+          "blockedRules": [],
+          "rulesApplied": [],
+          "requiredFacts": [
+            "id_front",
+            "id_back",
+            "vehicle_registration_front",
+            "vehicle_registration_back"
+          ],
+          "calculatedLimits": {
+            "parking": 750000,
+            "withoutStorage": 600000
+          },
+          "eligiblePrograms": [
+            "without_storage",
+            "parking"
+          ],
+          "requiredStatements": [
+            "Попросить только недостающие документы."
+          ],
+          "forbiddenStatements": [
+            "окончательно одобрено",
+            "гарантированно одобрено",
+            "можно оформить по доверенности",
+            "рефинансирование возможно",
+            "выкупим займ",
+            "можно свободно выезжать за границу"
+          ]
+        },
+        "createdAt": "2026-09-01T06:42:11.101Z",
+        "updatedAt": "2026-09-01T06:42:41.327Z"
+      },
+      "conversationId": "b29886cf-e458-43bb-895f-43624b5d686d",
+      "error": "Scenario TC-028 did not satisfy scripted assertions. Last reply: Пришлите, пожалуйста, фото лицевой стороны ID, обратной стороны ID, лицевой стороны свидетельства о регистрации ТС, обратной стороны свидетельства о регистрации ТС.",
+      "id": "TC-028",
+      "title": "Клиент отказался отправлять документы",
+      "durationMs": 30274
+    },
+    {
+      "status": "PASS",
+      "lastReply": "Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10.\n\nПодскажите, пожалуйста:\n- модель и год выпуска автомобиля;\n- ориентировочную стоимость автомобиля;\n- какая сумма займа Вам необходима?",
+      "stepReplies": [
+        "Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10.\n\nПодскажите, пожалуйста:\n- модель и год выпуска автомобиля;\n- ориентировочную стоимость автомобиля;\n- какая сумма займа Вам необходима?"
+      ],
+      "application": {
+        "id": "4f01b83a-a50e-4cc1-b82b-fe114b9694df",
+        "conversationId": "b1af2fe7-b4b7-4014-8173-85646b3916d5",
+        "contactId": "b8e4bb8b-4133-412b-90aa-0879999cd96f",
+        "status": "need_more_data",
+        "stage": "COLLECTING_VEHICLE",
+        "facts": {
+          "language": "ru"
+        },
+        "factHistory": [
+          {
+            "key": "language",
+            "previousValue": null,
+            "newValue": "ru",
+            "changedAt": "2026-09-01T06:43:11.455Z"
+          }
+        ],
+        "decision": {
+          "stage": "COLLECTING_VEHICLE",
+          "status": "need_more_data",
+          "nextAction": "collect_vehicle",
+          "blockedRules": [],
+          "rulesApplied": [],
+          "requiredFacts": [
+            "vehicleMake",
+            "vehicleModel",
+            "vehicleYear"
+          ],
+          "calculatedLimits": {},
+          "eligiblePrograms": [
+            "without_storage",
+            "parking"
+          ],
+          "requiredStatements": [],
+          "forbiddenStatements": [
+            "окончательно одобрено",
+            "гарантированно одобрено",
+            "можно оформить по доверенности",
+            "рефинансирование возможно",
+            "выкупим займ",
+            "можно свободно выезжать за границу"
+          ]
+        },
+        "createdAt": "2026-09-01T06:42:41.384Z",
+        "updatedAt": "2026-09-01T06:43:11.471Z"
+      },
+      "conversationId": "b1af2fe7-b4b7-4014-8173-85646b3916d5",
+      "id": "TC-029",
+      "title": "Документ у другого человека",
+      "durationMs": 30141
+    },
+    {
+      "status": "PASS",
+      "lastReply": "Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10.\n\nПодскажите, пожалуйста:\n- модель и год выпуска автомобиля;\n- ориентировочную стоимость автомобиля;\n- какая сумма займа Вам необходима?",
+      "stepReplies": [
+        "Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10.\n\nПодскажите, пожалуйста:\n- модель и год выпуска автомобиля;\n- ориентировочную стоимость автомобиля;\n- какая сумма займа Вам необходима?"
+      ],
+      "application": {
+        "id": "c7ad1f62-3487-480e-b67d-99cb2de68761",
+        "conversationId": "b4ce62d7-4d19-4bf9-826c-593ec0fc9d8a",
+        "contactId": "84275cee-4cf9-44e6-9df5-47cb48a337b3",
+        "status": "need_more_data",
+        "stage": "COLLECTING_VEHICLE",
+        "facts": {
+          "documents": {
+            "car_photo": "received"
+          },
+          "language": "unknown"
+        },
+        "factHistory": [
+          {
+            "key": "language",
+            "previousValue": null,
+            "newValue": "unknown",
+            "changedAt": "2026-09-01T06:43:41.607Z"
+          },
+          {
+            "key": "documents",
+            "previousValue": null,
+            "newValue": {
+              "car_photo": "received"
+            },
+            "changedAt": "2026-09-01T06:43:41.612Z"
+          }
+        ],
+        "decision": {
+          "stage": "COLLECTING_VEHICLE",
+          "status": "need_more_data",
+          "nextAction": "collect_vehicle",
+          "blockedRules": [],
+          "rulesApplied": [],
+          "requiredFacts": [
+            "vehicleMake",
+            "vehicleModel",
+            "vehicleYear"
+          ],
+          "calculatedLimits": {},
+          "eligiblePrograms": [
+            "without_storage",
+            "parking"
+          ],
+          "requiredStatements": [],
+          "forbiddenStatements": [
+            "окончательно одобрено",
+            "гарантированно одобрено",
+            "можно оформить по доверенности",
+            "рефинансирование возможно",
+            "выкупим займ",
+            "можно свободно выезжать за границу"
+          ]
+        },
+        "createdAt": "2026-09-01T06:43:11.527Z",
+        "updatedAt": "2026-09-01T06:43:41.619Z"
+      },
+      "conversationId": "b4ce62d7-4d19-4bf9-826c-593ec0fc9d8a",
+      "id": "TC-030",
+      "title": "Только фотографии автомобиля",
+      "durationMs": 30135
+    },
+    {
+      "status": "PASS",
+      "lastReply": "Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10.\n\nПодскажите, пожалуйста:\n- модель и год выпуска автомобиля;\n- ориентировочную стоимость автомобиля;\n- какая сумма займа Вам необходима?",
+      "stepReplies": [
+        "Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10.\n\nПодскажите, пожалуйста:\n- модель и год выпуска автомобиля;\n- ориентировочную стоимость автомобиля;\n- какая сумма займа Вам необходима?"
+      ],
+      "application": {
+        "id": "a6adaf26-5d08-45db-914b-8261206b54f0",
+        "conversationId": "70da6ac6-66de-456e-8aae-f855c598a22b",
+        "contactId": "328b7d19-ef63-4e67-8c4f-12cb4128761c",
+        "status": "need_more_data",
+        "stage": "COLLECTING_VEHICLE",
+        "facts": {
+          "documents": {
+            "unknown": "received"
+          },
+          "language": "unknown"
+        },
+        "factHistory": [
+          {
+            "key": "language",
+            "previousValue": null,
+            "newValue": "unknown",
+            "changedAt": "2026-09-01T06:44:11.710Z"
+          },
+          {
+            "key": "documents",
+            "previousValue": null,
+            "newValue": {
+              "unknown": "received"
+            },
+            "changedAt": "2026-09-01T06:44:11.716Z"
+          }
+        ],
+        "decision": {
+          "stage": "COLLECTING_VEHICLE",
+          "status": "need_more_data",
+          "nextAction": "collect_vehicle",
+          "blockedRules": [],
+          "rulesApplied": [],
+          "requiredFacts": [
+            "vehicleMake",
+            "vehicleModel",
+            "vehicleYear"
+          ],
+          "calculatedLimits": {},
+          "eligiblePrograms": [
+            "without_storage",
+            "parking"
+          ],
+          "requiredStatements": [],
+          "forbiddenStatements": [
+            "окончательно одобрено",
+            "гарантированно одобрено",
+            "можно оформить по доверенности",
+            "рефинансирование возможно",
+            "выкупим займ",
+            "можно свободно выезжать за границу"
+          ]
+        },
+        "createdAt": "2026-09-01T06:43:41.654Z",
+        "updatedAt": "2026-09-01T06:44:11.725Z"
+      },
+      "conversationId": "70da6ac6-66de-456e-8aae-f855c598a22b",
+      "id": "TC-031",
+      "title": "Неизвестное изображение",
+      "durationMs": 30113
+    },
+    {
+      "status": "PASS",
+      "lastReply": "Для оформления потребуется оригинал нотариального согласия супруга или супруги. Его можно оформить у любого нотариуса или у нотариуса в нашем здании. Ориентировочная стоимость оформления согласия — 1500 сом. Подскажите, пожалуйста, модель и год выпуска автомобиля. Подскажите, пожалуйста, модель автомобиля. Подскажите, пожалуйста, год выпуска автомобиля.",
+      "stepReplies": [
+        "Для оформления потребуется оригинал нотариального согласия супруга или супруги. Его можно оформить у любого нотариуса или у нотариуса в нашем здании. Ориентировочная стоимость оформления согласия — 1500 сом. Подскажите, пожалуйста, модель и год выпуска автомобиля. Подскажите, пожалуйста, модель автомобиля. Подскажите, пожалуйста, год выпуска автомобиля."
+      ],
+      "application": {
+        "id": "82356ed0-3cc0-4682-a551-55bde66d92f6",
+        "conversationId": "e4e21b92-ba0b-4206-9c75-438e7b3fbcd3",
+        "contactId": "775c1771-c909-4444-a553-1d51d24a34a9",
+        "status": "need_more_data",
+        "stage": "COLLECTING_VEHICLE",
+        "facts": {
+          "familyStatus": "married",
+          "language": "ru"
+        },
+        "factHistory": [
+          {
+            "key": "language",
+            "previousValue": null,
+            "newValue": "ru",
+            "changedAt": "2026-09-01T06:44:11.794Z"
+          },
+          {
+            "key": "familyStatus",
+            "previousValue": null,
+            "newValue": "married",
+            "changedAt": "2026-09-01T06:44:11.798Z"
+          }
+        ],
+        "decision": {
+          "stage": "COLLECTING_VEHICLE",
+          "status": "need_more_data",
+          "nextAction": "collect_vehicle",
+          "blockedRules": [],
+          "rulesApplied": [],
+          "requiredFacts": [
+            "vehicleMake",
+            "vehicleModel",
+            "vehicleYear"
+          ],
+          "calculatedLimits": {},
+          "eligiblePrograms": [
+            "without_storage",
+            "parking"
+          ],
+          "requiredStatements": [],
+          "forbiddenStatements": [
+            "окончательно одобрено",
+            "гарантированно одобрено",
+            "можно оформить по доверенности",
+            "рефинансирование возможно",
+            "выкупим займ",
+            "можно свободно выезжать за границу"
+          ]
+        },
+        "createdAt": "2026-09-01T06:44:11.766Z",
+        "updatedAt": "2026-09-01T06:44:11.804Z"
+      },
+      "conversationId": "e4e21b92-ba0b-4206-9c75-438e7b3fbcd3",
+      "id": "TC-032",
+      "title": "Собственник в браке",
+      "durationMs": 64
+    },
+    {
+      "status": "FAIL",
+      "lastReply": "Поняла, нотариальное согласие супруга или супруги в таком случае не требуется. Можем перейти к следующему этапу оформления. Подскажите, пожалуйста, модель и год выпуска автомобиля. Подскажите, пожалуйста, модель автомобиля. Подскажите, пожалуйста, год выпуска автомобиля.",
+      "stepReplies": [
+        "Поняла, нотариальное согласие супруга или супруги в таком случае не требуется. Можем перейти к следующему этапу оформления. Подскажите, пожалуйста, модель и год выпуска автомобиля. Подскажите, пожалуйста, модель автомобиля. Подскажите, пожалуйста, год выпуска автомобиля."
+      ],
+      "application": {
+        "id": "2f3dab2a-cc94-4cba-92cc-07b489ae7799",
+        "conversationId": "ff68b8d1-47ae-47fb-962f-3786b8f52fdc",
+        "contactId": "b171118b-ac4c-4f05-857a-714126689f8f",
+        "status": "need_more_data",
+        "stage": "COLLECTING_VEHICLE",
+        "facts": {
+          "familyStatus": "single",
+          "language": "ru"
+        },
+        "factHistory": [
+          {
+            "key": "language",
+            "previousValue": null,
+            "newValue": "ru",
+            "changedAt": "2026-09-01T06:44:11.852Z"
+          },
+          {
+            "key": "familyStatus",
+            "previousValue": null,
+            "newValue": "single",
+            "changedAt": "2026-09-01T06:44:11.856Z"
+          }
+        ],
+        "decision": {
+          "stage": "COLLECTING_VEHICLE",
+          "status": "need_more_data",
+          "nextAction": "collect_vehicle",
+          "blockedRules": [],
+          "rulesApplied": [],
+          "requiredFacts": [
+            "vehicleMake",
+            "vehicleModel",
+            "vehicleYear"
+          ],
+          "calculatedLimits": {},
+          "eligiblePrograms": [
+            "without_storage",
+            "parking"
+          ],
+          "requiredStatements": [],
+          "forbiddenStatements": [
+            "окончательно одобрено",
+            "гарантированно одобрено",
+            "можно оформить по доверенности",
+            "рефинансирование возможно",
+            "выкупим займ",
+            "можно свободно выезжать за границу"
+          ]
+        },
+        "createdAt": "2026-09-01T06:44:11.827Z",
+        "updatedAt": "2026-09-01T06:44:11.860Z"
+      },
+      "conversationId": "ff68b8d1-47ae-47fb-962f-3786b8f52fdc",
+      "error": "Scenario TC-033 did not satisfy scripted assertions. Last reply: Поняла, нотариальное согласие супруга или супруги в таком случае не требуется. Можем перейти к следующему этапу оформления. Подскажите, пожалуйста, модель и год выпуска автомобиля. Подскажите, пожалуйста, модель автомобиля. Подскажите, пожалуйста, год выпуска автомобиля.",
+      "id": "TC-033",
+      "title": "Никогда не состоял в браке",
+      "durationMs": 54
+    },
+    {
+      "status": "PASS",
+      "lastReply": "Для визита потребуется оригинал свидетельства о расторжении брака. Если удобно, можете заранее прислать его фотографию. Я не до конца поняла марку автомобиля. Уточните, пожалуйста, марку, модель и год выпуска автомобиля. Я не до конца поняла модель автомобиля. Уточните, пожалуйста, марку, модель и год выпуска автомобиля. Я не до конца поняла год выпуска автомобиля. Напишите, пожалуйста, только год выпуска автомобиля.",
+      "stepReplies": [
+        "Нотариальное согласие бывшего супруга или супруги не требуется. Подскажите, пожалуйста, автомобиль был приобретён во время брака или после развода? Подскажите, пожалуйста, модель и год выпуска автомобиля. Подскажите, пожалуйста, модель автомобиля. Подскажите, пожалуйста, год выпуска автомобиля.",
+        "Для визита потребуется оригинал свидетельства о расторжении брака. Если удобно, можете заранее прислать его фотографию. Я не до конца поняла марку автомобиля. Уточните, пожалуйста, марку, модель и год выпуска автомобиля. Я не до конца поняла модель автомобиля. Уточните, пожалуйста, марку, модель и год выпуска автомобиля. Я не до конца поняла год выпуска автомобиля. Напишите, пожалуйста, только год выпуска автомобиля."
+      ],
+      "application": {
+        "id": "b179f7f5-a653-4957-a57f-8a9610f0f40c",
+        "conversationId": "5d0ce928-b37e-4be5-b134-b5892097a413",
+        "contactId": "2fe13fb3-9ac6-46d4-bbb3-47d00275113b",
+        "status": "need_more_data",
+        "stage": "COLLECTING_VEHICLE",
+        "facts": {
+          "vehicleBoughtDuringMarriage": true,
+          "familyStatus": "divorced",
+          "language": "ru"
+        },
+        "factHistory": [
+          {
+            "key": "language",
+            "previousValue": null,
+            "newValue": "ru",
+            "changedAt": "2026-09-01T06:44:11.907Z"
+          },
+          {
+            "key": "familyStatus",
+            "previousValue": null,
+            "newValue": "divorced",
+            "changedAt": "2026-09-01T06:44:11.914Z"
+          },
+          {
+            "key": "vehicleBoughtDuringMarriage",
+            "previousValue": null,
+            "newValue": true,
+            "changedAt": "2026-09-01T06:44:12.001Z"
+          }
+        ],
+        "decision": {
+          "stage": "COLLECTING_VEHICLE",
+          "status": "need_more_data",
+          "nextAction": "collect_vehicle",
+          "blockedRules": [],
+          "rulesApplied": [],
+          "requiredFacts": [
+            "vehicleMake",
+            "vehicleModel",
+            "vehicleYear"
+          ],
+          "calculatedLimits": {},
+          "eligiblePrograms": [
+            "without_storage",
+            "parking"
+          ],
+          "requiredStatements": [],
+          "forbiddenStatements": [
+            "окончательно одобрено",
+            "гарантированно одобрено",
+            "можно оформить по доверенности",
+            "рефинансирование возможно",
+            "выкупим займ",
+            "можно свободно выезжать за границу"
+          ]
+        },
+        "createdAt": "2026-09-01T06:44:11.882Z",
+        "updatedAt": "2026-09-01T06:44:12.009Z"
+      },
+      "conversationId": "5d0ce928-b37e-4be5-b134-b5892097a413",
+      "id": "TC-034",
+      "title": "В разводе, машина куплена в браке",
+      "durationMs": 155
+    },
+    {
+      "status": "FAIL",
+      "lastReply": "Поняла, в таком случае свидетельство о расторжении брака для этого условия не требуется. Можем перейти к следующему этапу оформления. Я не до конца поняла марку автомобиля. Уточните, пожалуйста, марку, модель и год выпуска автомобиля. Я не до конца поняла модель автомобиля. Уточните, пожалуйста, марку, модель и год выпуска автомобиля. Я не до конца поняла год выпуска автомобиля. Напишите, пожалуйста, только год выпуска автомобиля.",
+      "stepReplies": [
+        "Нотариальное согласие бывшего супруга или супруги не требуется. Подскажите, пожалуйста, автомобиль был приобретён во время брака или после развода? Подскажите, пожалуйста, модель и год выпуска автомобиля. Подскажите, пожалуйста, модель автомобиля. Подскажите, пожалуйста, год выпуска автомобиля.",
+        "Поняла, в таком случае свидетельство о расторжении брака для этого условия не требуется. Можем перейти к следующему этапу оформления. Я не до конца поняла марку автомобиля. Уточните, пожалуйста, марку, модель и год выпуска автомобиля. Я не до конца поняла модель автомобиля. Уточните, пожалуйста, марку, модель и год выпуска автомобиля. Я не до конца поняла год выпуска автомобиля. Напишите, пожалуйста, только год выпуска автомобиля."
+      ],
+      "application": {
+        "id": "f1860086-616c-480c-b496-2831375fef38",
+        "conversationId": "657d2b4f-b8d6-4ae2-af23-6521b6612c1a",
+        "contactId": "0aea4ffb-fd22-48a6-9ff7-1853aa176f4a",
+        "status": "need_more_data",
+        "stage": "COLLECTING_VEHICLE",
+        "facts": {
+          "vehicleBoughtDuringMarriage": false,
+          "familyStatus": "divorced",
+          "language": "ru"
+        },
+        "factHistory": [
+          {
+            "key": "language",
+            "previousValue": null,
+            "newValue": "ru",
+            "changedAt": "2026-09-01T06:44:12.069Z"
+          },
+          {
+            "key": "familyStatus",
+            "previousValue": null,
+            "newValue": "divorced",
+            "changedAt": "2026-09-01T06:44:12.074Z"
+          },
+          {
+            "key": "vehicleBoughtDuringMarriage",
+            "previousValue": null,
+            "newValue": false,
+            "changedAt": "2026-09-01T06:44:12.128Z"
+          }
+        ],
+        "decision": {
+          "stage": "COLLECTING_VEHICLE",
+          "status": "need_more_data",
+          "nextAction": "collect_vehicle",
+          "blockedRules": [],
+          "rulesApplied": [],
+          "requiredFacts": [
+            "vehicleMake",
+            "vehicleModel",
+            "vehicleYear"
+          ],
+          "calculatedLimits": {},
+          "eligiblePrograms": [
+            "without_storage",
+            "parking"
+          ],
+          "requiredStatements": [],
+          "forbiddenStatements": [
+            "окончательно одобрено",
+            "гарантированно одобрено",
+            "можно оформить по доверенности",
+            "рефинансирование возможно",
+            "выкупим займ",
+            "можно свободно выезжать за границу"
+          ]
+        },
+        "createdAt": "2026-09-01T06:44:12.036Z",
+        "updatedAt": "2026-09-01T06:44:12.137Z"
+      },
+      "conversationId": "657d2b4f-b8d6-4ae2-af23-6521b6612c1a",
+      "error": "Scenario TC-035 did not satisfy scripted assertions. Last reply: Поняла, в таком случае свидетельство о расторжении брака для этого условия не требуется. Можем перейти к следующему этапу оформления. Я не до конца поняла марку автомобиля. Уточните, пожалуйста, марку, модель и год выпуска автомобиля. Я не до конца поняла модель автомобиля. Уточните, пожалуйста, марку, модель и год выпуска автомобиля. Я не до конца поняла год выпуска автомобиля. Напишите, пожалуйста, только год выпуска автомобиля.",
+      "id": "TC-035",
+      "title": "В разводе, машина куплена после развода",
+      "durationMs": 124
+    },
+    {
+      "status": "PASS",
+      "lastReply": "Пришлите, пожалуйста, фото лицевой стороны ID, обратной стороны ID, лицевой стороны свидетельства о регистрации ТС, обратной стороны свидетельства о регистрации ТС.",
+      "stepReplies": [
+        "Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10.\n\nПодскажите, пожалуйста, Вас интересует займ без изъятия автомобиля или с постановкой автомобиля на охраняемую стоянку?",
+        "Где прописан собственник автомобиля?",
+        "Предварительно возможная сумма — до 200 000 сом. Окончательная сумма определяется после осмотра автомобиля и проверки документов. Для займа без изъятия за пределами Бишкека и Чуйской области нужен поручитель от 25 лет, который лично присутствует при выдаче займа и имеет с собой ID или паспорт. Подскажите, пожалуйста, есть ли у Вас поручитель?",
+        "Пришлите, пожалуйста, фото лицевой стороны ID, обратной стороны ID, лицевой стороны свидетельства о регистрации ТС, обратной стороны свидетельства о регистрации ТС."
+      ],
+      "application": {
+        "id": "b330e934-dabe-4ccc-a7ed-71cb0fe9b648",
+        "conversationId": "9e51e540-7710-457b-b9ca-d0faafeebc77",
+        "contactId": "7a03023c-bd29-44f7-bc25-95b1706fd65d",
+        "status": "need_more_data",
+        "stage": "COLLECTING_DOCUMENTS",
+        "facts": {
+          "guarantorAvailable": true,
+          "residenceNeedsClarification": false,
+          "residenceCategory": "OTHER_KG",
+          "residenceRegion": "Ош",
+          "residenceText": "Ош",
+          "requestedProgram": "without_storage",
+          "vehicleModel": "Camry",
+          "vehicleMake": "Toyota",
+          "vehicleYear": 2021,
+          "vehicleValue": 1500000,
+          "requestedAmount": 180000,
+          "language": "ru"
+        },
+        "factHistory": [
+          {
+            "key": "language",
+            "previousValue": null,
+            "newValue": "ru",
+            "changedAt": "2026-09-01T06:44:12.186Z"
+          },
+          {
+            "key": "requestedAmount",
+            "previousValue": null,
+            "newValue": 180000,
+            "changedAt": "2026-09-01T06:44:12.189Z"
+          },
+          {
+            "key": "vehicleValue",
+            "previousValue": null,
+            "newValue": 1500000,
+            "changedAt": "2026-09-01T06:44:12.192Z"
+          },
+          {
+            "key": "vehicleYear",
+            "previousValue": null,
+            "newValue": 2021,
+            "changedAt": "2026-09-01T06:44:12.196Z"
+          },
+          {
+            "key": "vehicleMake",
+            "previousValue": null,
+            "newValue": "Toyota",
+            "changedAt": "2026-09-01T06:44:12.199Z"
+          },
+          {
+            "key": "vehicleModel",
+            "previousValue": null,
+            "newValue": "Camry",
+            "changedAt": "2026-09-01T06:44:12.202Z"
+          },
+          {
+            "key": "requestedProgram",
+            "previousValue": null,
+            "newValue": "without_storage",
+            "changedAt": "2026-09-01T06:44:12.367Z"
+          },
+          {
+            "key": "residenceText",
+            "previousValue": null,
+            "newValue": "Ош",
+            "changedAt": "2026-09-01T06:44:12.574Z"
+          },
+          {
+            "key": "residenceRegion",
+            "previousValue": null,
+            "newValue": "Ош",
+            "changedAt": "2026-09-01T06:44:12.592Z"
+          },
+          {
+            "key": "residenceCategory",
+            "previousValue": null,
+            "newValue": "OTHER_KG",
+            "changedAt": "2026-09-01T06:44:12.608Z"
+          },
+          {
+            "key": "residenceNeedsClarification",
+            "previousValue": null,
+            "newValue": false,
+            "changedAt": "2026-09-01T06:44:12.625Z"
+          },
+          {
+            "key": "guarantorAvailable",
+            "previousValue": null,
+            "newValue": true,
+            "changedAt": "2026-09-01T06:44:12.792Z"
+          }
+        ],
+        "decision": {
+          "stage": "COLLECTING_DOCUMENTS",
+          "status": "need_more_data",
+          "nextAction": "collect_documents",
+          "blockedRules": [],
+          "rulesApplied": [],
+          "requiredFacts": [
+            "id_front",
+            "id_back",
+            "vehicle_registration_front",
+            "vehicle_registration_back"
+          ],
+          "calculatedLimits": {
+            "parking": 750000,
+            "withoutStorage": 200000
+          },
+          "eligiblePrograms": [
+            "without_storage",
+            "parking"
+          ],
+          "requiredStatements": [
+            "Попросить только недостающие документы."
+          ],
+          "forbiddenStatements": [
+            "окончательно одобрено",
+            "гарантированно одобрено",
+            "можно оформить по доверенности",
+            "рефинансирование возможно",
+            "выкупим займ",
+            "можно свободно выезжать за границу"
+          ]
+        },
+        "createdAt": "2026-09-01T06:44:12.162Z",
+        "updatedAt": "2026-09-01T06:44:12.814Z"
+      },
+      "conversationId": "9e51e540-7710-457b-b9ca-d0faafeebc77",
+      "id": "TC-036",
+      "title": "Поручитель есть",
+      "durationMs": 735
+    },
+    {
+      "status": "PASS",
+      "lastReply": "Без поручителя оформление без изъятия продолжить нельзя. Можно выбрать программу с постановкой автомобиля на охраняемую стоянку. Хотите продолжить по программе с постановкой автомобиля на охраняемую стоянку?",
+      "stepReplies": [
+        "Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10.\n\nПодскажите, пожалуйста, Вас интересует займ без изъятия автомобиля или с постановкой автомобиля на охраняемую стоянку?",
+        "Где прописан собственник автомобиля?",
+        "Предварительно возможная сумма — до 200 000 сом. Окончательная сумма определяется после осмотра автомобиля и проверки документов. Для займа без изъятия за пределами Бишкека и Чуйской области нужен поручитель от 25 лет, который лично присутствует при выдаче займа и имеет с собой ID или паспорт. Подскажите, пожалуйста, есть ли у Вас поручитель?",
+        "Без поручителя оформление без изъятия продолжить нельзя. Можно выбрать программу с постановкой автомобиля на охраняемую стоянку. Хотите продолжить по программе с постановкой автомобиля на охраняемую стоянку?"
+      ],
+      "application": {
+        "id": "78539e7d-cfc3-4737-81bd-027da4759f20",
+        "conversationId": "aaf4756a-b583-4011-9331-aa00a09eeb1d",
+        "contactId": "1cff6543-3338-4d56-af39-cfe7ed8e5172",
+        "status": "need_more_data",
+        "stage": "ELIGIBILITY_CHECK",
+        "facts": {
+          "guarantorAvailable": false,
+          "residenceNeedsClarification": false,
+          "residenceCategory": "OTHER_KG",
+          "residenceRegion": "Ош",
+          "residenceText": "Ош",
+          "requestedProgram": "without_storage",
+          "vehicleModel": "Camry",
+          "vehicleMake": "Toyota",
+          "vehicleYear": 2021,
+          "vehicleValue": 1500000,
+          "requestedAmount": 180000,
+          "language": "ru"
+        },
+        "factHistory": [
+          {
+            "key": "language",
+            "previousValue": null,
+            "newValue": "ru",
+            "changedAt": "2026-09-01T06:44:12.964Z"
+          },
+          {
+            "key": "requestedAmount",
+            "previousValue": null,
+            "newValue": 180000,
+            "changedAt": "2026-09-01T06:44:13.008Z"
+          },
+          {
+            "key": "vehicleValue",
+            "previousValue": null,
+            "newValue": 1500000,
+            "changedAt": "2026-09-01T06:44:13.019Z"
+          },
+          {
+            "key": "vehicleYear",
+            "previousValue": null,
+            "newValue": 2021,
+            "changedAt": "2026-09-01T06:44:13.032Z"
+          },
+          {
+            "key": "vehicleMake",
+            "previousValue": null,
+            "newValue": "Toyota",
+            "changedAt": "2026-09-01T06:44:13.041Z"
+          },
+          {
+            "key": "vehicleModel",
+            "previousValue": null,
+            "newValue": "Camry",
+            "changedAt": "2026-09-01T06:44:13.050Z"
+          },
+          {
+            "key": "requestedProgram",
+            "previousValue": null,
+            "newValue": "without_storage",
+            "changedAt": "2026-09-01T06:44:13.177Z"
+          },
+          {
+            "key": "residenceText",
+            "previousValue": null,
+            "newValue": "Ош",
+            "changedAt": "2026-09-01T06:44:13.307Z"
+          },
+          {
+            "key": "residenceRegion",
+            "previousValue": null,
+            "newValue": "Ош",
+            "changedAt": "2026-09-01T06:44:13.320Z"
+          },
+          {
+            "key": "residenceCategory",
+            "previousValue": null,
+            "newValue": "OTHER_KG",
+            "changedAt": "2026-09-01T06:44:13.333Z"
+          },
+          {
+            "key": "residenceNeedsClarification",
+            "previousValue": null,
+            "newValue": false,
+            "changedAt": "2026-09-01T06:44:13.345Z"
+          },
+          {
+            "key": "guarantorAvailable",
+            "previousValue": null,
+            "newValue": false,
+            "changedAt": "2026-09-01T06:44:13.463Z"
+          }
+        ],
+        "decision": {
+          "stage": "ELIGIBILITY_CHECK",
+          "status": "need_more_data",
+          "nextAction": "collect_residence",
+          "blockedRules": [],
+          "rulesApplied": [
+            "other_region_guarantor_unavailable"
+          ],
+          "requiredFacts": [
+            "requestedProgram"
+          ],
+          "calculatedLimits": {
+            "parking": 750000,
+            "withoutStorage": 200000
+          },
+          "eligiblePrograms": [
+            "parking"
+          ],
+          "requiredStatements": [
+            "Без поручителя оформление без изъятия продолжить нельзя. Можно выбрать программу с постановкой автомобиля на охраняемую стоянку."
+          ],
+          "forbiddenStatements": [
+            "окончательно одобрено",
+            "гарантированно одобрено",
+            "можно оформить по доверенности",
+            "рефинансирование возможно",
+            "выкупим займ",
+            "можно свободно выезжать за границу"
+          ]
+        },
+        "createdAt": "2026-09-01T06:44:12.900Z",
+        "updatedAt": "2026-09-01T06:44:13.479Z"
+      },
+      "conversationId": "aaf4756a-b583-4011-9331-aa00a09eeb1d",
+      "id": "TC-037",
+      "title": "Поручителя нет",
+      "durationMs": 635
+    },
+    {
+      "status": "PASS",
+      "lastReply": "Мы работаем ПН–ПТ 11:00–19:00. Для оформления нужно подъехать не позднее 18:00. Уточните, пожалуйста, конкретное время визита. Подскажите, пожалуйста, модель и год выпуска автомобиля. Подскажите, пожалуйста, модель автомобиля. Подскажите, пожалуйста, год выпуска автомобиля.",
+      "stepReplies": [
+        "Мы работаем ПН–ПТ 11:00–19:00. Для оформления нужно подъехать не позднее 18:00. Уточните, пожалуйста, конкретное время визита. Подскажите, пожалуйста, модель и год выпуска автомобиля. Подскажите, пожалуйста, модель автомобиля. Подскажите, пожалуйста, год выпуска автомобиля."
+      ],
+      "application": {
+        "id": "b7b1e5d3-83be-42a8-aed3-9d5e5706c84d",
+        "conversationId": "c9308741-daa4-480b-a8ee-3b760e6048ef",
+        "contactId": "9be5b124-088d-42ac-bbfc-2c62dff4a7fd",
+        "status": "need_more_data",
+        "stage": "COLLECTING_VEHICLE",
+        "facts": {
+          "visitDate": "2026-09-02",
+          "visitRequested": true,
+          "language": "ru"
+        },
+        "factHistory": [
+          {
+            "key": "language",
+            "previousValue": null,
+            "newValue": "ru",
+            "changedAt": "2026-09-01T06:44:13.598Z"
+          },
+          {
+            "key": "visitRequested",
+            "previousValue": null,
+            "newValue": true,
+            "changedAt": "2026-09-01T06:44:13.606Z"
+          },
+          {
+            "key": "visitDate",
+            "previousValue": null,
+            "newValue": "2026-09-02",
+            "changedAt": "2026-09-01T06:44:13.615Z"
+          }
+        ],
+        "decision": {
+          "stage": "COLLECTING_VEHICLE",
+          "status": "need_more_data",
+          "nextAction": "collect_vehicle",
+          "blockedRules": [],
+          "rulesApplied": [],
+          "requiredFacts": [
+            "vehicleMake",
+            "vehicleModel",
+            "vehicleYear"
+          ],
+          "calculatedLimits": {},
+          "eligiblePrograms": [
+            "without_storage",
+            "parking"
+          ],
+          "requiredStatements": [],
+          "forbiddenStatements": [
+            "окончательно одобрено",
+            "гарантированно одобрено",
+            "можно оформить по доверенности",
+            "рефинансирование возможно",
+            "выкупим займ",
+            "можно свободно выезжать за границу"
+          ]
+        },
+        "createdAt": "2026-09-01T06:44:13.541Z",
+        "updatedAt": "2026-09-01T06:44:13.629Z"
+      },
+      "conversationId": "c9308741-daa4-480b-a8ee-3b760e6048ef",
+      "id": "TC-038",
+      "title": "Клиент хочет приехать завтра",
+      "durationMs": 134
+    },
+    {
+      "status": "FAIL",
+      "lastReply": "Мы работаем ПН–ПТ 11:00–19:00. Для оформления нужно подъехать не позднее 18:00. Подскажите, пожалуйста, другое конкретное время. Спасибо. Предварительно записала Вас на указанное время. Для подтверждения времени визита с Вами свяжется менеджер.\nДата и время: 2026-09-02, 18:30.\nБ. Молодой Гвардии, 22, Бишкек.\nhttps://go.2gis.com/Y34m4\nhttps://maps.app.goo.gl/9xiWLVvdyRgn3Sx4A Подскажите, пожалуйста, модель и год выпуска автомобиля. Подскажите, пожалуйста, модель автомобиля. Подскажите, пожалуйста, год выпуска автомобиля.",
+      "stepReplies": [
+        "Мы работаем ПН–ПТ 11:00–19:00. Для оформления нужно подъехать не позднее 18:00. Подскажите, пожалуйста, другое конкретное время. Спасибо. Предварительно записала Вас на указанное время. Для подтверждения времени визита с Вами свяжется менеджер.\nДата и время: 2026-09-02, 18:30.\nБ. Молодой Гвардии, 22, Бишкек.\nhttps://go.2gis.com/Y34m4\nhttps://maps.app.goo.gl/9xiWLVvdyRgn3Sx4A Подскажите, пожалуйста, модель и год выпуска автомобиля. Подскажите, пожалуйста, модель автомобиля. Подскажите, пожалуйста, год выпуска автомобиля."
+      ],
+      "application": {
+        "id": "7bae87b9-2167-4af4-8ce4-0662c2b60c9d",
+        "conversationId": "09c27eda-2f23-4c05-bfce-8b7b3d157bed",
+        "contactId": "850ffbc1-4d52-4b66-92e7-7704321d7bfc",
+        "status": "need_more_data",
+        "stage": "COLLECTING_VEHICLE",
+        "facts": {
+          "visitTime": "18:30",
+          "visitDate": "2026-09-02",
+          "visitRequested": true,
+          "language": "ru"
+        },
+        "factHistory": [
+          {
+            "key": "language",
+            "previousValue": null,
+            "newValue": "ru",
+            "changedAt": "2026-09-01T06:44:13.728Z"
+          },
+          {
+            "key": "visitRequested",
+            "previousValue": null,
+            "newValue": true,
+            "changedAt": "2026-09-01T06:44:13.741Z"
+          },
+          {
+            "key": "visitDate",
+            "previousValue": null,
+            "newValue": "2026-09-02",
+            "changedAt": "2026-09-01T06:44:13.809Z"
+          },
+          {
+            "key": "visitTime",
+            "previousValue": null,
+            "newValue": "18:30",
+            "changedAt": "2026-09-01T06:44:13.818Z"
+          }
+        ],
+        "decision": {
+          "stage": "COLLECTING_VEHICLE",
+          "status": "need_more_data",
+          "nextAction": "collect_vehicle",
+          "blockedRules": [],
+          "rulesApplied": [],
+          "requiredFacts": [
+            "vehicleMake",
+            "vehicleModel",
+            "vehicleYear"
+          ],
+          "calculatedLimits": {},
+          "eligiblePrograms": [
+            "without_storage",
+            "parking"
+          ],
+          "requiredStatements": [],
+          "forbiddenStatements": [
+            "окончательно одобрено",
+            "гарантированно одобрено",
+            "можно оформить по доверенности",
+            "рефинансирование возможно",
+            "выкупим займ",
+            "можно свободно выезжать за границу"
+          ]
+        },
+        "createdAt": "2026-09-01T06:44:13.673Z",
+        "updatedAt": "2026-09-01T06:44:13.832Z"
+      },
+      "conversationId": "09c27eda-2f23-4c05-bfce-8b7b3d157bed",
+      "error": "Scenario TC-039 did not satisfy scripted assertions. Last reply: Мы работаем ПН–ПТ 11:00–19:00. Для оформления нужно подъехать не позднее 18:00. Подскажите, пожалуйста, другое конкретное время. Спасибо. Предварительно записала Вас на указанное время. Для подтверждения времени визита с Вами свяжется менеджер. Дата и время: 2026-09-02, 18:30. Б. Молодой Гвардии, 22, Бишкек. https://go.2gis.com/Y34m4 https://maps.app.goo.gl/9xiWLVvdyRgn3Sx4A Подскажите, пожалуйста, модель и год выпуска автомобиля. Подскажите, пожалуйста, модель автомобиля. Подскажите, пожалуйста, год выпуска автомобиля.",
+      "id": "TC-039",
+      "title": "Клиент предлагает 18:30",
+      "durationMs": 205
+    },
+    {
+      "status": "PASS",
+      "lastReply": "Воскресенье, 2026-09-06, у нас выходной. Ближайший рабочий день — 2026-09-07. Мы работаем ПН–ПТ 11:00–19:00. Для оформления нужно подъехать не позднее 18:00. Подскажите, пожалуйста, модель и год выпуска автомобиля. Подскажите, пожалуйста, модель автомобиля. Подскажите, пожалуйста, год выпуска автомобиля.",
+      "stepReplies": [
+        "Воскресенье, 2026-09-06, у нас выходной. Ближайший рабочий день — 2026-09-07. Мы работаем ПН–ПТ 11:00–19:00. Для оформления нужно подъехать не позднее 18:00. Подскажите, пожалуйста, модель и год выпуска автомобиля. Подскажите, пожалуйста, модель автомобиля. Подскажите, пожалуйста, год выпуска автомобиля."
+      ],
+      "application": {
+        "id": "451ca53f-4c4e-4497-a546-14bc67ce08b0",
+        "conversationId": "a4b2af8f-fb5d-4997-a785-ffda395d511a",
+        "contactId": "5781fc01-a8ad-4e52-baac-032ebc64e5f6",
+        "status": "need_more_data",
+        "stage": "COLLECTING_VEHICLE",
+        "facts": {
+          "visitDate": "2026-09-06",
+          "visitRequested": true,
+          "language": "ru"
+        },
+        "factHistory": [
+          {
+            "key": "language",
+            "previousValue": null,
+            "newValue": "ru",
+            "changedAt": "2026-09-01T06:44:13.934Z"
+          },
+          {
+            "key": "visitRequested",
+            "previousValue": null,
+            "newValue": true,
+            "changedAt": "2026-09-01T06:44:13.942Z"
+          },
+          {
+            "key": "visitDate",
+            "previousValue": null,
+            "newValue": "2026-09-06",
+            "changedAt": "2026-09-01T06:44:13.950Z"
+          }
+        ],
+        "decision": {
+          "stage": "COLLECTING_VEHICLE",
+          "status": "need_more_data",
+          "nextAction": "collect_vehicle",
+          "blockedRules": [],
+          "rulesApplied": [],
+          "requiredFacts": [
+            "vehicleMake",
+            "vehicleModel",
+            "vehicleYear"
+          ],
+          "calculatedLimits": {},
+          "eligiblePrograms": [
+            "without_storage",
+            "parking"
+          ],
+          "requiredStatements": [],
+          "forbiddenStatements": [
+            "окончательно одобрено",
+            "гарантированно одобрено",
+            "можно оформить по доверенности",
+            "рефинансирование возможно",
+            "выкупим займ",
+            "можно свободно выезжать за границу"
+          ]
+        },
+        "createdAt": "2026-09-01T06:44:13.874Z",
+        "updatedAt": "2026-09-01T06:44:13.961Z"
+      },
+      "conversationId": "a4b2af8f-fb5d-4997-a785-ffda395d511a",
+      "id": "TC-040",
+      "title": "Клиент выбирает воскресенье",
+      "durationMs": 130
+    },
+    {
+      "status": "PASS",
+      "lastReply": "Спасибо. Предварительно записала Вас на указанное время. Для подтверждения времени визита с Вами свяжется менеджер.\nДата и время: 2026-09-08, 15:00.\nБ. Молодой Гвардии, 22, Бишкек.\nhttps://go.2gis.com/Y34m4\nhttps://maps.app.goo.gl/9xiWLVvdyRgn3Sx4A Подскажите, пожалуйста, модель и год выпуска автомобиля. Подскажите, пожалуйста, модель автомобиля. Подскажите, пожалуйста, год выпуска автомобиля.",
+      "stepReplies": [
+        "Спасибо. Предварительно записала Вас на указанное время. Для подтверждения времени визита с Вами свяжется менеджер.\nДата и время: 2026-09-08, 15:00.\nБ. Молодой Гвардии, 22, Бишкек.\nhttps://go.2gis.com/Y34m4\nhttps://maps.app.goo.gl/9xiWLVvdyRgn3Sx4A Подскажите, пожалуйста, модель и год выпуска автомобиля. Подскажите, пожалуйста, модель автомобиля. Подскажите, пожалуйста, год выпуска автомобиля."
+      ],
+      "application": {
+        "id": "9bd0dd83-671c-400a-a371-ddd416aee853",
+        "conversationId": "a0fc352d-54e7-419a-8ad2-877606d3ba9b",
+        "contactId": "722ff87d-acb9-4866-aa62-d84f2863f221",
+        "status": "need_more_data",
+        "stage": "COLLECTING_VEHICLE",
+        "facts": {
+          "visitTime": "15:00",
+          "visitDate": "2026-09-08",
+          "language": "ru"
+        },
+        "factHistory": [
+          {
+            "key": "language",
+            "previousValue": null,
+            "newValue": "ru",
+            "changedAt": "2026-09-01T06:44:14.047Z"
+          },
+          {
+            "key": "visitDate",
+            "previousValue": null,
+            "newValue": "2026-09-08",
+            "changedAt": "2026-09-01T06:44:14.055Z"
+          },
+          {
+            "key": "visitTime",
+            "previousValue": null,
+            "newValue": "15:00",
+            "changedAt": "2026-09-01T06:44:14.062Z"
+          }
+        ],
+        "decision": {
+          "stage": "COLLECTING_VEHICLE",
+          "status": "need_more_data",
+          "nextAction": "collect_vehicle",
+          "blockedRules": [],
+          "rulesApplied": [],
+          "requiredFacts": [
+            "vehicleMake",
+            "vehicleModel",
+            "vehicleYear"
+          ],
+          "calculatedLimits": {},
+          "eligiblePrograms": [
+            "without_storage",
+            "parking"
+          ],
+          "requiredStatements": [],
+          "forbiddenStatements": [
+            "окончательно одобрено",
+            "гарантированно одобрено",
+            "можно оформить по доверенности",
+            "рефинансирование возможно",
+            "выкупим займ",
+            "можно свободно выезжать за границу"
+          ]
+        },
+        "createdAt": "2026-09-01T06:44:14.003Z",
+        "updatedAt": "2026-09-01T06:44:14.071Z"
+      },
+      "conversationId": "a0fc352d-54e7-419a-8ad2-877606d3ba9b",
+      "id": "TC-041",
+      "title": "Дата и время согласованы",
+      "durationMs": 105
+    },
+    {
+      "status": "PASS",
+      "lastReply": "Обычно менеджер связывается с клиентами в течение часа. К сожалению, у меня нет достоверной информации по этому вопросу. Когда Вы приедете, сотрудники с удовольствием подскажут Вам. Подскажите, пожалуйста, модель и год выпуска автомобиля. Подскажите, пожалуйста, модель автомобиля. Подскажите, пожалуйста, год выпуска автомобиля.",
+      "stepReplies": [
+        "Спасибо. Предварительно записала Вас на указанное время. Для подтверждения времени визита с Вами свяжется менеджер.\nДата и время: 2026-09-08, 15:00.\nБ. Молодой Гвардии, 22, Бишкек.\nhttps://go.2gis.com/Y34m4\nhttps://maps.app.goo.gl/9xiWLVvdyRgn3Sx4A Подскажите, пожалуйста, модель и год выпуска автомобиля. Подскажите, пожалуйста, модель автомобиля. Подскажите, пожалуйста, год выпуска автомобиля.",
+        "Обычно менеджер связывается с клиентами в течение часа. К сожалению, у меня нет достоверной информации по этому вопросу. Когда Вы приедете, сотрудники с удовольствием подскажут Вам. Подскажите, пожалуйста, модель и год выпуска автомобиля. Подскажите, пожалуйста, модель автомобиля. Подскажите, пожалуйста, год выпуска автомобиля."
+      ],
+      "application": {
+        "id": "9d855eee-21d8-43dd-b3f9-33958d1d9beb",
+        "conversationId": "f5898d3c-b37f-4959-97f3-69ebd9f33b74",
+        "contactId": "679a0513-8de6-4b5d-b804-23f154209f86",
+        "status": "need_more_data",
+        "stage": "COLLECTING_VEHICLE",
+        "facts": {
+          "visitTime": "15:00",
+          "visitDate": "2026-09-08",
+          "language": "ru"
+        },
+        "factHistory": [
+          {
+            "key": "language",
+            "previousValue": null,
+            "newValue": "ru",
+            "changedAt": "2026-09-01T06:44:14.150Z"
+          },
+          {
+            "key": "visitDate",
+            "previousValue": null,
+            "newValue": "2026-09-08",
+            "changedAt": "2026-09-01T06:44:14.160Z"
+          },
+          {
+            "key": "visitTime",
+            "previousValue": null,
+            "newValue": "15:00",
+            "changedAt": "2026-09-01T06:44:14.169Z"
+          }
+        ],
+        "decision": {
+          "stage": "COLLECTING_VEHICLE",
+          "status": "need_more_data",
+          "nextAction": "collect_vehicle",
+          "blockedRules": [],
+          "rulesApplied": [],
+          "requiredFacts": [
+            "vehicleMake",
+            "vehicleModel",
+            "vehicleYear"
+          ],
+          "calculatedLimits": {},
+          "eligiblePrograms": [
+            "without_storage",
+            "parking"
+          ],
+          "requiredStatements": [],
+          "forbiddenStatements": [
+            "окончательно одобрено",
+            "гарантированно одобрено",
+            "можно оформить по доверенности",
+            "рефинансирование возможно",
+            "выкупим займ",
+            "можно свободно выезжать за границу"
+          ]
+        },
+        "createdAt": "2026-09-01T06:44:14.108Z",
+        "updatedAt": "2026-09-01T06:44:14.315Z"
+      },
+      "conversationId": "f5898d3c-b37f-4959-97f3-69ebd9f33b74",
+      "id": "TC-042",
+      "title": "Когда позвонит менеджер: рабочее время",
+      "durationMs": 411
+    },
+    {
+      "status": "PASS",
+      "lastReply": "Менеджер свяжется с Вами до 12:00 первого рабочего дня. К сожалению, у меня нет достоверной информации по этому вопросу. Когда Вы приедете, сотрудники с удовольствием подскажут Вам. Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10.\n\nПодскажите, пожалуйста:\n- модель и год выпуска автомобиля;\n- ориентировочную стоимость автомобиля;\n- какая сумма займа Вам необходима?",
+      "stepReplies": [
+        "Менеджер свяжется с Вами до 12:00 первого рабочего дня. К сожалению, у меня нет достоверной информации по этому вопросу. Когда Вы приедете, сотрудники с удовольствием подскажут Вам. Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10.\n\nПодскажите, пожалуйста:\n- модель и год выпуска автомобиля;\n- ориентировочную стоимость автомобиля;\n- какая сумма займа Вам необходима?"
+      ],
+      "application": {
+        "id": "a6375778-f931-4cfb-a607-3b45c5824481",
+        "conversationId": "f2e6588b-623c-4201-96ce-47978a9ceab3",
+        "contactId": "67b37f15-b1a2-4100-95e7-6c1cf357c987",
+        "status": "need_more_data",
+        "stage": "COLLECTING_VEHICLE",
+        "facts": {
+          "language": "ru"
+        },
+        "factHistory": [
+          {
+            "key": "language",
+            "previousValue": null,
+            "newValue": "ru",
+            "changedAt": "2026-09-01T06:44:14.572Z"
+          }
+        ],
+        "decision": {
+          "stage": "COLLECTING_VEHICLE",
+          "status": "need_more_data",
+          "nextAction": "collect_vehicle",
+          "blockedRules": [],
+          "rulesApplied": [],
+          "requiredFacts": [
+            "vehicleMake",
+            "vehicleModel",
+            "vehicleYear"
+          ],
+          "calculatedLimits": {},
+          "eligiblePrograms": [
+            "without_storage",
+            "parking"
+          ],
+          "requiredStatements": [],
+          "forbiddenStatements": [
+            "окончательно одобрено",
+            "гарантированно одобрено",
+            "можно оформить по доверенности",
+            "рефинансирование возможно",
+            "выкупим займ",
+            "можно свободно выезжать за границу"
+          ]
+        },
+        "createdAt": "2026-09-01T06:44:14.519Z",
+        "updatedAt": "2026-09-01T06:44:14.584Z"
+      },
+      "conversationId": "f2e6588b-623c-4201-96ce-47978a9ceab3",
+      "id": "TC-043",
+      "title": "Когда позвонит менеджер: вне рабочего времени",
+      "durationMs": 233
+    },
+    {
+      "status": "PASS",
+      "lastReply": "Наш адрес: Б. Молодой Гвардии, 22, Бишкек. Желаю Вам безопасной дороги.",
+      "stepReplies": [
+        "Наш адрес: Б. Молодой Гвардии, 22, Бишкек. Желаю Вам безопасной дороги."
+      ],
+      "application": {
+        "id": "5a0f8346-5090-40ce-b80a-d3abaa245267",
+        "conversationId": "a1ef740a-7578-493f-9f99-bc0aff58dc03",
+        "contactId": "c22f3cc4-d1ba-4d9e-b420-1386b80aa7ab",
+        "status": "continue",
+        "stage": "SCHEDULING_VISIT",
+        "facts": {
+          "onTheWay": true,
+          "language": "ru"
+        },
+        "factHistory": [
+          {
+            "key": "language",
+            "previousValue": null,
+            "newValue": "ru",
+            "changedAt": "2026-09-01T06:44:14.787Z"
+          },
+          {
+            "key": "onTheWay",
+            "previousValue": null,
+            "newValue": true,
+            "changedAt": "2026-09-01T06:44:14.795Z"
+          }
+        ],
+        "decision": {
+          "stage": "SCHEDULING_VISIT",
+          "status": "continue",
+          "nextAction": "on_the_way",
+          "blockedRules": [],
+          "rulesApplied": [
+            "client_on_the_way"
+          ],
+          "requiredFacts": [],
+          "calculatedLimits": {},
+          "eligiblePrograms": [],
+          "requiredStatements": [],
+          "forbiddenStatements": [
+            "окончательно одобрено",
+            "гарантированно одобрено",
+            "можно оформить по доверенности",
+            "рефинансирование возможно",
+            "выкупим займ",
+            "можно свободно выезжать за границу"
+          ]
+        },
+        "createdAt": "2026-09-01T06:44:14.752Z",
+        "updatedAt": "2026-09-01T06:44:14.805Z"
+      },
+      "conversationId": "a1ef740a-7578-493f-9f99-bc0aff58dc03",
+      "id": "TC-044",
+      "title": "Клиент уже едет",
+      "durationMs": 84
+    },
+    {
+      "status": "FAIL",
+      "lastReply": "Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10.\n\nПодскажите, пожалуйста:\n- модель и год выпуска автомобиля;\n- ориентировочную стоимость автомобиля;\n- какая сумма займа Вам необходима?",
+      "stepReplies": [
+        "Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10.\n\nПодскажите, пожалуйста:\n- модель и год выпуска автомобиля;\n- ориентировочную стоимость автомобиля;\n- какая сумма займа Вам необходима?"
+      ],
+      "application": {
+        "id": "6e216f90-0715-459c-becf-59f9b917168e",
+        "conversationId": "5a60a513-4363-4240-bd39-d7452954fa6e",
+        "contactId": "ba1c8893-4757-427f-a58e-ecadcfcc8c0a",
+        "status": "need_more_data",
+        "stage": "COLLECTING_VEHICLE",
+        "facts": {
+          "language": "ru"
+        },
+        "factHistory": [
+          {
+            "key": "language",
+            "previousValue": null,
+            "newValue": "ru",
+            "changedAt": "2026-09-01T06:44:23.894Z"
+          }
+        ],
+        "decision": {
+          "stage": "COLLECTING_VEHICLE",
+          "status": "need_more_data",
+          "nextAction": "collect_vehicle",
+          "blockedRules": [],
+          "rulesApplied": [],
+          "requiredFacts": [
+            "vehicleMake",
+            "vehicleModel",
+            "vehicleYear"
+          ],
+          "calculatedLimits": {},
+          "eligiblePrograms": [
+            "without_storage",
+            "parking"
+          ],
+          "requiredStatements": [],
+          "forbiddenStatements": [
+            "окончательно одобрено",
+            "гарантированно одобрено",
+            "можно оформить по доверенности",
+            "рефинансирование возможно",
+            "выкупим займ",
+            "можно свободно выезжать за границу"
+          ]
+        },
+        "createdAt": "2026-09-01T06:44:14.836Z",
+        "updatedAt": "2026-09-01T06:44:23.903Z"
+      },
+      "conversationId": "5a60a513-4363-4240-bd39-d7452954fa6e",
+      "error": "Scenario TC-045 did not satisfy scripted assertions. Last reply: Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10. Подскажите, пожалуйста: - модель и год выпуска автомобиля; - ориентировочную стоимость автомобиля; - какая сумма займа Вам необходима?",
+      "id": "TC-045",
+      "title": "Клиент уже приехал",
+      "durationMs": 9099
+    },
+    {
+      "status": "PASS",
+      "lastReply": "К сожалению, у меня нет достоверной информации по этому вопросу. Когда Вы приедете, сотрудники с удовольствием подскажут Вам. Я Айлин — виртуальный помощник по вопросам оформления новых займов. Если у Вас уже оформлен займ, пожалуйста, позвоните по телефону +996 502 108 108 или напишите в WhatsApp +996 776 108 108. Наши специалисты проверят информацию по Вашему договору и помогут решить Ваш вопрос. По действующему договору нужно обратиться к сотрудникам компании.",
+      "stepReplies": [
+        "К сожалению, у меня нет достоверной информации по этому вопросу. Когда Вы приедете, сотрудники с удовольствием подскажут Вам. Я Айлин — виртуальный помощник по вопросам оформления новых займов. Если у Вас уже оформлен займ, пожалуйста, позвоните по телефону +996 502 108 108 или напишите в WhatsApp +996 776 108 108. Наши специалисты проверят информацию по Вашему договору и помогут решить Ваш вопрос. По действующему договору нужно обратиться к сотрудникам компании."
+      ],
+      "application": {
+        "id": "8f0d0ed3-fefd-434b-96e4-691c510bc12d",
+        "conversationId": "33e48115-5950-495a-9a11-43c8000ff954",
+        "contactId": "8151f4cc-4a8c-4324-a822-bf0cde2dd35a",
+        "status": "redirect_existing_contract",
+        "stage": "EXISTING_CONTRACT_REDIRECT",
+        "facts": {
+          "existingContractQuestion": true,
+          "language": "ru"
+        },
+        "factHistory": [
+          {
+            "key": "language",
+            "previousValue": null,
+            "newValue": "ru",
+            "changedAt": "2026-09-01T06:44:24.045Z"
+          },
+          {
+            "key": "existingContractQuestion",
+            "previousValue": null,
+            "newValue": true,
+            "changedAt": "2026-09-01T06:44:24.049Z"
+          }
+        ],
+        "decision": {
+          "stage": "EXISTING_CONTRACT_REDIRECT",
+          "status": "redirect_existing_contract",
+          "nextAction": "redirect_existing_contract",
+          "blockedRules": [],
+          "rulesApplied": [
+            "existing_contract_redirect"
+          ],
+          "requiredFacts": [],
+          "calculatedLimits": {},
+          "eligiblePrograms": [],
+          "requiredStatements": [
+            "По действующему договору нужно обратиться к сотрудникам компании."
+          ],
+          "forbiddenStatements": [
+            "окончательно одобрено",
+            "гарантированно одобрено",
+            "можно оформить по доверенности",
+            "рефинансирование возможно",
+            "выкупим займ",
+            "можно свободно выезжать за границу"
+          ]
+        },
+        "createdAt": "2026-09-01T06:44:23.980Z",
+        "updatedAt": "2026-09-01T06:44:24.053Z"
+      },
+      "conversationId": "33e48115-5950-495a-9a11-43c8000ff954",
+      "id": "TC-046",
+      "title": "Остаток долга",
+      "durationMs": 246
+    },
+    {
+      "status": "PASS",
+      "lastReply": "Я Айлин — виртуальный помощник по вопросам оформления новых займов. Если у Вас уже оформлен займ, пожалуйста, позвоните по телефону +996 502 108 108 или напишите в WhatsApp +996 776 108 108. Наши специалисты проверят информацию по Вашему договору и помогут решить Ваш вопрос. По действующему договору нужно обратиться к сотрудникам компании.",
+      "stepReplies": [
+        "Я Айлин — виртуальный помощник по вопросам оформления новых займов. Если у Вас уже оформлен займ, пожалуйста, позвоните по телефону +996 502 108 108 или напишите в WhatsApp +996 776 108 108. Наши специалисты проверят информацию по Вашему договору и помогут решить Ваш вопрос. По действующему договору нужно обратиться к сотрудникам компании."
+      ],
+      "application": {
+        "id": "8675cbfd-a68b-478c-9e48-321e7f77f27f",
+        "conversationId": "8e43faf0-26a8-4962-8cd5-78b2777e50d1",
+        "contactId": "190334c1-daa3-42ee-999d-0a4227abe728",
+        "status": "redirect_existing_contract",
+        "stage": "EXISTING_CONTRACT_REDIRECT",
+        "facts": {
+          "existingContractQuestion": true,
+          "language": "ru"
+        },
+        "factHistory": [
+          {
+            "key": "language",
+            "previousValue": null,
+            "newValue": "ru",
+            "changedAt": "2026-09-01T06:44:24.199Z"
+          },
+          {
+            "key": "existingContractQuestion",
+            "previousValue": null,
+            "newValue": true,
+            "changedAt": "2026-09-01T06:44:24.202Z"
+          }
+        ],
+        "decision": {
+          "stage": "EXISTING_CONTRACT_REDIRECT",
+          "status": "redirect_existing_contract",
+          "nextAction": "redirect_existing_contract",
+          "blockedRules": [],
+          "rulesApplied": [
+            "existing_contract_redirect"
+          ],
+          "requiredFacts": [],
+          "calculatedLimits": {},
+          "eligiblePrograms": [],
+          "requiredStatements": [
+            "По действующему договору нужно обратиться к сотрудникам компании."
+          ],
+          "forbiddenStatements": [
+            "окончательно одобрено",
+            "гарантированно одобрено",
+            "можно оформить по доверенности",
+            "рефинансирование возможно",
+            "выкупим займ",
+            "можно свободно выезжать за границу"
+          ]
+        },
+        "createdAt": "2026-09-01T06:44:24.177Z",
+        "updatedAt": "2026-09-01T06:44:24.207Z"
+      },
+      "conversationId": "8e43faf0-26a8-4962-8cd5-78b2777e50d1",
+      "id": "TC-047",
+      "title": "Проблема GPS",
+      "durationMs": 54
+    },
+    {
+      "status": "PASS",
+      "lastReply": "По Wi-Fi и парковке точную информацию лучше уточнить у сотрудников при визите в офис. К сожалению, у меня нет достоверной информации по этому вопросу. Когда Вы приедете, сотрудники с удовольствием подскажут Вам. Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10.\n\nПодскажите, пожалуйста:\n- модель и год выпуска автомобиля;\n- ориентировочную стоимость автомобиля;\n- какая сумма займа Вам необходима?",
+      "stepReplies": [
+        "По Wi-Fi и парковке точную информацию лучше уточнить у сотрудников при визите в офис. К сожалению, у меня нет достоверной информации по этому вопросу. Когда Вы приедете, сотрудники с удовольствием подскажут Вам. Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10.\n\nПодскажите, пожалуйста:\n- модель и год выпуска автомобиля;\n- ориентировочную стоимость автомобиля;\n- какая сумма займа Вам необходима?"
+      ],
+      "application": {
+        "id": "6394b076-5187-487f-a616-424c19bbcda0",
+        "conversationId": "b3cde8d1-ca86-4c5c-8598-dfb4072f0b27",
+        "contactId": "367a5930-070d-4957-9a97-8e15615edc5d",
+        "status": "need_more_data",
+        "stage": "COLLECTING_VEHICLE",
+        "facts": {
+          "requestedProgram": "parking",
+          "language": "ru"
+        },
+        "factHistory": [
+          {
+            "key": "language",
+            "previousValue": null,
+            "newValue": "ru",
+            "changedAt": "2026-09-01T06:44:24.260Z"
+          },
+          {
+            "key": "requestedProgram",
+            "previousValue": null,
+            "newValue": "parking",
+            "changedAt": "2026-09-01T06:44:24.264Z"
+          }
+        ],
+        "decision": {
+          "stage": "COLLECTING_VEHICLE",
+          "status": "need_more_data",
+          "nextAction": "collect_vehicle",
+          "blockedRules": [],
+          "rulesApplied": [],
+          "requiredFacts": [
+            "vehicleMake",
+            "vehicleModel",
+            "vehicleYear"
+          ],
+          "calculatedLimits": {},
+          "eligiblePrograms": [
+            "without_storage",
+            "parking"
+          ],
+          "requiredStatements": [],
+          "forbiddenStatements": [
+            "окончательно одобрено",
+            "гарантированно одобрено",
+            "можно оформить по доверенности",
+            "рефинансирование возможно",
+            "выкупим займ",
+            "можно свободно выезжать за границу"
+          ]
+        },
+        "createdAt": "2026-09-01T06:44:24.236Z",
+        "updatedAt": "2026-09-01T06:44:24.269Z"
+      },
+      "conversationId": "b3cde8d1-ca86-4c5c-8598-dfb4072f0b27",
+      "id": "TC-048",
+      "title": "Два бытовых вопроса",
+      "durationMs": 146
+    },
+    {
+      "status": "FAIL",
+      "lastReply": "Нет, собственник автомобиля должен лично присутствовать при осмотре автомобиля и выдаче займа. Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10.\n\nПодскажите, пожалуйста:\n- модель и год выпуска автомобиля;\n- ориентировочную стоимость автомобиля;\n- какая сумма займа Вам необходима?",
+      "stepReplies": [
+        "Нет, собственник автомобиля должен лично присутствовать при осмотре автомобиля и выдаче займа. Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10.\n\nПодскажите, пожалуйста:\n- модель и год выпуска автомобиля;\n- ориентировочную стоимость автомобиля;\n- какая сумма займа Вам необходима?"
+      ],
+      "application": {
+        "id": "a3de4aec-7864-4fcc-897d-e3a61c8a5112",
+        "conversationId": "ee5c577d-2dc0-45fc-9013-eaf803c00c04",
+        "contactId": "1c9bb084-ef32-451d-9060-ced9e0bad0e4",
+        "status": "need_more_data",
+        "stage": "COLLECTING_VEHICLE",
+        "facts": {
+          "language": "ru"
+        },
+        "factHistory": [
+          {
+            "key": "language",
+            "previousValue": null,
+            "newValue": "ru",
+            "changedAt": "2026-09-01T06:44:24.397Z"
+          }
+        ],
+        "decision": {
+          "stage": "COLLECTING_VEHICLE",
+          "status": "need_more_data",
+          "nextAction": "collect_vehicle",
+          "blockedRules": [],
+          "rulesApplied": [],
+          "requiredFacts": [
+            "vehicleMake",
+            "vehicleModel",
+            "vehicleYear"
+          ],
+          "calculatedLimits": {},
+          "eligiblePrograms": [
+            "without_storage",
+            "parking"
+          ],
+          "requiredStatements": [],
+          "forbiddenStatements": [
+            "окончательно одобрено",
+            "гарантированно одобрено",
+            "можно оформить по доверенности",
+            "рефинансирование возможно",
+            "выкупим займ",
+            "можно свободно выезжать за границу"
+          ]
+        },
+        "createdAt": "2026-09-01T06:44:24.377Z",
+        "updatedAt": "2026-09-01T06:44:24.402Z"
+      },
+      "conversationId": "ee5c577d-2dc0-45fc-9013-eaf803c00c04",
+      "error": "Scenario TC-049 did not satisfy scripted assertions. Last reply: Нет, собственник автомобиля должен лично присутствовать при осмотре автомобиля и выдаче займа. Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10. Подскажите, пожалуйста: - модель и год выпуска автомобиля; - ориентировочную стоимость автомобиля; - какая сумма займа Вам необходима?",
+      "id": "TC-049",
+      "title": "Вопрос без готового ответа, но вывод возможен по ТЗ",
+      "durationMs": 106
+    },
+    {
+      "status": "PASS",
+      "lastReply": "К сожалению, у меня нет достоверной информации по этому вопросу. Когда Вы приедете, сотрудники с удовольствием подскажут Вам. Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10.\n\nПодскажите, пожалуйста:\n- модель и год выпуска автомобиля;\n- ориентировочную стоимость автомобиля;\n- какая сумма займа Вам необходима?",
+      "stepReplies": [
+        "К сожалению, у меня нет достоверной информации по этому вопросу. Когда Вы приедете, сотрудники с удовольствием подскажут Вам. Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10.\n\nПодскажите, пожалуйста:\n- модель и год выпуска автомобиля;\n- ориентировочную стоимость автомобиля;\n- какая сумма займа Вам необходима?"
+      ],
+      "application": {
+        "id": "4b0d07f3-1525-44aa-8fb3-d034817b5d26",
+        "conversationId": "bfc761bd-7b4c-4ed5-8153-fd9b2da6ae84",
+        "contactId": "497b4e9a-3c1b-45c6-bab5-131169189870",
+        "status": "need_more_data",
+        "stage": "COLLECTING_VEHICLE",
+        "facts": {
+          "language": "ru"
+        },
+        "factHistory": [
+          {
+            "key": "language",
+            "previousValue": null,
+            "newValue": "ru",
+            "changedAt": "2026-09-01T06:44:24.509Z"
+          }
+        ],
+        "decision": {
+          "stage": "COLLECTING_VEHICLE",
+          "status": "need_more_data",
+          "nextAction": "collect_vehicle",
+          "blockedRules": [],
+          "rulesApplied": [],
+          "requiredFacts": [
+            "vehicleMake",
+            "vehicleModel",
+            "vehicleYear"
+          ],
+          "calculatedLimits": {},
+          "eligiblePrograms": [
+            "without_storage",
+            "parking"
+          ],
+          "requiredStatements": [],
+          "forbiddenStatements": [
+            "окончательно одобрено",
+            "гарантированно одобрено",
+            "можно оформить по доверенности",
+            "рефинансирование возможно",
+            "выкупим займ",
+            "можно свободно выезжать за границу"
+          ]
+        },
+        "createdAt": "2026-09-01T06:44:24.484Z",
+        "updatedAt": "2026-09-01T06:44:24.513Z"
+      },
+      "conversationId": "bfc761bd-7b4c-4ed5-8153-fd9b2da6ae84",
+      "id": "TC-050",
+      "title": "Достоверного ответа нет",
+      "durationMs": 134
+    },
+    {
+      "status": "PASS",
+      "lastReply": "Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10.\n\nПодскажите, пожалуйста:\n- ориентировочную стоимость автомобиля;\n- какая сумма займа Вам необходима?",
+      "stepReplies": [
+        "Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10.\n\nПодскажите, пожалуйста:\n- ориентировочную стоимость автомобиля;\n- какая сумма займа Вам необходима?"
+      ],
+      "application": {
+        "id": "190a555b-c437-4baa-9443-379738768650",
+        "conversationId": "02909b26-d061-454d-9147-82fd65e6c750",
+        "contactId": "eaa5d27f-6124-44d3-85cb-7300e73cbe92",
+        "status": "need_more_data",
+        "stage": "COLLECTING_VALUE",
+        "facts": {
+          "vehicleModel": "Camry",
+          "vehicleMake": "Toyota",
+          "vehicleYear": 2020,
+          "language": "ru"
+        },
+        "factHistory": [
+          {
+            "key": "language",
+            "previousValue": null,
+            "newValue": "ru",
+            "changedAt": "2026-09-01T06:44:54.679Z"
+          },
+          {
+            "key": "vehicleYear",
+            "previousValue": null,
+            "newValue": 2020,
+            "changedAt": "2026-09-01T06:44:54.685Z"
+          },
+          {
+            "key": "vehicleMake",
+            "previousValue": null,
+            "newValue": "Toyota",
+            "changedAt": "2026-09-01T06:44:54.690Z"
+          },
+          {
+            "key": "vehicleModel",
+            "previousValue": null,
+            "newValue": "Camry",
+            "changedAt": "2026-09-01T06:44:54.694Z"
+          }
+        ],
+        "decision": {
+          "stage": "COLLECTING_VALUE",
+          "status": "need_more_data",
+          "nextAction": "collect_value",
+          "blockedRules": [],
+          "rulesApplied": [],
+          "requiredFacts": [
+            "vehicleValue"
+          ],
+          "calculatedLimits": {},
+          "eligiblePrograms": [
+            "without_storage",
+            "parking"
+          ],
+          "requiredStatements": [],
+          "forbiddenStatements": [
+            "окончательно одобрено",
+            "гарантированно одобрено",
+            "можно оформить по доверенности",
+            "рефинансирование возможно",
+            "выкупим займ",
+            "можно свободно выезжать за границу"
+          ]
+        },
+        "createdAt": "2026-09-01T06:44:24.618Z",
+        "updatedAt": "2026-09-01T06:44:54.702Z"
+      },
+      "conversationId": "02909b26-d061-454d-9147-82fd65e6c750",
+      "id": "TC-051",
+      "title": "Нормальное voice",
+      "durationMs": 30170
+    },
+    {
+      "status": "PASS",
+      "lastReply": "Извините, не удалось полностью понять Ваше сообщение. Пожалуйста, повторите его ещё раз.",
+      "stepReplies": [
+        "Извините, не удалось полностью понять Ваше сообщение. Пожалуйста, повторите его ещё раз."
+      ],
+      "application": {
+        "id": "c3c75f20-183b-455f-a77a-519999d593b8",
+        "conversationId": "edf57ea4-5967-4af6-b609-b1c85488d0ab",
+        "contactId": "a052f90b-f270-4361-a857-eb6b0172337a",
+        "status": "need_more_data",
+        "stage": "NEW",
+        "facts": {},
+        "factHistory": [],
+        "createdAt": "2026-09-01T06:44:54.792Z",
+        "updatedAt": "2026-09-01T06:44:54.792Z"
+      },
+      "conversationId": "edf57ea4-5967-4af6-b609-b1c85488d0ab",
+      "id": "TC-052",
+      "title": "Voice не удалось понять",
+      "durationMs": 37
+    },
+    {
+      "status": "FAIL",
+      "lastReply": "Я не до конца поняла, какая программа Вам нужна. Уточните, пожалуйста, Вас интересует займ без изъятия автомобиля или с постановкой автомобиля на охраняемую стоянку?",
+      "stepReplies": [
+        "Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10.\n\nПодскажите, пожалуйста, Вас интересует займ без изъятия автомобиля или с постановкой автомобиля на охраняемую стоянку?",
+        "Я не до конца поняла, какая программа Вам нужна. Уточните, пожалуйста, Вас интересует займ без изъятия автомобиля или с постановкой автомобиля на охраняемую стоянку?"
+      ],
+      "application": {
+        "id": "cefc4041-bac9-4981-a0f9-6f951fb44c1e",
+        "conversationId": "52daf863-c90b-4252-bcc2-ca314634ece4",
+        "contactId": "5ecc07c1-8771-4a96-afde-5e1801849a1b",
+        "status": "need_more_data",
+        "stage": "ELIGIBILITY_CHECK",
+        "facts": {
+          "residenceCategory": "BISHKEK",
+          "residenceRegion": "Бишкек",
+          "language": "kg",
+          "vehicleModel": "Camry",
+          "vehicleMake": "Toyota",
+          "vehicleYear": 2020,
+          "vehicleValue": 1200000,
+          "requestedAmount": 400000
+        },
+        "factHistory": [
+          {
+            "key": "language",
+            "previousValue": null,
+            "newValue": "ru",
+            "changedAt": "2026-09-01T06:44:54.855Z"
+          },
+          {
+            "key": "requestedAmount",
+            "previousValue": null,
+            "newValue": 400000,
+            "changedAt": "2026-09-01T06:44:54.862Z"
+          },
+          {
+            "key": "vehicleValue",
+            "previousValue": null,
+            "newValue": 1200000,
+            "changedAt": "2026-09-01T06:44:54.867Z"
+          },
+          {
+            "key": "vehicleYear",
+            "previousValue": null,
+            "newValue": 2020,
+            "changedAt": "2026-09-01T06:44:54.871Z"
+          },
+          {
+            "key": "vehicleMake",
+            "previousValue": null,
+            "newValue": "Toyota",
+            "changedAt": "2026-09-01T06:44:54.877Z"
+          },
+          {
+            "key": "vehicleModel",
+            "previousValue": null,
+            "newValue": "Camry",
+            "changedAt": "2026-09-01T06:44:54.883Z"
+          },
+          {
+            "key": "language",
+            "previousValue": "ru",
+            "newValue": "kg",
+            "changedAt": "2026-09-01T06:44:54.939Z"
+          },
+          {
+            "key": "residenceRegion",
+            "previousValue": null,
+            "newValue": "Бишкек",
+            "changedAt": "2026-09-01T06:44:54.942Z"
+          },
+          {
+            "key": "residenceCategory",
+            "previousValue": null,
+            "newValue": "BISHKEK",
+            "changedAt": "2026-09-01T06:44:54.946Z"
+          }
+        ],
+        "decision": {
+          "stage": "ELIGIBILITY_CHECK",
+          "status": "need_more_data",
+          "nextAction": "collect_residence",
+          "blockedRules": [],
+          "rulesApplied": [],
+          "requiredFacts": [
+            "requestedProgram"
+          ],
+          "calculatedLimits": {},
+          "eligiblePrograms": [],
+          "requiredStatements": [],
+          "forbiddenStatements": [
+            "окончательно одобрено",
+            "гарантированно одобрено",
+            "можно оформить по доверенности",
+            "рефинансирование возможно",
+            "выкупим займ",
+            "можно свободно выезжать за границу"
+          ]
+        },
+        "createdAt": "2026-09-01T06:44:54.825Z",
+        "updatedAt": "2026-09-01T06:44:54.951Z"
+      },
+      "conversationId": "52daf863-c90b-4252-bcc2-ca314634ece4",
+      "error": "Scenario TC-053 did not satisfy scripted assertions. Last reply: Я не до конца поняла, какая программа Вам нужна. Уточните, пожалуйста, Вас интересует займ без изъятия автомобиля или с постановкой автомобиля на охраняемую стоянку?",
+      "id": "TC-053",
+      "title": "Переход на кыргызский",
+      "durationMs": 144
+    },
+    {
+      "status": "PASS",
+      "lastReply": "Мы работаем ПН–ПТ 11:00–19:00. Для оформления нужно подъехать не позднее 18:00. Уточните, пожалуйста, конкретное время визита. К сожалению, у меня нет достоверной информации по этому вопросу. Когда Вы приедете, сотрудники с удовольствием подскажут Вам. Подскажите, пожалуйста, модель и год выпуска автомобиля. Подскажите, пожалуйста, модель автомобиля. Подскажите, пожалуйста, год выпуска автомобиля.",
+      "stepReplies": [
+        "Мы работаем ПН–ПТ 11:00–19:00. Для оформления нужно подъехать не позднее 18:00. Уточните, пожалуйста, конкретное время визита. К сожалению, у меня нет достоверной информации по этому вопросу. Когда Вы приедете, сотрудники с удовольствием подскажут Вам. Подскажите, пожалуйста, модель и год выпуска автомобиля. Подскажите, пожалуйста, модель автомобиля. Подскажите, пожалуйста, год выпуска автомобиля."
+      ],
+      "application": {
+        "id": "93ceb50b-7342-4107-8dc1-a5690be9c666",
+        "conversationId": "04efecd9-746f-4a66-ac71-520bc893726f",
+        "contactId": "38e8648a-159d-4558-bb2e-49c70b1c9a2a",
+        "status": "need_more_data",
+        "stage": "COLLECTING_VEHICLE",
+        "facts": {
+          "visitDate": "2026-09-02",
+          "visitRequested": true,
+          "language": "kg"
+        },
+        "factHistory": [
+          {
+            "key": "language",
+            "previousValue": null,
+            "newValue": "kg",
+            "changedAt": "2026-09-01T06:44:54.989Z"
+          },
+          {
+            "key": "visitRequested",
+            "previousValue": null,
+            "newValue": true,
+            "changedAt": "2026-09-01T06:44:54.992Z"
+          },
+          {
+            "key": "visitDate",
+            "previousValue": null,
+            "newValue": "2026-09-02",
+            "changedAt": "2026-09-01T06:44:54.995Z"
+          }
+        ],
+        "decision": {
+          "stage": "COLLECTING_VEHICLE",
+          "status": "need_more_data",
+          "nextAction": "collect_vehicle",
+          "blockedRules": [],
+          "rulesApplied": [],
+          "requiredFacts": [
+            "vehicleMake",
+            "vehicleModel",
+            "vehicleYear"
+          ],
+          "calculatedLimits": {},
+          "eligiblePrograms": [
+            "without_storage",
+            "parking"
+          ],
+          "requiredStatements": [],
+          "forbiddenStatements": [
+            "окончательно одобрено",
+            "гарантированно одобрено",
+            "можно оформить по доверенности",
+            "рефинансирование возможно",
+            "выкупим займ",
+            "можно свободно выезжать за границу"
+          ]
+        },
+        "createdAt": "2026-09-01T06:44:54.969Z",
+        "updatedAt": "2026-09-01T06:44:54.999Z"
+      },
+      "conversationId": "04efecd9-746f-4a66-ac71-520bc893726f",
+      "id": "TC-054",
+      "title": "Смешанный RU/KG",
+      "durationMs": 155
+    },
+    {
+      "status": "PASS",
+      "lastReply": "Если Вам нужна сумма больше лимита без изъятия, можем продолжить по программе с постановкой автомобиля на охраняемую стоянку?",
+      "stepReplies": [
+        "Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10.\n\nПодскажите, пожалуйста:\n- модель и год выпуска автомобиля;\n- ориентировочную стоимость автомобиля;\n- какая сумма займа Вам необходима?",
+        "По текущему курсу 20 тфыс долларов — это ориентировочно 1 749 000 сом. 10 k долларов — это ориентировочно 874 500 сом. Где прописан собственник автомобиля?",
+        "По программе без изъятия предварительно возможная сумма — до 600 000 сом. По программе со стоянкой предварительно возможная сумма — до 874 500 сом. Окончательная сумма определяется после осмотра автомобиля и проверки документов. Если Вам нужна сумма больше лимита без изъятия, можем продолжить по программе с постановкой автомобиля на охраняемую стоянку?",
+        "К сожалению, у меня нет достоверной информации по этому вопросу. Когда Вы приедете, сотрудники с удовольствием подскажут Вам. Если Вам нужна сумма больше лимита без изъятия, можем продолжить по программе с постановкой автомобиля на охраняемую стоянку?",
+        "Если Вам нужна сумма больше лимита без изъятия, можем продолжить по программе с постановкой автомобиля на охраняемую стоянку?"
+      ],
+      "application": {
+        "id": "1203703b-453e-49bf-9918-850943494877",
+        "conversationId": "05cab53d-2f54-4404-9e2a-ef2e1a1ac7b4",
+        "contactId": "1be25285-b1fa-4811-9d10-b68cc5267768",
+        "status": "need_more_data",
+        "stage": "COLLECTING_DOCUMENTS",
+        "facts": {
+          "requestedAmount": 800000,
+          "residenceNeedsClarification": false,
+          "residenceText": "Бишкек",
+          "residenceCategory": "BISHKEK",
+          "residenceRegion": "Бишкек",
+          "vehicleValue": 1749000,
+          "vehicleModel": "Camry",
+          "vehicleMake": "Toyota",
+          "vehicleYear": 2022,
+          "requestedProgram": "without_storage",
+          "language": "ru"
+        },
+        "factHistory": [
+          {
+            "key": "language",
+            "previousValue": null,
+            "newValue": "ru",
+            "changedAt": "2026-09-01T06:44:55.144Z"
+          },
+          {
+            "key": "requestedProgram",
+            "previousValue": null,
+            "newValue": "without_storage",
+            "changedAt": "2026-09-01T06:44:55.148Z"
+          },
+          {
+            "key": "vehicleYear",
+            "previousValue": null,
+            "newValue": 2022,
+            "changedAt": "2026-09-01T06:44:56.590Z"
+          },
+          {
+            "key": "vehicleMake",
+            "previousValue": null,
+            "newValue": "Toyota",
+            "changedAt": "2026-09-01T06:44:56.598Z"
+          },
+          {
+            "key": "vehicleModel",
+            "previousValue": null,
+            "newValue": "Camry",
+            "changedAt": "2026-09-01T06:44:56.603Z"
+          },
+          {
+            "key": "vehicleValue",
+            "previousValue": null,
+            "newValue": 1749000,
+            "changedAt": "2026-09-01T06:44:56.608Z"
+          },
+          {
+            "key": "requestedAmount",
+            "previousValue": null,
+            "newValue": 874500,
+            "changedAt": "2026-09-01T06:44:56.616Z"
+          },
+          {
+            "key": "residenceRegion",
+            "previousValue": null,
+            "newValue": "Бишкек",
+            "changedAt": "2026-09-01T06:44:56.700Z"
+          },
+          {
+            "key": "residenceCategory",
+            "previousValue": null,
+            "newValue": "BISHKEK",
+            "changedAt": "2026-09-01T06:44:56.704Z"
+          },
+          {
+            "key": "residenceText",
+            "previousValue": null,
+            "newValue": "Бишкек",
+            "changedAt": "2026-09-01T06:44:56.707Z"
+          },
+          {
+            "key": "residenceNeedsClarification",
+            "previousValue": null,
+            "newValue": false,
+            "changedAt": "2026-09-01T06:44:56.710Z"
+          },
+          {
+            "key": "requestedAmount",
+            "previousValue": 874500,
+            "newValue": 800000,
+            "changedAt": "2026-09-01T06:44:56.761Z"
+          }
+        ],
+        "decision": {
+          "stage": "COLLECTING_DOCUMENTS",
+          "status": "need_more_data",
+          "nextAction": "collect_documents",
+          "blockedRules": [],
+          "rulesApplied": [],
+          "requiredFacts": [
+            "id_front",
+            "id_back",
+            "vehicle_registration_front",
+            "vehicle_registration_back"
+          ],
+          "calculatedLimits": {
+            "parking": 874500,
+            "withoutStorage": 600000
+          },
+          "eligiblePrograms": [
+            "without_storage",
+            "parking"
+          ],
+          "requiredStatements": [
+            "Попросить только недостающие документы."
+          ],
+          "forbiddenStatements": [
+            "окончательно одобрено",
+            "гарантированно одобрено",
+            "можно оформить по доверенности",
+            "рефинансирование возможно",
+            "выкупим займ",
+            "можно свободно выезжать за границу"
+          ]
+        },
+        "createdAt": "2026-09-01T06:44:55.124Z",
+        "updatedAt": "2026-09-01T06:44:56.907Z"
+      },
+      "conversationId": "05cab53d-2f54-4404-9e2a-ef2e1a1ac7b4",
+      "id": "TC-055",
+      "title": "Раздражённый клиент меняет сумму после лимита",
+      "durationMs": 1897
+    }
+  ]
+}

@@ -82,6 +82,55 @@ describe("ResponsePlanService first contact", () => {
     ]);
   });
 
+  it("uses natural owner residence wording", () => {
+    const service = new ResponsePlanService();
+    const facts = {
+      vehicleMake: "Toyota",
+      vehicleModel: "Camry",
+      vehicleYear: 2021,
+      vehicleValue: 1_500_000,
+      requestedAmount: 500_000,
+      requestedProgram: "without_storage"
+    } as const;
+    const plan = service.build({
+      facts,
+      decision: evaluateApplication(facts),
+      isFirstMessage: false,
+      questions: []
+    });
+
+    expect(plan.nextQuestions).toEqual(["Где прописан собственник автомобиля?"]);
+  });
+
+  it("answers a limit objection with deterministic programme alternatives instead of document recovery", () => {
+    const service = new ResponsePlanService();
+    const facts = {
+      vehicleMake: "Toyota",
+      vehicleModel: "Camry",
+      vehicleYear: 2022,
+      vehicleValue: 1_749_000,
+      requestedAmount: 800_000,
+      requestedProgram: "without_storage",
+      residenceRegion: "Бишкек",
+      residenceCategory: "BISHKEK"
+    } as const;
+    const plan = service.build({
+      facts,
+      decision: evaluateApplication(facts),
+      isFirstMessage: false,
+      questions: [],
+      intents: ["limit_objection"]
+    });
+
+    expect(plan.answers.map((answer) => answer.text).join(" ")).toContain("без изъятия предварительно возможная сумма — до 600 000 сом");
+    expect(plan.answers.map((answer) => answer.text).join(" ")).toContain("со стоянкой предварительно возможная сумма — до 874 500 сом");
+    expect(plan.nextQuestions).toEqual([
+      "Если Вам нужна сумма больше лимита без изъятия, можем продолжить по программе с постановкой автомобиля на охраняемую стоянку?"
+    ]);
+    expect(plan.nextQuestions.join(" ")).not.toContain("не смогла надёжно распознать документы");
+    expect(plan.nextQuestions.join(" ")).not.toContain("Пришлите, пожалуйста, фото");
+  });
+
   it("asks for a clearer document photo when attachment recognition failed", () => {
     const service = new ResponsePlanService();
     const facts = {
@@ -161,5 +210,87 @@ describe("ResponsePlanService first contact", () => {
     expect(plan.nextQuestions).toEqual([
       "Я увидела сумму в иностранной валюте, но не смогла сейчас надёжно перевести её в сомы. Напишите, пожалуйста, нужную сумму займа в сомах."
     ]);
+  });
+
+  it("suppresses first-contact onboarding for owner and family special flows", () => {
+    const service = new ResponsePlanService();
+
+    const ownerPlan = service.build({
+      facts: { borrowerIsOwner: false },
+      decision: evaluateApplication({ borrowerIsOwner: false }),
+      isFirstMessage: true,
+      questions: []
+    });
+    const familyPlan = service.build({
+      facts: { familyStatus: "married" },
+      decision: evaluateApplication({ familyStatus: "married" }),
+      isFirstMessage: true,
+      questions: []
+    });
+
+    expect(ownerPlan.nextQuestions.join(" ")).toContain("ФИО собственника");
+    expect(ownerPlan.nextQuestions.join(" ")).not.toContain("Меня зовут Айлин");
+    expect(familyPlan.answers.map((answer) => answer.text).join(" ")).toContain("нотариального согласия");
+    expect(familyPlan.nextQuestions.join(" ")).not.toContain("Меня зовут Айлин");
+  });
+
+  it("adds visit and document-decline guidance before the generic flow restarts", () => {
+    const service = new ResponsePlanService();
+
+    const declinedDocumentsPlan = service.build({
+      facts: {
+        vehicleMake: "Toyota",
+        vehicleModel: "Camry",
+        vehicleYear: 2021,
+        vehicleValue: 1_500_000,
+        requestedAmount: 500_000,
+        requestedProgram: "without_storage",
+        residenceRegion: "Бишкек",
+        declinedDocuments: true
+      },
+      decision: evaluateApplication({
+        vehicleMake: "Toyota",
+        vehicleModel: "Camry",
+        vehicleYear: 2021,
+        vehicleValue: 1_500_000,
+        requestedAmount: 500_000,
+        requestedProgram: "without_storage",
+        residenceRegion: "Бишкек",
+        declinedDocuments: true
+      }),
+      isFirstMessage: false,
+      questions: []
+    });
+
+    const scheduledVisitPlan = service.build({
+      facts: { visitRequested: true, visitDate: "2026-09-01" },
+      decision: evaluateApplication({ visitRequested: true, visitDate: "2026-09-01" }),
+      isFirstMessage: true,
+      questions: []
+    });
+
+    expect(declinedDocumentsPlan.answers.map((answer) => answer.text).join(" ")).toContain("возьмите с собой оригиналы документов");
+    expect(scheduledVisitPlan.answers.map((answer) => answer.text).join(" ")).toContain("ПН–ПТ 11:00–19:00");
+    expect(scheduledVisitPlan.answers.map((answer) => answer.text).join(" ")).toContain("конкретное время визита");
+  });
+
+  it("asks only for the missing side or a clearer image when a partial document is already known", () => {
+    const service = new ResponsePlanService();
+
+    const missingBackPlan = service.build({
+      facts: { documents: { id_front: "received" } },
+      decision: evaluateApplication({ documents: { id_front: "received" } }),
+      isFirstMessage: true,
+      questions: []
+    });
+    const poorRegistrationPlan = service.build({
+      facts: { documents: { vehicle_registration_front: "poor_quality" } },
+      decision: evaluateApplication({ documents: { vehicle_registration_front: "poor_quality" } }),
+      isFirstMessage: false,
+      questions: []
+    });
+
+    expect(missingBackPlan.nextQuestions).toEqual(["Пришлите, пожалуйста, фото обратной стороны ID."]);
+    expect(poorRegistrationPlan.nextQuestions).toEqual(["Пришлите, пожалуйста, более качественное фото лицевой стороны свидетельства о регистрации ТС."]);
   });
 });

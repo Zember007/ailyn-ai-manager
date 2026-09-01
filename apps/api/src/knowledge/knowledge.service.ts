@@ -158,9 +158,9 @@ const seeds: Omit<KnowledgeItemDto, "id">[] = [
   {
     key: "same_day_application",
     category: "process",
-    aliases: ["оформить сегодня", "получить сегодня"],
+    aliases: ["оформить сегодня", "получить сегодня", "можно ли приехать сегодня", "приехать сегодня", "можно приехать сегодня"],
     answerRu: "Если офис работает и документы в порядке, оформление возможно в день обращения. Мы работаем до 19:00. Вам надо подъехать до 18:00, чтобы успеть всё оформить.",
-    priority: 90, status: "approved", version: 1, active: true
+    priority: 90, status: "approved", version: 2, active: true
   },
   {
     key: "vehicle_inspection",
