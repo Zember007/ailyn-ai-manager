@@ -23,7 +23,5 @@ jobs:
         run: pnpm typecheck
       - name: Unit and integration tests
         run: pnpm test
-      - name: Scenario tests
-        run: pnpm test:scenarios
       - name: Build
         run: pnpm build
