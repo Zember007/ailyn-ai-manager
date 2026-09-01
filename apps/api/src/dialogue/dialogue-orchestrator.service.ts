@@ -145,11 +145,7 @@ export class DialogueOrchestratorService {
       // recovery from replacing a successfully understood short answer with
       // the previous question.
       const extraction = alignExtractionToPendingFacts(rawExtraction, pendingFacts, application.facts);
-      const detectedQuestions = extraction.questions.length > 0
-        ? extraction.questions
-        : (extraction.turnKind === "question" || extraction.turnKind === "mixed") && extractionText
-          ? [{ text: extractionText, topic: "general" }]
-          : [];
+      const detectedQuestions = selectClientQuestions(extraction, extractionText);
       const clientQuestions = routeQuestionsByContext(detectedQuestions, pendingFacts);
 
       void this.logs.debug("dialogue.receive", "Extraction completed", {
@@ -235,7 +231,7 @@ export class DialogueOrchestratorService {
           .filter((fact) => isValidRouteFactValue(fact.key, fact.value))
           .map((fact) => String(fact.key)),
         currentRequiredFacts: decision.requiredFacts.map(String),
-        extractionQuestions: extraction.questions.length,
+        extractionQuestions: clientQuestions.length,
         intents: extraction.intents,
         text: extractionText,
         attachments: message.attachments,
@@ -560,6 +556,28 @@ function routeQuestionsByContext(
   return questions;
 }
 
+function hasClientQuestionSignal(text?: string): boolean {
+  if (!text?.trim()) return false;
+  // This is only a narrow safety net for malformed AI output. RouterAI's
+  // structured turnKind remains the primary classifier; no business meaning
+  // or fact value is inferred here.
+  return /\?|(?:^|[^\p{L}])(?:что|какая|какой|какие|где|когда|как|можно|почему|зачем|для\s+чего|сколько)(?=$|[^\p{L}])|(?:^|[^\p{L}])не\s+понял(?:а)?(?=$|[^\p{L}])/iu.test(text);
+}
+
+export function selectClientQuestions(
+  extraction: ExtractionResult,
+  text?: string
+): { text: string; topic: string }[] {
+  // Only a confirmed information-request turn may enter KB/documentation
+  // retrieval. Models can occasionally emit a stray questions[] entry while
+  // extracting a dense first application message; treating that as knowledge
+  // would replace the normal lead-collection flow with unrelated chunks.
+  const questions = extraction.questions ?? [];
+  const questionTurn = extraction.turnKind === "question" || extraction.turnKind === "mixed";
+  if (questionTurn) return questions.length > 0 ? questions : text ? [{ text, topic: "general" }] : [];
+  return questions.length > 0 && hasClientQuestionSignal(text) ? questions : [];
+}
+
 export function buildDialogueContext(input: {
   messages: Stage1Message[];
   currentClientText?: string;
@@ -658,6 +676,11 @@ function shouldAcceptExtractedFact(
   // changedFacts echo; otherwise a valid answer can be discarded and the old
   // spouse-consent question is repeated.
   if ((fact.key === "familyStatus" || fact.key === "ownerFamilyStatus") && fact.confidence >= 0.8) return true;
+  // A structured fact update is the output of the first (cheap) RouterAI
+  // understanding pass. Do not let a stale deterministic stage suppress an
+  // explicit high-confidence correction such as a vehicle price. Questions
+  // remain non-mutating unless the extraction marks the turn as mixed.
+  if (fact.confidence >= 0.8 && (extraction.turnKind === "fact_update" || extraction.turnKind === "mixed")) return true;
   if (!hasHighConfidenceCorrection(extraction, fact.key, fact.value)) return false;
   if (proposedRoute.kind === "set_fact" && proposedRoute.fact === fact.key) {
     return acceptedRoute.kind === "set_fact" &&

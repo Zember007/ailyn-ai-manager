@@ -4,6 +4,7 @@ import {
   buildDialogueContext,
   DialogueOrchestratorService,
   alignExtractionToPendingFacts,
+  selectClientQuestions,
   detectRecoveryHint,
   MAX_DIALOGUE_MESSAGE_LENGTH,
   MAX_DIALOGUE_RECENT_MESSAGES,
@@ -13,6 +14,40 @@ import {
 import { PARKING_AFTER_WITHOUT_STORAGE_LIMIT_OFFER } from "./response-plan.service.js";
 
 describe("DialogueOrchestratorService", () => {
+  it("does not send an application fact update to knowledge when extraction includes a stray question", () => {
+    const questions = selectClientQuestions({
+      language: "ru",
+      turnKind: "fact_update",
+      intents: [],
+      questions: [{ text: "Камри 2021 года, машина стоит 1 500 000, нужно 500 000", topic: "general" }],
+      facts: [{ key: "vehicleYear", value: 2021, confidence: 0.98 }],
+      moneyMentions: [],
+      changedFacts: [],
+      route: { kind: "none" },
+      attachments: [],
+      promptInjectionDetected: false,
+      clarificationNeeded: false
+    }, "Камри 2021 года, машина стоит примерно 1 500 000 сом, нужно 500 000.");
+    expect(questions).toEqual([]);
+  });
+
+  it("keeps an elliptical client question out of recovery", () => {
+    const questions = selectClientQuestions({
+      language: "ru",
+      turnKind: "unknown",
+      intents: [],
+      questions: [{ text: "Стойте, а зачем это нужно", topic: "general" }],
+      facts: [],
+      moneyMentions: [],
+      changedFacts: [],
+      route: { kind: "none" },
+      attachments: [],
+      promptInjectionDetected: false,
+      clarificationNeeded: false
+    }, "Стойте, а зачем это нужно");
+    expect(questions).toHaveLength(1);
+  });
+
   it("aligns a semantically understood family answer with the active owner field", () => {
     const extraction = {
       language: "ru" as const,

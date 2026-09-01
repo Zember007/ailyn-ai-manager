@@ -10,10 +10,17 @@ export class KnowledgeBaseResolverService {
     private readonly documentation: DocumentationKnowledgeService
   ) {}
 
-  async resolve(questions: { text: string }[], language: "ru" | "kg"): Promise<KnowledgeAnswer[]> {
+  async resolve(questions: { text: string; topic?: string }[], language: "ru" | "kg"): Promise<KnowledgeAnswer[]> {
     const answers: KnowledgeAnswer[] = [];
     for (const question of questions) {
-      const items = await this.knowledge.resolveAll(question.text, language);
+      // RouterAI assigns a semantic topic before this resolver runs. An
+      // elliptical question may have no useful lexical overlap with the
+      // approved answer ("зачем это нужно?"), so fall back to that topic
+      // rather than returning to the previous collection question.
+      const directItems = await this.knowledge.resolveAll(question.text, language);
+      const items = directItems.length > 0 || !question.topic || question.topic === "general"
+        ? directItems
+        : await this.knowledge.resolveAll(question.topic, language);
       if (items.length) {
         for (const item of items) {
         answers.push({ key: item.key, text: language === "kg" && item.answerKg ? item.answerKg : item.answerRu, exact: true });

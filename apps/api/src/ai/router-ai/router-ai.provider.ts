@@ -486,7 +486,7 @@ function detectQuestions(text: string): ExtractionResult["questions"] {
 }
 
 function looksLikeClientQuestion(text: string): boolean {
-  return /(?:\?\s*$|^\s*(?:что|какая|какой|какие|где|когда|как|можно|почему|зачем|для\s+чего|сколько)\b|\bчто\s+(?:вообще\s+)?такое\b|\bне\s+понял(?:а)?\b|^\s*а\s+(?:без\s+из[ъь]?ятия|(?:с\s+)?постановк(?:ой|у)?|(?:на\s+)?стоянк))/iu.test(text.trim());
+  return /(?:\?\s*$|(?:^|[^\p{L}])(?:что|какая|какой|какие|где|когда|как|можно|почему|зачем|для\s+чего|сколько)(?=$|[^\p{L}])|(?:^|[^\p{L}])не\s+понял(?:а)?(?=$|[^\p{L}])|^\s*а\s+(?:без\s+из[ъь]?ятия|(?:с\s+)?постановк(?:ой|у)?|(?:на\s+)?стоянк))/iu.test(text.trim());
 }
 
 function questionTopic(text: string): string {
