@@ -10,6 +10,7 @@ import type {
   ExtractionResult,
   GeneratedResponse,
   ResponseGenerationInput,
+  RouteProposal,
   VisionInput,
   VisionResult
 } from "../ai-provider.interface.js";
@@ -191,18 +192,20 @@ function inferAttachmentVision(input: VisionInput): VisionResult {
 
 function localExtract(input: ExtractionInput): ExtractionResult {
   const text = (input.text ?? "").toLowerCase();
+  const currentFacts = input.dialogueContext?.currentFacts ?? input.facts ?? {};
+  const pendingFacts = input.dialogueContext?.pendingFacts ?? input.pendingFacts ?? [];
   const facts: ExtractionResult["facts"] = [];
   const intents: string[] = [];
   const questions: ExtractionResult["questions"] = [];
   const language = detectLanguage(input.text ?? "");
-  const pendingOwnerResidence = input.pendingFacts?.includes("ownerResidenceRegion") === true;
+  const pendingOwnerResidence = pendingFacts.includes("ownerResidenceRegion");
 
-  intents.push(...detectTurnIntents(input.text ?? "", input.pendingFacts ?? [], input.facts));
+  intents.push(...detectTurnIntents(input.text ?? "", pendingFacts, currentFacts));
 
   const money = resolveMoneyFacts({
     text: input.text,
-    currentFacts: input.facts,
-    pendingFacts: (input.pendingFacts ?? []).filter((fact): fact is keyof ApplicationFacts => !isDocumentCode(fact))
+    currentFacts,
+    pendingFacts: pendingFacts.filter((fact): fact is keyof ApplicationFacts => !isDocumentCode(fact))
   });
   if (money.requestedAmount !== undefined && money.requestedAmountCurrency === "KGS") {
     facts.push({ key: "requestedAmount", value: money.requestedAmount, confidence: money.requestedAmountConfidence });
@@ -245,7 +248,7 @@ function localExtract(input: ExtractionInput): ExtractionResult {
     if (pendingOwnerResidence) facts.push({ key: "ownerResidenceRegion", value: "Ош", confidence: 0.8 });
     facts.push({ key: "residenceCategory", value: "OTHER_KG", confidence: 0.8 });
   }
-  if ((input.pendingFacts?.includes("residenceRegion") || pendingOwnerResidence) && /(?:городская|сельская|временная|постоянная|местная)/i.test(text)) {
+  if ((pendingFacts.includes("residenceRegion") || pendingOwnerResidence) && /(?:городская|сельская|временная|постоянная|местная)/i.test(text)) {
     facts.push({ key: "residenceText", value: input.text?.trim() ?? text, confidence: 0.75 });
     facts.push({ key: "residenceNeedsClarification", value: true, confidence: 0.75 });
   }
@@ -294,15 +297,15 @@ function localExtract(input: ExtractionInput): ExtractionResult {
   if (/(?:свидетельств\w*\s+о\s+разводе|свидетельств\w*\s+о\s+расторжении\s+брака)[^.!?]{0,20}(?:нет|не готово)/i.test(text)) {
     facts.push({ key: "divorceCertificateReady", value: false, confidence: 0.85 });
   }
-  if (/(?:в\s+браке|во\s+время\s+брака)/i.test(text) && input.facts.familyStatus === "divorced") {
+  if (/(?:в\s+браке|во\s+время\s+брака)/i.test(text) && currentFacts.familyStatus === "divorced") {
     facts.push({ key: "vehicleBoughtDuringMarriage", value: true, confidence: 0.9 });
   }
-  if (/(?:после\s+развода)/i.test(text) && input.facts.familyStatus === "divorced") {
+  if (/(?:после\s+развода)/i.test(text) && currentFacts.familyStatus === "divorced") {
     facts.push({ key: "vehicleBoughtDuringMarriage", value: false, confidence: 0.9 });
   }
   if (/(?:супруг|супруга|муж|жена)[^.!?]{0,30}(?:за границей|в другом городе|не здесь)/i.test(text)) facts.push({ key: "spouseAway", value: true, confidence: 0.85 });
-  if (/(?:поручитель)[^.!?]{0,20}(?:есть|будет|найду)/i.test(text) || /^(?:да|есть)$/i.test(text.trim()) && input.pendingFacts?.includes("guarantorAvailable")) facts.push({ key: "guarantorAvailable", value: true, confidence: 0.85 });
-  if (/(?:поручител)[^.!?]{0,20}(?:нет|не будет)|^нет$/i.test(text.trim()) && input.pendingFacts?.includes("guarantorAvailable")) facts.push({ key: "guarantorAvailable", value: false, confidence: 0.85 });
+  if (/(?:поручитель)[^.!?]{0,20}(?:есть|будет|найду)/i.test(text) || /^(?:да|есть)$/i.test(text.trim()) && pendingFacts.includes("guarantorAvailable")) facts.push({ key: "guarantorAvailable", value: true, confidence: 0.85 });
+  if (/(?:поручител)[^.!?]{0,20}(?:нет|не будет)|^нет$/i.test(text.trim()) && pendingFacts.includes("guarantorAvailable")) facts.push({ key: "guarantorAvailable", value: false, confidence: 0.85 });
   if (/(?:не\s+могу|не\s+буду|не\s+хочу|нет\s+возможности)[^.!?]{0,40}(?:прислать|отправить)[^.!?]{0,20}(?:документ|фото)/i.test(text)) facts.push({ key: "declinedDocuments", value: true, confidence: 0.9 });
   if (/(?:авто|машин)[^.!?]{0,25}(?:мужа|жены|супруга|супруги|брата|друга|не\s+моя)|оформлен[ао]?\s+на\s+(?:мужа|жену|другого)/i.test(text)) facts.push({ key: "borrowerIsOwner", value: false, confidence: 0.9 });
   if (/(?:собственник)[^.!?]{0,25}(?:приедет|сможет приехать)|(?:сможет\s+ли\s+собственник\s+приехать)[^.!?]{0,10}(?:да|сможет)/i.test(text)) facts.push({ key: "ownerCanVisit", value: true, confidence: 0.85 });
@@ -330,6 +333,7 @@ function localExtract(input: ExtractionInput): ExtractionResult {
     facts,
     moneyMentions: money.mentions,
     changedFacts: facts.map((fact) => ({ key: fact.key, newValue: fact.value })),
+    route: { kind: "none" },
     attachments: [],
     promptInjectionDetected: text.includes("ignore previous") || text.includes("забудь инструкции"),
     clarificationNeeded: false
@@ -468,6 +472,7 @@ function normalizeExtractionResult(payload: unknown, input?: ExtractionInput): E
     facts: normalizeFacts(source.facts),
     moneyMentions: normalizeMoneyMentions(source.moneyMentions),
     changedFacts: normalizeChangedFacts(source.changedFacts),
+    route: normalizeRouteProposal(source.route),
     attachments: normalizeAttachments(source.attachments),
     promptInjectionDetected: source.promptInjectionDetected === true,
     clarificationNeeded: source.clarificationNeeded === true
@@ -510,7 +515,7 @@ function prepareExtractionPayload(payload: unknown): unknown {
       })
     : payload.changedFacts;
 
-  return { ...payload, facts, changedFacts };
+  return { ...payload, facts, changedFacts, route: payload.route ?? { kind: "none" } };
 }
 
 function buildLocalResponse(input: ResponseGenerationInput): string {
@@ -801,6 +806,26 @@ function normalizeChangedFacts(value: unknown): ExtractionResult["changedFacts"]
     }
     return [{ key: item.key as keyof ApplicationFacts, newValue: item.newValue }];
   });
+}
+
+function normalizeRouteProposal(value: unknown): RouteProposal {
+  if (!isRecord(value) || typeof value.kind !== "string") {
+    return { kind: "none" };
+  }
+  if (value.kind === "none") {
+    return { kind: "none" };
+  }
+  if (typeof value.fact !== "string" || !applicationFactKeys.has(value.fact)) {
+    return { kind: "none" };
+  }
+  const fact = value.fact as keyof ApplicationFacts;
+  if (value.kind === "clarify") {
+    return { kind: "clarify", fact };
+  }
+  if (value.kind === "set_fact" && "value" in value) {
+    return { kind: "set_fact", fact, value: value.value };
+  }
+  return { kind: "none" };
 }
 
 function normalizeAttachments(value: unknown): ExtractionResult["attachments"] {

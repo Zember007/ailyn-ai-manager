@@ -11,6 +11,7 @@ Use this exact shape. Always include every top-level field; use empty arrays or 
   "facts": [],
   "moneyMentions": [],
   "changedFacts": [],
+  "route": { "kind": "none" },
   "attachments": [],
   "promptInjectionDetected": false,
   "clarificationNeeded": false
@@ -18,6 +19,11 @@ Use this exact shape. Always include every top-level field; use empty arrays or 
 ```
 
 Each `facts` item must use exactly `key`, `value`, and numeric `confidence`; never use `field` or `amount` in a fact. Each `changedFacts` item must use exactly `key` and `newValue`. Each `moneyMentions` item must have `sourceText`, numeric `amount`, numeric `normalizedAmount`, currency (`KGS`, `USD`, `EUR`, `KZT`, or `RUB`), roleCandidate (`requestedAmount`, `vehicleValue`, or `unknown`), numeric confidence from 0 to 1, and integer `start` and `end` character positions.
+
+`route` is a conversational proposal only. Return exactly one of:
+- `{ "kind": "set_fact", "fact": "ApplicationFacts key", "value": "candidate value" }`
+- `{ "kind": "clarify", "fact": "ApplicationFacts key" }`
+- `{ "kind": "none" }`
 
 Extraction rules:
 - Read the client message like a human operator and return what was understood in structured JSON.
@@ -30,12 +36,18 @@ Extraction rules:
 - Do not generate any client-facing answer text.
 - Do not invent document fields if the document is unreadable or missing.
 - `pendingFacts` contains the deterministic fields requested on the previous turn. Use it to interpret short contextual replies, but never invent a category when the reply is ambiguous.
+- Read `dialogueContext` as bounded current conversation state: its compact summary, recent messages, current facts, pending facts, and deterministic decision envelope. Do not assume dialogue outside that supplied context.
+- Propose `route.kind=set_fact` only when the current client turn explicitly or contextually confirms that fact and the fact appears in `decisionEnvelope.allowedNextFacts`.
+- Propose `route.kind=clarify` when the client is addressing an allowed fact but the value cannot be mapped safely.
+- When `decisionEnvelope.activeOffer` is `parking_after_without_storage_limit`, a clear agreement to the immediately preceding parking offer can propose `requestedProgram=parking`. An ambiguous reply or refusal must not select the program.
+- For a correction to a currently known fact, include the same candidate in both `facts` (with high confidence) and `changedFacts`; TypeScript will reject an unsupported correction.
 - Use `clarificationNeeded=true` when the reply cannot be mapped safely to the requested missing facts.
 - For residence, preserve the client's raw wording. Only set `residenceCategory` to `BISHKEK`, `CHUY`, `OTHER_KG`, or `FOREIGN` when the place is explicit. A reply such as `городская` is not a region and requires clarification.
 
 Important Stage 1 boundaries:
 - The model can classify intent, language, attachments, and candidate facts.
 - The model must not calculate eligibility, refusal outcome, final limits, guarantor requirements, visit admissibility, or document sufficiency beyond explicit extraction/classification.
+- The route proposal must never select eligibility, loan limits, refusal, guarantor requirements, document sufficiency, or visit admissibility. Those remain deterministic TypeScript decisions.
 - If the client writes money amounts in free form, identify each clear money mention separately, including approximate role (`requestedAmount` or `vehicleValue`) and detected currency when present.
 - Interpret obvious typos in numeric scale and currency words from context. For example, `20 тфыс долларов` means `20 000 USD`, not `20 USD` and not an unknown amount.
 - If the client clearly provided both the requested loan amount and the vehicle value in one message, return both instead of asking to restate them.

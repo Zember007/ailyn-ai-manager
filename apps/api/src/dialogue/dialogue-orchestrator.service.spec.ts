@@ -1,7 +1,109 @@
+import { defaultBusinessRuleSettings } from "@ailyn/business-rules";
 import { describe, expect, it, vi } from "vitest";
-import { DialogueOrchestratorService, detectRecoveryHint } from "./dialogue-orchestrator.service.js";
+import {
+  buildDialogueContext,
+  DialogueOrchestratorService,
+  detectRecoveryHint,
+  MAX_DIALOGUE_MESSAGE_LENGTH,
+  MAX_DIALOGUE_RECENT_MESSAGES,
+  MAX_DIALOGUE_SUMMARY_LENGTH,
+  validateRouteProposal
+} from "./dialogue-orchestrator.service.js";
+import { PARKING_AFTER_WITHOUT_STORAGE_LIMIT_OFFER } from "./response-plan.service.js";
 
 describe("DialogueOrchestratorService", () => {
+  it("bounds the AI-readable dialogue context and activates only the latest exact parking offer", () => {
+    const messages = Array.from({ length: 20 }, (_, index) => ({
+      id: `msg-${index}`,
+      author: index % 2 === 0 ? "client" as const : "ai" as const,
+      body: index === 19
+        ? `Предварительный расчёт. ${PARKING_AFTER_WITHOUT_STORAGE_LIMIT_OFFER}`
+        : `${index}-${"длинный текст ".repeat(200)}`,
+      createdAt: new Date(2026, 7, 1, 0, index).toISOString(),
+      attachmentIds: [],
+      attachments: []
+    }));
+
+    const context = buildDialogueContext({
+      messages,
+      currentClientText: "Ок",
+      currentFacts: { requestedAmount: 800_000, requestedProgram: "without_storage" },
+      decision: {
+        ...defaultBusinessRuleSettings,
+        status: "need_more_data",
+        stage: "COLLECTING_DOCUMENTS",
+        rulesApplied: [],
+        eligiblePrograms: ["without_storage", "parking"],
+        calculatedLimits: { withoutStorage: 600_000, parking: 1_000_000 },
+        requiredFacts: ["id_front"],
+        nextAction: "collect_documents",
+        requiredStatements: [],
+        forbiddenStatements: [],
+        blockedRules: []
+      } as any
+    });
+
+    expect(context.recentMessages).toHaveLength(MAX_DIALOGUE_RECENT_MESSAGES);
+    expect(context.recentMessages.at(-1)).toEqual({ author: "client", text: "Ок" });
+    expect(context.recentMessages.every((message) => message.text.length <= MAX_DIALOGUE_MESSAGE_LENGTH)).toBe(true);
+    expect(context.summary.length).toBeLessThanOrEqual(MAX_DIALOGUE_SUMMARY_LENGTH);
+    expect(context.decisionEnvelope.activeOffer).toBe("parking_after_without_storage_limit");
+    expect(context.decisionEnvelope.allowedNextFacts).toEqual(expect.arrayContaining(["id_front", "requestedAmount", "requestedProgram"]));
+  });
+
+  it("accepts an Ok route after multi-turn vehicle data and a corrected requested amount", () => {
+    const currentFacts = {
+      vehicleMake: "Toyota",
+      vehicleModel: "Camry",
+      vehicleYear: 2022,
+      vehicleValue: 1_749_000,
+      requestedAmount: 800_000,
+      requestedProgram: "without_storage" as const,
+      residenceRegion: "Бишкек"
+    };
+    const context = buildDialogueContext({
+      messages: [
+        { id: "m1", author: "client", body: "Toyota Camry 2022, стоимость 1 749 000", createdAt: "2026-09-01T08:00:00Z", attachmentIds: [], attachments: [] },
+        { id: "m2", author: "ai", body: "Какая сумма займа Вам необходима?", createdAt: "2026-09-01T08:00:01Z", attachmentIds: [], attachments: [] },
+        { id: "m3", author: "client", body: "Исправлю сумму: нужно 800 000 сом", createdAt: "2026-09-01T08:01:00Z", attachmentIds: [], attachments: [] },
+        { id: "m4", author: "ai", body: `Предварительный расчёт. ${PARKING_AFTER_WITHOUT_STORAGE_LIMIT_OFFER}`, createdAt: "2026-09-01T08:01:01Z", attachmentIds: [], attachments: [] }
+      ],
+      currentClientText: "Ок",
+      currentFacts,
+      decision: {
+        status: "need_more_data",
+        stage: "COLLECTING_DOCUMENTS",
+        rulesApplied: [],
+        eligiblePrograms: ["without_storage", "parking"],
+        calculatedLimits: { withoutStorage: 600_000, parking: 874_500 },
+        requiredFacts: ["id_front", "id_back"],
+        nextAction: "collect_documents",
+        requiredStatements: [],
+        forbiddenStatements: [],
+        blockedRules: []
+      }
+    });
+    const extraction = {
+      language: "ru" as const,
+      intents: [],
+      questions: [],
+      facts: [],
+      moneyMentions: [],
+      changedFacts: [],
+      route: { kind: "set_fact" as const, fact: "requestedProgram" as const, value: "parking" },
+      attachments: [],
+      promptInjectionDetected: false,
+      clarificationNeeded: false
+    };
+
+    expect(validateRouteProposal({
+      proposal: extraction.route,
+      context,
+      extraction,
+      currentFacts
+    })).toEqual({ kind: "set_fact", fact: "requestedProgram", value: "parking" });
+  });
+
   it("does not turn text-only limit objections into document recognition recovery", () => {
     const recovery = detectRecoveryHint({
       previousFacts: {

@@ -4,6 +4,9 @@ import type { ResponsePlan } from "../ai/ai-provider.interface.js";
 import type { FxConversionTrace, KnowledgeAnswer, ResponsePlanV62 } from "./pipeline.contracts.js";
 import { formatMoney } from "./money-normalization.js";
 
+export const PARKING_AFTER_WITHOUT_STORAGE_LIMIT_OFFER =
+  "Если Вам нужна сумма больше лимита без изъятия, можем продолжить по программе с постановкой автомобиля на охраняемую стоянку?";
+
 @Injectable()
 export class ResponsePlanService {
   private readonly parkingRateBoundary = "Программа со стоянкой (авто на парковке): ставка 2,4% в месяц + стоимость парковки 130 сом/сутки; сумма до 2 000 000 сом.";
@@ -123,7 +126,7 @@ export class ResponsePlanService {
       return buildRecoveryQuestions(recovery, facts, decision);
     }
     if (shouldOfferParkingAfterLimit(facts, decision, intents)) {
-      return ["Если Вам нужна сумма больше лимита без изъятия, можем продолжить по программе с постановкой автомобиля на охраняемую стоянку?"];
+      return [PARKING_AFTER_WITHOUT_STORAGE_LIMIT_OFFER];
     }
     if (decision.nextAction === "collect_documents") return [documentsRequest(decision.requiredFacts.map(String))];
     const questions = decision.requiredFacts.map((fact) => questionByFact[String(fact)]).filter((item): item is string => Boolean(item));
@@ -382,9 +385,19 @@ function buildFxAnswer(conversions: FxConversionTrace[]): KnowledgeAnswer | unde
   if (successful.length === 0) return undefined;
   return {
     key: "fx_equivalent",
-    text: `По текущему курсу ${successful.map((item) => `${item.sourceText} — это ориентировочно ${formatMoney(item.somValue ?? 0)} сом`).join(". ")}.`,
+    text: `По текущему курсу ${successful.map((item) => `${formatForeignMoney(item.amount, item.currency)} — это ориентировочно ${formatMoney(item.somValue ?? 0)} сом`).join(". ")}.`,
     exact: true
   };
+}
+
+function formatForeignMoney(amount: number, currency: FxConversionTrace["currency"]): string {
+  const labels: Record<Exclude<FxConversionTrace["currency"], "KGS">, string> = {
+    USD: "долларов США",
+    EUR: "евро",
+    KZT: "тенге",
+    RUB: "российских рублей"
+  };
+  return `${formatMoney(amount)} ${currency === "KGS" ? "сом" : labels[currency]}`;
 }
 
 function documentsRecoveryRequest(requiredFacts: string[]): string {

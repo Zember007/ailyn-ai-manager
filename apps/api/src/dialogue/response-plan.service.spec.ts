@@ -185,7 +185,7 @@ describe("ResponsePlanService first contact", () => {
       }]
     });
 
-    expect(plan.answers[0]?.text).toContain("10 тыс долларов");
+    expect(plan.answers[0]?.text).toContain("10 000 долларов США");
     expect(plan.answers[0]?.text).toContain("874 500 сом");
   });
 

@@ -31,10 +31,57 @@ describe("RouterAiProvider", () => {
       facts: [],
       moneyMentions: [],
       changedFacts: [],
+      route: { kind: "none" },
       attachments: [],
       promptInjectionDetected: true,
       clarificationNeeded: false
     });
+  });
+
+  it("passes bounded dialogue context to RouterAI and preserves its route proposal", async () => {
+    const dialogueContext = {
+      summary: "Known vehicle and requested amount; deterministic state asks for documents.",
+      recentMessages: [
+        { author: "ai" as const, text: "Если Вам нужна сумма больше лимита без изъятия, можем продолжить по программе с постановкой автомобиля на охраняемую стоянку?" },
+        { author: "client" as const, text: "Ок" }
+      ],
+      currentFacts: {
+        vehicleMake: "Toyota",
+        vehicleModel: "Camry",
+        requestedAmount: 800_000,
+        requestedProgram: "without_storage" as const
+      },
+      pendingFacts: ["id_front" as const],
+      decisionEnvelope: {
+        allowedNextFacts: ["id_front", "requestedAmount", "requestedProgram"],
+        activeOffer: "parking_after_without_storage_limit" as const
+      }
+    };
+    const client = {
+      isConfigured: vi.fn().mockReturnValue(true),
+      createChatCompletion: vi.fn().mockResolvedValue({
+        model: "routerai-text",
+        choices: [{ message: { content: JSON.stringify({
+          language: "ru",
+          route: { kind: "set_fact", fact: "requestedProgram", value: "parking" }
+        }) } }]
+      })
+    } as any;
+
+    const provider = new RouterAiProvider(client);
+    const result = await provider.extract({
+      text: "Ок",
+      attachments: [],
+      dialogueContext
+    });
+
+    expect(result.route).toEqual({ kind: "set_fact", fact: "requestedProgram", value: "parking" });
+    expect(client.createChatCompletion).toHaveBeenCalledWith(expect.objectContaining({
+      messages: expect.arrayContaining([
+        expect.objectContaining({ content: expect.stringContaining("parking_after_without_storage_limit") }),
+        expect.objectContaining({ content: expect.stringContaining("\"recentMessages\"") })
+      ])
+    }), expect.anything());
   });
 
   it("gives RouterAI an explicit rule for the typo-filled vehicle value and requested amount", async () => {

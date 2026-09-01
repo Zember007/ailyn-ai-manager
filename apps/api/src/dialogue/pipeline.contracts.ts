@@ -4,6 +4,11 @@ import type { MoneyCurrencyCode, MoneyMention, MoneyRoleCandidate } from "./mone
 
 export const languageSchema = z.enum(["ru", "kg", "mixed", "unknown"]);
 export const questionSchema = z.object({ text: z.string().min(1), topic: z.string().min(1) });
+export const routeProposalSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("set_fact"), fact: z.string().min(1), value: z.unknown() }),
+  z.object({ kind: z.literal("clarify"), fact: z.string().min(1) }),
+  z.object({ kind: z.literal("none") })
+]);
 export const extractionSchema = z.object({
   language: languageSchema,
   intents: z.array(z.string()).default([]),
@@ -20,6 +25,7 @@ export const extractionSchema = z.object({
     end: z.number().int().min(0)
   })).default([]),
   changedFacts: z.array(z.object({ key: z.string(), newValue: z.unknown() })).default([]),
+  route: routeProposalSchema,
   attachments: z.array(z.object({ attachmentId: z.string(), type: z.string(), confidence: z.number().min(0).max(1) })).default([]),
   promptInjectionDetected: z.boolean().default(false),
   clarificationNeeded: z.boolean().default(false)

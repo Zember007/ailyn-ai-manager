@@ -1,11 +1,12 @@
 import { Injectable } from "@nestjs/common";
-import type { ApplicationFacts, DocumentCode } from "@ailyn/business-rules";
+import type { ApplicationFacts, DecisionResult, DocumentCode } from "@ailyn/business-rules";
 import { evaluateApplication } from "@ailyn/business-rules";
 import { AiService } from "../ai/ai.service.js";
+import type { DialogueContext, ExtractionResult, RouteProposal } from "../ai/ai-provider.interface.js";
 import type { InboundMessage } from "../channels/channel.interface.js";
-import { ResponsePlanService } from "./response-plan.service.js";
+import { PARKING_AFTER_WITHOUT_STORAGE_LIMIT_OFFER, ResponsePlanService } from "./response-plan.service.js";
 import { ResponseValidatorService } from "./response-validator.service.js";
-import { Stage1StoreService, type Stage1Application, type Stage1Conversation } from "./stage1-store.service.js";
+import { Stage1StoreService, type Stage1Application, type Stage1Conversation, type Stage1Message } from "./stage1-store.service.js";
 import { SettingsService } from "../settings/settings.service.js";
 import { BackendLogsService } from "../logs/backend-logs.service.js";
 import { KnowledgeBaseResolverService } from "./knowledge-base-resolver.service.js";
@@ -112,7 +113,6 @@ export class DialogueOrchestratorService {
           attachments: message.attachments.length
         }
       });
-      const pendingFacts = application.decision?.requiredFacts ?? [];
       if (voiceContext.requiresRetry && !message.text?.trim()) {
         return await this.respondWithVoiceRetry({
           conversation,
@@ -120,15 +120,20 @@ export class DialogueOrchestratorService {
           inboundMessageId: inbound.id
         });
       }
-      const [businessRuleSettings, extraction] = await Promise.all([
-        this.settings.getBusinessRuleSettings(),
-        this.ai.getProvider().extract({
-          text: extractionText,
-          attachments: message.attachments,
-          facts: application.facts,
-          pendingFacts
-        })
-      ]);
+      const businessRuleSettings = await this.settings.getBusinessRuleSettings();
+      const previousDecision = application.decision ?? evaluateApplication(application.facts, businessRuleSettings);
+      const pendingFacts = previousDecision.requiredFacts;
+      const dialogueContext = buildDialogueContext({
+        messages: conversation.messages,
+        currentClientText: extractionText,
+        currentFacts: application.facts,
+        decision: previousDecision
+      });
+      const extraction = await this.ai.getProvider().extract({
+        text: extractionText,
+        attachments: message.attachments,
+        dialogueContext
+      });
 
       void this.logs.debug("dialogue.receive", "Extraction completed", {
         conversationId,
@@ -139,9 +144,20 @@ export class DialogueOrchestratorService {
         }
       });
 
+      const proposedRoute = extraction.route ?? { kind: "none" };
+      const acceptedRoute = validateRouteProposal({
+        proposal: proposedRoute,
+        context: dialogueContext,
+        extraction,
+        currentFacts: application.facts
+      });
       const incomingFacts: Partial<ApplicationFacts> = { language: extraction.language };
       for (const fact of extraction.facts) {
+        if (!shouldAcceptExtractedFact(fact, extraction, application.facts, proposedRoute, acceptedRoute)) continue;
         (incomingFacts as Record<string, unknown>)[fact.key] = fact.value;
+      }
+      if (acceptedRoute.kind === "set_fact") {
+        (incomingFacts as Record<string, unknown>)[acceptedRoute.fact] = acceptedRoute.value;
       }
       if (typeof incomingFacts.vehicleYear === "number") {
         if (incomingFacts.vehicleYear > businessRuleSettings.currentYear) {
@@ -182,7 +198,9 @@ export class DialogueOrchestratorService {
       const changedFactKeys = await this.store.updateFacts(application, mergeFacts(incomingFacts, fxResolution.facts, documentFacts.facts)) ?? [];
       application = (await this.store.getApplication(application.id)) ?? application;
       const decision = evaluateApplication(application.facts, businessRuleSettings);
-      const recovery = buildFxRecoveryHint(application.facts, decision.requiredFacts, fxResolution.blockedRoles) ?? detectRecoveryHint({
+      const recovery = buildFxRecoveryHint(application.facts, decision.requiredFacts, fxResolution.blockedRoles) ??
+        (acceptedRoute.kind === "clarify" ? { unresolvedFacts: [String(acceptedRoute.fact)], reason: "unrecognized_reply" as const } : undefined) ??
+        detectRecoveryHint({
         previousFacts: originalApplication.facts,
         currentFacts: application.facts,
         pendingFacts,
@@ -316,6 +334,10 @@ export class DialogueOrchestratorService {
             intents: extraction.intents,
             questionsDetected: extraction.questions.map((question) => question.text),
             factsExtracted: extraction.facts,
+            routeProposal: {
+              proposed: proposedRoute,
+              accepted: acceptedRoute
+            },
             moneyMentions: extraction.moneyMentions,
             fxConversions: fxResolution.traces,
             factsChanged: changedFactKeys,
@@ -455,6 +477,165 @@ export class DialogueOrchestratorService {
     };
   }
 }
+
+export const MAX_DIALOGUE_RECENT_MESSAGES = 8;
+export const MAX_DIALOGUE_MESSAGE_LENGTH = 800;
+export const MAX_DIALOGUE_SUMMARY_LENGTH = 1_600;
+const ROUTE_CORRECTION_MIN_CONFIDENCE = 0.9;
+
+export function buildDialogueContext(input: {
+  messages: Stage1Message[];
+  currentClientText?: string;
+  currentFacts: ApplicationFacts;
+  decision: DecisionResult;
+}): DialogueContext {
+  const persistedMessages = input.messages.filter(
+    (message): message is Stage1Message & { author: "client" | "ai" } =>
+      (message.author === "client" || message.author === "ai") && Boolean(message.body.trim())
+  );
+  const currentText = input.currentClientText?.trim();
+  const messages = currentText
+    ? [...persistedMessages, { author: "client" as const, body: currentText }]
+    : persistedMessages;
+  const recentMessages = messages.slice(-MAX_DIALOGUE_RECENT_MESSAGES).map((message) => ({
+    author: message.author,
+    text: truncateDialogueMessage(message.body, message.author)
+  }));
+  const latestAssistantMessage = [...persistedMessages].reverse().find((message) => message.author === "ai");
+  const activeOffer = latestAssistantMessage?.body.trim().endsWith(PARKING_AFTER_WITHOUT_STORAGE_LIMIT_OFFER)
+    ? "parking_after_without_storage_limit" as const
+    : undefined;
+  const allowedNextFacts = new Set<string>(input.decision.requiredFacts.map(String));
+  for (const key of Object.keys(input.currentFacts)) {
+    if (routeWritableFactKeys.has(key as keyof ApplicationFacts)) allowedNextFacts.add(key);
+  }
+  if (activeOffer) allowedNextFacts.add("requestedProgram");
+
+  const omittedMessages = Math.max(0, messages.length - recentMessages.length);
+  const knownFactKeys = Object.keys(input.currentFacts).sort();
+  const summary = [
+    `Persisted dialogue: ${persistedMessages.length} messages; ${omittedMessages} omitted from the bounded recent window.`,
+    `Deterministic state: stage=${input.decision.stage}, status=${input.decision.status}, nextAction=${input.decision.nextAction}.`,
+    `Known application fact keys: ${knownFactKeys.length > 0 ? knownFactKeys.join(", ") : "none"}.`,
+    "Persisted application facts and the deterministic decision envelope are authoritative."
+  ].join(" ").slice(0, MAX_DIALOGUE_SUMMARY_LENGTH);
+
+  return {
+    summary,
+    recentMessages,
+    currentFacts: input.currentFacts,
+    pendingFacts: input.decision.requiredFacts,
+    decisionEnvelope: {
+      allowedNextFacts: [...allowedNextFacts],
+      activeOffer
+    }
+  };
+}
+
+function truncateDialogueMessage(text: string, author: "client" | "ai"): string {
+  const trimmed = text.trim();
+  if (trimmed.length <= MAX_DIALOGUE_MESSAGE_LENGTH) return trimmed;
+  return author === "ai"
+    ? trimmed.slice(-MAX_DIALOGUE_MESSAGE_LENGTH)
+    : trimmed.slice(0, MAX_DIALOGUE_MESSAGE_LENGTH);
+}
+
+export function validateRouteProposal(input: {
+  proposal: RouteProposal;
+  context: DialogueContext;
+  extraction: ExtractionResult;
+  currentFacts: ApplicationFacts;
+}): RouteProposal {
+  const { proposal } = input;
+  if (proposal.kind === "none") return proposal;
+  if (!input.context.decisionEnvelope.allowedNextFacts.includes(String(proposal.fact))) return { kind: "none" };
+  if (!routeWritableFactKeys.has(proposal.fact)) return { kind: "none" };
+  if (proposal.kind === "clarify") return proposal;
+  if (!isValidRouteFactValue(proposal.fact, proposal.value)) return { kind: "none" };
+
+  const currentValue = input.currentFacts[proposal.fact];
+  if (currentValue === undefined || currentValue === null || valuesEqual(currentValue, proposal.value)) return proposal;
+  const confirmsActiveParkingOffer =
+    input.context.decisionEnvelope.activeOffer === "parking_after_without_storage_limit" &&
+    proposal.fact === "requestedProgram" &&
+    proposal.value === "parking";
+  if (confirmsActiveParkingOffer) return proposal;
+
+  return hasHighConfidenceCorrection(input.extraction, proposal.fact, proposal.value)
+    ? proposal
+    : { kind: "none" };
+}
+
+function shouldAcceptExtractedFact(
+  fact: ExtractionResult["facts"][number],
+  extraction: ExtractionResult,
+  currentFacts: ApplicationFacts,
+  proposedRoute: RouteProposal,
+  acceptedRoute: RouteProposal
+): boolean {
+  if (!isValidRouteFactValue(fact.key, fact.value)) return false;
+  const currentValue = currentFacts[fact.key];
+  if (currentValue === undefined || currentValue === null || valuesEqual(currentValue, fact.value)) return true;
+  if (!hasHighConfidenceCorrection(extraction, fact.key, fact.value)) return false;
+  if (proposedRoute.kind === "set_fact" && proposedRoute.fact === fact.key) {
+    return acceptedRoute.kind === "set_fact" &&
+      acceptedRoute.fact === fact.key &&
+      valuesEqual(acceptedRoute.value, fact.value);
+  }
+  return true;
+}
+
+function hasHighConfidenceCorrection(
+  extraction: ExtractionResult,
+  fact: keyof ApplicationFacts,
+  value: unknown
+): boolean {
+  const extracted = extraction.facts.some((candidate) =>
+    candidate.key === fact && candidate.confidence >= ROUTE_CORRECTION_MIN_CONFIDENCE && valuesEqual(candidate.value, value)
+  );
+  const changed = extraction.changedFacts.some((candidate) =>
+    candidate.key === fact && valuesEqual(candidate.newValue, value)
+  );
+  return extracted && changed;
+}
+
+function valuesEqual(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function isValidRouteFactValue(fact: keyof ApplicationFacts, value: unknown): boolean {
+  if (numericRouteFactKeys.has(fact)) return typeof value === "number" && Number.isFinite(value) && value > 0;
+  if (booleanRouteFactKeys.has(fact)) return typeof value === "boolean";
+  if (fact === "requestedProgram") return value === "without_storage" || value === "parking";
+  if (fact === "residenceCategory") return value === "BISHKEK" || value === "CHUY" || value === "OTHER_KG" || value === "FOREIGN";
+  if (fact === "familyStatus" || fact === "ownerFamilyStatus") {
+    return value === "married" || value === "single" || value === "divorced" || value === "unknown";
+  }
+  return stringRouteFactKeys.has(fact) && typeof value === "string" && value.trim().length > 0 && value.length <= 500;
+}
+
+const numericRouteFactKeys = new Set<keyof ApplicationFacts>(["vehicleYear", "vehicleValue", "requestedAmount"]);
+const stringRouteFactKeys = new Set<keyof ApplicationFacts>([
+  "fullName", "phone", "citizenship", "residenceRegion", "residenceText",
+  "vehicleRegistrationCountry", "vehicleRegistrationRegion", "vehicleType", "vehicleMake",
+  "vehicleModel", "visitDate", "visitTime", "ownerFullName", "ownerResidenceRegion"
+]);
+const booleanRouteFactKeys = new Set<keyof ApplicationFacts>([
+  "residenceNeedsClarification", "ownerChanged", "plateChanged", "ownerIsLegalEntity",
+  "borrowerIsLegalEntity", "vehicleInCredit", "vehiclePledged", "vehicleArrested",
+  "registrationRestricted", "refinancingRequested", "buyoutRequested", "accidentNotDrivable",
+  "foreignTravelQuestion", "existingContractQuestion", "existingContractPaymentMessage",
+  "borrowerIsOwner", "ownerCanVisit", "vehicleBoughtDuringMarriage", "spouseConsentReady",
+  "spouseAway", "guarantorAvailable", "visitRequested", "clientPaused", "clientClosed",
+  "declinedDocuments", "declinedCarPhoto", "vehiclePurchasedDuringMarriage",
+  "divorceCertificateReady", "onTheWay", "arrivedAtOffice"
+]);
+const routeWritableFactKeys = new Set<keyof ApplicationFacts>([
+  ...numericRouteFactKeys,
+  ...stringRouteFactKeys,
+  ...booleanRouteFactKeys,
+  "requestedProgram", "residenceCategory", "familyStatus", "ownerFamilyStatus"
+]);
 
 const managerDeltaFactKeys = new Set<string>([
   "requestedAmount", "requestedProgram", "visitDate", "visitTime", "clientPaused",

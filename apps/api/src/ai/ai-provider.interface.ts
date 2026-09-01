@@ -14,9 +14,29 @@ export interface InboundAttachment {
 export interface ExtractionInput {
   text?: string;
   attachments: InboundAttachment[];
-  facts: ApplicationFacts;
+  /** Bounded runtime state supplied by the dialogue orchestrator. */
+  dialogueContext?: DialogueContext;
+  /** @deprecated Use dialogueContext.currentFacts. */
+  facts?: ApplicationFacts;
+  /** @deprecated Use dialogueContext.pendingFacts. */
   pendingFacts?: (keyof ApplicationFacts | DocumentCode)[];
 }
+
+export interface DialogueContext {
+  summary: string;
+  recentMessages: Array<{ author: "client" | "ai"; text: string }>;
+  currentFacts: ApplicationFacts;
+  pendingFacts: Array<keyof ApplicationFacts | DocumentCode>;
+  decisionEnvelope: {
+    allowedNextFacts: string[];
+    activeOffer?: "parking_after_without_storage_limit";
+  };
+}
+
+export type RouteProposal =
+  | { kind: "set_fact"; fact: keyof ApplicationFacts; value: unknown }
+  | { kind: "clarify"; fact: keyof ApplicationFacts }
+  | { kind: "none" };
 
 export interface ExtractionResult {
   language: "ru" | "kg" | "mixed" | "unknown";
@@ -25,6 +45,7 @@ export interface ExtractionResult {
   facts: { key: keyof ApplicationFacts; value: unknown; confidence: number }[];
   moneyMentions: MoneyMention[];
   changedFacts: { key: keyof ApplicationFacts; newValue: unknown }[];
+  route: RouteProposal;
   attachments: {
     attachmentId: string;
     type:
