@@ -24,18 +24,21 @@ export class ResponsePlanService {
       reason: "unrecognized_reply" | "attachment_issue" | "fx_unavailable";
     };
     fxConversions?: FxConversionTrace[];
+    supportPhone?: string;
   }): ResponsePlan & ResponsePlanV62 {
     const language = input.facts.language === "kg" ? "kg" : "ru";
     const previousAssistantMessages = input.previousAssistantMessages ?? [];
-    const fxAnswer = buildFxAnswer(input.fxConversions ?? []);
-    const specialAnswers = buildSpecialAnswers(input.facts, input.decision, input.questions);
+    const firstContactAnswer = input.isFirstMessage && !shouldSuppressFirstContactIntroduction(input.decision, input.facts)
+      ? { key: "first_contact_greeting", text: firstContactIntroduction, exact: true }
+      : undefined;
+    const specialAnswers = buildSpecialAnswers(input.facts, input.decision, input.questions, input.intents ?? [], input.supportPhone);
     const decisionAnswers = this.answerDecision(input.decision, input.facts, input.intents ?? [])
       .filter((answer) => !previousAssistantMessages.some((message) => message.includes(answer.text)));
     const requiredAnswers = input.decision.requiredStatements
       .filter(isClientFacingRequiredStatement)
       .filter((statement) => !previousAssistantMessages.some((message) => message.includes(statement)))
       .map((text, index) => ({ key: `required_statement_${index}`, text, exact: true }));
-    const answers = [fxAnswer, ...specialAnswers, ...(input.knowledgeAnswers ?? []), ...decisionAnswers, ...requiredAnswers]
+    const answers = [firstContactAnswer, ...specialAnswers, ...(input.knowledgeAnswers ?? []), ...decisionAnswers, ...requiredAnswers]
       .filter((answer): answer is KnowledgeAnswer => Boolean(answer))
       .filter((answer) => !previousAssistantMessages.some((message) => message.includes(answer.text)))
       .map((answer) => ({ topic: answer.key, meaning: answer.text, exactText: answer.text, ...answer }));
@@ -104,13 +107,16 @@ export class ResponsePlanService {
     },
     intents: string[] = []
   ): string[] {
+    if (intents.includes("complaint")) return [];
     if (["refuse", "redirect_existing_contract", "pause", "target_reached", "on_the_way", "arrived"].includes(decision.nextAction)) return [];
     const documentFollowUp = buildPartialDocumentFollowUp(facts);
     if (documentFollowUp.length > 0) return documentFollowUp;
     if (isFirstMessage && !shouldSuppressFirstContactIntroduction(decision, facts)) {
+      if (facts.vehicleMake && !facts.vehicleModel) return ["Подскажите, пожалуйста, модель автомобиля."];
+      if ((facts.vehicleMake || facts.vehicleModel) && !facts.vehicleYear) return ["Подскажите, пожалуйста, год выпуска автомобиля."];
       const missing = this.firstContactMissingFacts(facts);
-      if (missing.length === 3) return [firstContactMessage];
-      if (missing.length > 0) return [`${firstContactIntroduction}\n\n${formatFirstContactRequest(missing)}`];
+      if (missing.length === 3) return [formatFirstContactRequest(missing)];
+      if (missing.length > 0) return [formatFirstContactRequest(missing)];
     }
     const questionByFact: Record<string, string> = {
       vehicleMake: "Подскажите, пожалуйста, модель и год выпуска автомобиля.", vehicleModel: "Подскажите, пожалуйста, модель автомобиля.", vehicleYear: "Подскажите, пожалуйста, год выпуска автомобиля.", vehicleValue: "Какая ориентировочная стоимость автомобиля?", requestedAmount: "Какая сумма займа Вам необходима?", requestedProgram: "Подскажите, пожалуйста, Вас интересует займ без изъятия автомобиля или с постановкой автомобиля на охраняемую стоянку?", residenceRegion: "Где прописан собственник автомобиля?", ownerFullName: "Подскажите, пожалуйста, ФИО собственника автомобиля.", ownerResidenceRegion: "Где прописан собственник автомобиля?", ownerCanVisit: "Сможет ли собственник лично приехать на осмотр автомобиля и выдачу займа?", ownerFamilyStatus: "Подскажите, пожалуйста, собственник автомобиля состоит в браке, никогда не состоял в браке или в разводе?", id_front: "Пришлите, пожалуйста, фото лицевой стороны ID.", id_back: "Пришлите, пожалуйста, фото обратной стороны ID.", vehicle_registration_front: "Пришлите, пожалуйста, лицевую сторону свидетельства о регистрации ТС.", vehicle_registration_back: "Пришлите, пожалуйста, обратную сторону свидетельства о регистрации ТС.", familyStatus: "Подскажите, пожалуйста, собственник автомобиля состоит в браке, никогда не состоял в браке или в разводе?", vehicleBoughtDuringMarriage: "Автомобиль был приобретён во время брака или после развода?", spouseConsentReady: facts.spouseConsentReady === false ? "Сообщите, пожалуйста, когда нотариальное согласие будет готово. Его можно оформить у любого нотариуса или у нотариуса в нашем здании." : "Нотариальное согласие супруга или супруги уже оформлено?", divorceCertificateReady: "Свидетельство о разводе уже есть?", guarantorAvailable: "Подскажите, пожалуйста, есть ли у Вас поручитель?", visitDate: "На какую дату Вам удобно приехать?", visitTime: "Уточните, пожалуйста, конкретное время визита. Для оформления нужно приехать не позднее 18:00."
@@ -130,15 +136,12 @@ export class ResponsePlanService {
     }
     if (decision.nextAction === "collect_documents") return [documentsRequest(decision.requiredFacts.map(String))];
     const questions = decision.requiredFacts.map((fact) => questionByFact[String(fact)]).filter((item): item is string => Boolean(item));
-    if (isFirstMessage && questions.length && !shouldSuppressFirstContactIntroduction(decision, facts)) {
-      return [`${firstContactIntroduction}\n\n${questions.join(" ")}`];
-    }
-    return [...new Set(questions)];
+    return [...new Set(questions)].slice(0, 1);
   }
 
   private firstContactMissingFacts(facts: ApplicationFacts): ("vehicle" | "vehicleValue" | "requestedAmount")[] {
     const missing: ("vehicle" | "vehicleValue" | "requestedAmount")[] = [];
-    if (!facts.vehicleMake && !facts.vehicleModel && !facts.vehicleYear) missing.push("vehicle");
+    if (!facts.vehicleMake || !facts.vehicleModel || !facts.vehicleYear) missing.push("vehicle");
     if (facts.vehicleValue === undefined) missing.push("vehicleValue");
     if (facts.requestedAmount === undefined) missing.push("requestedAmount");
     return missing;
@@ -179,9 +182,16 @@ function visitConfirmationText(facts: ApplicationFacts): string {
 function buildSpecialAnswers(
   facts: ApplicationFacts,
   decision: DecisionResult,
-  questions: { topic: string; text: string }[]
+  questions: { topic: string; text: string }[],
+  intents: string[],
+  supportPhone = "+996 502 108 108"
 ): KnowledgeAnswer[] {
   const answers: KnowledgeAnswer[] = [];
+
+  if (intents.includes("complaint")) {
+    answers.push({ key: "complaint", text: `Понимаю, что условия могут вызвать вопросы. Я готова уточнить всё, что важно для Вас. Если удобнее обсудить это с сотрудником, пожалуйста, позвоните по номеру ${supportPhone}.`, exact: true });
+    return answers;
+  }
 
   if (facts.declinedDocuments) {
     answers.push({
@@ -380,25 +390,6 @@ function clarificationQuestion(
   return clarificationByFact[fact] ?? "Я не до конца поняла Ваш ответ. Уточните, пожалуйста, детали ещё раз.";
 }
 
-function buildFxAnswer(conversions: FxConversionTrace[]): KnowledgeAnswer | undefined {
-  const successful = conversions.filter((item) => item.status === "converted" && typeof item.somValue === "number");
-  if (successful.length === 0) return undefined;
-  return {
-    key: "fx_equivalent",
-    text: `По текущему курсу ${successful.map((item) => `${formatForeignMoney(item.amount, item.currency)} — это ориентировочно ${formatMoney(item.somValue ?? 0)} сом`).join(". ")}.`,
-    exact: true
-  };
-}
-
-function formatForeignMoney(amount: number, currency: FxConversionTrace["currency"]): string {
-  const labels: Record<Exclude<FxConversionTrace["currency"], "KGS">, string> = {
-    USD: "долларов США",
-    EUR: "евро",
-    KZT: "тенге",
-    RUB: "российских рублей"
-  };
-  return `${formatMoney(amount)} ${currency === "KGS" ? "сом" : labels[currency]}`;
-}
 
 function documentsRecoveryRequest(requiredFacts: string[]): string {
   const labels: Record<string, string> = {

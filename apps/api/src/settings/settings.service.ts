@@ -79,7 +79,7 @@ const defaultSettings: Stage1Settings = {
   guarantorIdentityDocumentRequired: true,
   reminderScheduleHours: [1, 24],
   reminderMaxCount: 2,
-  officeDogPolicy: "SPEC_CONFLICT_C3",
+  officeDogPolicy: "Можно, если это не создаёт неудобств другим посетителям.",
   currencyExchangeWalkingMinutes: "примерно 5–10 минут пешком",
   queuePolicy: "Как правило, очереди нет, но точную ситуацию заранее гарантировать нельзя; лучше согласовать время визита.",
   ownerAttendanceRequired: true,
@@ -89,7 +89,6 @@ const defaultSettings: Stage1Settings = {
 
 const blockedReasons: Partial<Record<keyof Stage1Settings, string>> = {
   guarantorResidencePolicy: "SPEC_CONFLICT_C1: место прописки поручителя противоречит в исходном ТЗ.",
-  officeDogPolicy: "SPEC_CONFLICT_C3: правила посещения офиса с собакой противоречат в исходном ТЗ."
 };
 
 @Injectable()

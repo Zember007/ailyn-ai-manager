@@ -121,6 +121,9 @@ export class DialogueOrchestratorService {
         });
       }
       const businessRuleSettings = await this.settings.getBusinessRuleSettings();
+      const stageSettings = typeof (this.settings as unknown as { getValues?: () => Promise<{ phone?: string }> }).getValues === "function"
+        ? await (this.settings as unknown as { getValues: () => Promise<{ phone?: string }> }).getValues()
+        : undefined;
       const previousDecision = application.decision ?? evaluateApplication(application.facts, businessRuleSettings);
       const pendingFacts = previousDecision.requiredFacts;
       const dialogueContext = buildDialogueContext({
@@ -281,7 +284,8 @@ export class DialogueOrchestratorService {
         recovery,
         fxConversions: fxResolution.traces,
         previousAssistantMessages: conversation.messages.filter((item) => item.author === "ai").map((item) => item.body),
-        knowledgeAnswers
+        knowledgeAnswers,
+        supportPhone: stageSettings?.phone
       });
 
       void this.logs.debug("dialogue.receive", "Response plan prepared", {
@@ -668,10 +672,21 @@ async function resolveForeignCurrencyFacts(input: {
   const traces: FxConversionTrace[] = [];
   const blockedRoles = new Set<"requestedAmount" | "vehicleValue">();
 
-  for (const mention of input.mentions ?? []) {
-    if (mention.roleCandidate === "unknown" || mention.currency === "KGS") continue;
-    if (mention.roleCandidate === "requestedAmount" && (input.currentFacts.requestedAmount !== undefined || input.incomingFacts.requestedAmount !== undefined || facts.requestedAmount !== undefined)) continue;
-    if (mention.roleCandidate === "vehicleValue" && (input.currentFacts.vehicleValue !== undefined || input.incomingFacts.vehicleValue !== undefined || facts.vehicleValue !== undefined)) continue;
+  for (const rawMention of input.mentions ?? []) {
+    if (rawMention.roleCandidate === "unknown") continue;
+    const role: "requestedAmount" | "vehicleValue" = rawMention.roleCandidate;
+    const sourceCurrencyKey = role === "requestedAmount" ? "requestedAmountSourceCurrency" : "vehicleValueSourceCurrency";
+    const inheritedCurrency = input.currentFacts[sourceCurrencyKey];
+    const mention = rawMention.currency === "KGS" && inheritedCurrency && inheritedCurrency !== "KGS" && !hasExplicitMoneyCurrency(rawMention.sourceText)
+      ? { ...rawMention, currency: inheritedCurrency }
+      : rawMention;
+    if (mention.currency === "KGS") {
+      (facts as Record<string, unknown>)[sourceCurrencyKey] = "KGS";
+      continue;
+    }
+    const inheritedWithoutMarker = rawMention.currency === "KGS" && inheritedCurrency && inheritedCurrency !== "KGS" && !hasExplicitMoneyCurrency(rawMention.sourceText);
+    if (role === "requestedAmount" && !inheritedWithoutMarker && (input.currentFacts.requestedAmount !== undefined || input.incomingFacts.requestedAmount !== undefined || facts.requestedAmount !== undefined)) continue;
+    if (role === "vehicleValue" && !inheritedWithoutMarker && (input.currentFacts.vehicleValue !== undefined || input.incomingFacts.vehicleValue !== undefined || facts.vehicleValue !== undefined)) continue;
 
     const conversion = await input.deferredIntegrations.convertToSom({
       amount: mention.normalizedAmount,
@@ -679,13 +694,15 @@ async function resolveForeignCurrencyFacts(input: {
     });
 
     if (conversion.available) {
-      if (mention.roleCandidate === "requestedAmount") {
+      if (role === "requestedAmount") {
         facts.requestedAmount = conversion.value;
+        facts.requestedAmountSourceCurrency = mention.currency;
       } else {
         facts.vehicleValue = conversion.value;
+        facts.vehicleValueSourceCurrency = mention.currency;
       }
       traces.push({
-        role: mention.roleCandidate,
+        role,
         sourceText: mention.sourceText,
         currency: mention.currency,
         amount: mention.normalizedAmount,
@@ -696,9 +713,9 @@ async function resolveForeignCurrencyFacts(input: {
         effectiveDate: conversion.effectiveDate
       });
     } else {
-      blockedRoles.add(mention.roleCandidate);
+      blockedRoles.add(role);
       traces.push({
-        role: mention.roleCandidate,
+        role,
         sourceText: mention.sourceText,
         currency: mention.currency,
         amount: mention.normalizedAmount,
@@ -709,6 +726,10 @@ async function resolveForeignCurrencyFacts(input: {
   }
 
   return { facts, traces, blockedRoles: [...blockedRoles] };
+}
+
+function hasExplicitMoneyCurrency(value: string): boolean {
+  return /(?:\$|€|₸|₽|\busd\b|\beur\b|\bkzt\b|\brub\b|\bkgs\b|доллар|евро|тенге|сом|руб)/iu.test(value);
 }
 
 export function detectRecoveryHint(input: {

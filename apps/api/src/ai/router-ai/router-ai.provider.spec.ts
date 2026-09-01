@@ -576,6 +576,20 @@ describe("RouterAiProvider", () => {
     });
   });
 
+  it("sends image pixels to RouterAI Vision as a data URI", async () => {
+    const client = {
+      isConfigured: vi.fn().mockReturnValue(true),
+      createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ type: "id_front", quality: "good", extractedFacts: [] }) } }] })
+    } as any;
+    const provider = new RouterAiProvider(client);
+    const jpegBytes = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
+    await provider.analyzeImage({ attachment: { id: "id", fileName: "id.jpg", mimeType: "image/jpeg", contentBase64: jpegBytes.toString("base64") } });
+    const request = client.createChatCompletion.mock.calls[0]?.[0];
+    expect(request.messages[1].content).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "image_url", image_url: { url: `data:image/jpeg;base64,${jpegBytes.toString("base64")}` } })
+    ]));
+  });
+
   it("falls back to local response when RouterAI errors", async () => {
     process.env.DATABASE_URL ??= "postgresql://test:test@localhost:5432/ailyn";
     process.env.REDIS_URL ??= "redis://localhost:6379";
@@ -660,7 +674,7 @@ describe("RouterAiProvider", () => {
 
     expect(client.createChatCompletion).not.toHaveBeenCalled();
     expect(result).toEqual({
-      message: "Здравствуйте! Какая ориентировочная стоимость автомобиля?",
+      message: "Здравствуйте!\n\nКакая ориентировочная стоимость автомобиля?",
       model: "stage1-response-plan-fast-path",
       promptVersion: "stage1-response-plan-v1"
     });

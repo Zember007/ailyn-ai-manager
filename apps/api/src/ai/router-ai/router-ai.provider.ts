@@ -50,7 +50,7 @@ export class RouterAiProvider implements AiProvider {
       );
       const parsed = extractionSchema.safeParse(prepareExtractionPayload(JSON.parse(response.choices?.[0]?.message?.content ?? "{}")));
       if (!parsed.success) throw new Error("RouterAI extraction response does not match structured schema");
-      return normalizeExtractionResult(parsed.data, input);
+      return supplementExplicitPendingProgram(normalizeExtractionResult(parsed.data, input), input);
     } catch (error) {
       this.logger.warn(`RouterAI extraction fallback activated: ${formatError(error)}`);
       return localExtract(input);
@@ -125,7 +125,7 @@ export class RouterAiProvider implements AiProvider {
               role: "system",
               content: [loadPrompt("core.system.md"), loadPrompt("vision.system.md")].join("\n\n")
             },
-            { role: "user", content: JSON.stringify(buildVisionPromptInput(input)) }
+            { role: "user", content: buildVisionMessage(input) }
           ]
         },
         { timeoutMs: getStage1Timeout(this.config.routerAiTimeoutMs, 30_000) }
@@ -136,6 +136,26 @@ export class RouterAiProvider implements AiProvider {
       return inferAttachmentVision(input);
     }
   }
+}
+
+// Narrow safety net for an explicit reply to the immediately pending programme
+// question. RouterAI remains the primary interpreter; this only prevents a clear
+// choice from being discarded when the structured response omits that fact.
+function supplementExplicitPendingProgram(result: ExtractionResult, input: ExtractionInput): ExtractionResult {
+  const text = (input.text ?? "").toLocaleLowerCase("ru-RU");
+  const additions: ExtractionResult["facts"] = [];
+  if (result.facts.every((fact) => fact.key !== "declinedDocuments") && /(?:не\s+(?:могу|буду|хочу)|нет\s+возможности)[^.!?]{0,80}(?:документ|фото)/i.test(text)) additions.push({ key: "declinedDocuments", value: true, confidence: 1 });
+  if (result.facts.every((fact) => fact.key !== "vehicleInCredit") && /машин[аеу]?[^.!?]{0,30}\s+в\s+кредит/i.test(text)) additions.push({ key: "vehicleInCredit", value: true, confidence: 1 });
+  if (!result.facts.some((fact) => fact.key === "existingContractQuestion" && fact.value === true) && /(?:действующ(?:ему|ий)|по\s+договору|проверьте\s+оплату|я\s+оплатил)/i.test(text)) additions.push({ key: "existingContractQuestion", value: true, confidence: 1 });
+  if (!result.facts.some((fact) => fact.key === "existingContractPaymentMessage" && fact.value === true) && /(?:проверьте\s+оплату|я\s+оплатил)/i.test(text)) additions.push({ key: "existingContractPaymentMessage", value: true, confidence: 1 });
+  if (!result.facts.some((fact) => fact.key === "familyStatus" && fact.value === "married") && /(?:я\s+)?(?:женат|замужем|в\s+браке)/i.test(text)) additions.push({ key: "familyStatus", value: "married", confidence: 1 });
+  if (!result.facts.some((fact) => fact.key === "spouseConsentReady" && fact.value === false) && /согласие[^.!?]{0,30}(?:не\s+готово|нет|не\s+оформлено)/i.test(text)) additions.push({ key: "spouseConsentReady", value: false, confidence: 1 });
+  if (result.facts.every((fact) => fact.key !== "requestedProgram") && input.dialogueContext?.pendingFacts.includes("requestedProgram")) {
+  const value = /без\s+из[ъь]?ятия/.test(text) ? "without_storage" : /(?:на\s+)?стоянк|с\s+постановк/.test(text) ? "parking" : undefined;
+    if (value) additions.push({ key: "requestedProgram", value, confidence: 1 });
+  }
+  if (!additions.length) return result;
+  return { ...result, facts: [...result.facts, ...additions], changedFacts: [...result.changedFacts, ...additions.map((fact) => ({ key: fact.key, newValue: fact.value }))] };
 }
 
 function buildVisionPromptInput(input: VisionInput): Record<string, unknown> {
@@ -157,6 +177,17 @@ function buildVisionPromptInput(input: VisionInput): Record<string, unknown> {
       extractedFacts: "Array<{ key: ApplicationFacts key; value: unknown; confidence: 0..1 }>"
     }
   };
+}
+
+function buildVisionMessage(input: VisionInput): Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string } }> {
+  const parts: Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string } }> = [
+    { type: "text", text: JSON.stringify(buildVisionPromptInput(input)) }
+  ];
+  const mimeType = String(input.attachment.mimeType ?? "image/jpeg").toLowerCase();
+  if (isImageBase64(input.attachment.contentBase64) && /^image\/(?:jpeg|png|webp|gif)$/.test(mimeType)) {
+    parts.push({ type: "image_url", image_url: { url: `data:${mimeType};base64,${input.attachment.contentBase64}` } });
+  }
+  return parts;
 }
 
 function inferAttachmentVision(input: VisionInput): VisionResult {
@@ -229,7 +260,7 @@ function localExtract(input: ExtractionInput): ExtractionResult {
   } else if (text.includes("land cruiser") || text.includes("ленд крузер") || text.includes("ланд крузер")) {
     facts.push({ key: "vehicleMake", value: "Toyota", confidence: 0.9 });
     facts.push({ key: "vehicleModel", value: "Land Cruiser", confidence: 0.9 });
-  } else if (text.includes("toyota") || text.includes("тойота")) {
+  } else if (text.includes("toyota") || text.includes("тойота") || text.includes("тоета")) {
     facts.push({ key: "vehicleMake", value: "Toyota", confidence: 0.8 });
   }
 
@@ -266,7 +297,7 @@ function localExtract(input: ExtractionInput): ExtractionResult {
     facts.push({ key: "citizenship", value: "KG", confidence: 0.85 });
   }
   if (text.includes("без изъятия") || text.includes("без изятия")) facts.push({ key: "requestedProgram", value: "without_storage", confidence: 0.9 });
-  if (text.includes("стоянк") || text.includes("на парковк")) facts.push({ key: "requestedProgram", value: "parking", confidence: 0.9 });
+  if (text.includes("стоянк") || text.includes("на парковк") || /с\s+постановк(?:ой|у)?(?:\s+автомобил[яе])?/i.test(text)) facts.push({ key: "requestedProgram", value: "parking", confidence: 0.9 });
   if (text.includes("груз")) facts.push({ key: "vehicleType", value: "truck", confidence: 0.8 });
   if (text.includes("автобус")) facts.push({ key: "vehicleType", value: "bus", confidence: 0.8 });
   if (text.includes("мото") || text.includes("скутер")) facts.push({ key: "vehicleType", value: "motorcycle", confidence: 0.8 });
@@ -321,7 +352,7 @@ function localExtract(input: ExtractionInput): ExtractionResult {
   if (visitTime) facts.push({ key: "visitTime", value: `${visitTime[1].padStart(2, "0")}:${visitTime[2]}`, confidence: 0.9 });
   if (text.includes("подумаю") || text.includes("позже")) facts.push({ key: "clientPaused", value: true, confidence: 0.8 });
 
-  if (text.includes("?") || text.includes("какие") || text.includes("сколько") || text.includes("можно ли") || text.includes("где ") || text.includes("почему") || text.includes("откуда")) {
+  if (text.includes("?") || text.includes("какие") || text.includes("какая") || text.includes("сколько") || text.includes("можно ли") || text.includes("где ") || text.includes("почему") || text.includes("откуда")) {
     questions.push(...detectQuestions(input.text ?? ""));
     intents.push("question");
   }
@@ -453,6 +484,12 @@ function detectTurnIntents(
   if (/(?:не\s+могу|не\s+буду|не\s+хочу|нет\s+возможности|не\s+получится)[^.!?]{0,70}(?:прислать|отправить|скинуть)?[^.!?]{0,30}(?:документ|фото|техпаспорт|id|айди)/.test(normalized)) {
     intents.push("document_unavailable");
   }
+  if (/(?:охренел|ужасн|безобраз|кошмар|возмут|не\s+устраива|слишком\s+(?:дорого|много)|плохие\s+услов)/.test(normalized)) {
+    intents.push("complaint");
+  }
+  if (/(?:подумаю|позже\s+(?:напиш|отвеч)|пока\s+не\s+решил)/.test(normalized)) intents.push("pause");
+  if (/(?:уже\s+(?:еду|выехал)|я\s+в\s+пути)/.test(normalized)) intents.push("on_the_way");
+  if (/(?:уже\s+приехал|у\s+офиса|на\s+месте)/.test(normalized)) intents.push("arrived");
   if (
     normalized.length <= 4 &&
     !/\d/.test(normalized) &&
@@ -524,7 +561,7 @@ function buildLocalResponse(input: ResponseGenerationInput): string {
     ...input.responsePlan.requiredStatements.filter((statement) => !statement.startsWith("Попросить")),
     ...input.responsePlan.nextQuestions
   ];
-  return [...new Set(parts)].filter(Boolean).join(" ").trim() || "Уточните, пожалуйста, модель, год автомобиля, ориентировочную стоимость и нужную сумму.";
+  return [...new Set(parts)].filter(Boolean).join("\n\n").trim() || "Уточните, пожалуйста, модель, год автомобиля, ориентировочную стоимость и нужную сумму.";
 }
 
 function shouldUseDeterministicResponseFastPath(input: ResponseGenerationInput): boolean {

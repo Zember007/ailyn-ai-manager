@@ -63,6 +63,9 @@ export interface ApplicationFacts {
   reportedInvalidVehicleYear?: number | null;
   vehicleValue?: number;
   requestedAmount?: number;
+  /** Audit-only source currency; lead-card monetary values remain KGS. */
+  vehicleValueSourceCurrency?: "KGS" | "USD" | "EUR" | "KZT" | "RUB";
+  requestedAmountSourceCurrency?: "KGS" | "USD" | "EUR" | "KZT" | "RUB";
   requestedProgram?: LoanProgram;
   ownerChanged?: boolean;
   plateChanged?: boolean;

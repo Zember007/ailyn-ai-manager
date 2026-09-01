@@ -252,6 +252,42 @@ const seeds: Omit<KnowledgeItemDto, "id">[] = [
     aliases: ["займ в долларах", "выдаёте доллары", "в иностранной валюте"],
     answerRu: "Нет. Займы выдаются только в кыргызских сомах наличными.",
     priority: 100, status: "approved", version: 1, active: true
+  },
+  {
+    key: "office_coffee", category: "office", aliases: ["есть ли кофе", "есть кофе", "чай и кофе"],
+    answerRu: "Да, для наших клиентов есть чай и кофе.", priority: 80, status: "approved", version: 1, active: true
+  },
+  {
+    key: "office_restroom", category: "office", aliases: ["есть ли туалет", "есть туалет"],
+    answerRu: "Да, туалет для посетителей есть.", priority: 80, status: "approved", version: 1, active: true
+  },
+  {
+    key: "office_parking", category: "office", aliases: ["есть ли парковка", "парковка рядом", "где припарковаться"],
+    answerRu: "Да, рядом с офисом есть место для парковки автомобилей.", priority: 80, status: "approved", version: 1, active: true
+  },
+  {
+    key: "office_visitors", category: "office", aliases: ["с ребёнком", "с ребенком", "с собакой", "вдвоём", "вдвоем"],
+    answerRu: "Да, конечно. С собакой можно, если это не создаёт неудобств другим посетителям.", priority: 80, status: "approved", version: 1, active: true
+  },
+  {
+    key: "office_wifi_charging", category: "office", aliases: ["есть wi-fi", "есть wifi", "зарядить телефон", "зарядка телефона"],
+    answerRu: "Да, для посетителей доступен Wi-Fi; при необходимости поможем зарядить телефон.", priority: 80, status: "approved", version: 1, active: true
+  },
+  {
+    key: "office_waiting_water", category: "office", aliases: ["есть место подождать", "зона ожидания", "можно воды", "есть кулер", "подождать в помещении"],
+    answerRu: "Да, у нас есть зона ожидания, вода и кулер для посетителей.", priority: 80, status: "approved", version: 1, active: true
+  },
+  {
+    key: "cash_payment", category: "finance", aliases: ["можно оплатить картой", "оплата картой"],
+    answerRu: "Нет, мы выдаем займ наличными и принимаем оплату также наличными в офисе компании.", priority: 90, status: "approved", version: 1, active: true
+  },
+  {
+    key: "nearby_services", category: "office", aliases: ["банкомат рядом", "есть обмен валют", "обмен валют рядом", "нотариус рядом"],
+    answerRu: "Нотариус находится в нашем здании. Ближайший банкомат — в 5–6 минутах ходьбы, обмен валют — примерно в 5–10 минутах пешком.", priority: 80, status: "approved", version: 1, active: true
+  },
+  {
+    key: "visit_flexibility", category: "visit", aliases: ["если опоздаю", "можно приехать вечером", "можно приехать в выходной", "можно приехать раньше", "можно приехать позже", "есть ли очередь"],
+    answerRu: "Сообщите нам, если время изменится. В выходные мы не работаем; в рабочие дни можно приехать с 11:00 до 18:00. Точную очередь заранее гарантировать нельзя, но можно согласовать удобное время.", priority: 80, status: "approved", version: 1, active: true
   }
 ];
 

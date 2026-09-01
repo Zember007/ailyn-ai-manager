@@ -6,17 +6,31 @@ describe("ResponsePlanService first contact", () => {
   it("uses the approved full first-contact block when no data is known", () => {
     const service = new ResponsePlanService();
     const plan = service.build({ facts: {}, decision: evaluateApplication({}), isFirstMessage: true, questions: [] });
-    expect(plan.nextQuestions).toEqual([
-      "Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10.\n\nПодскажите, пожалуйста:\n- модель и год выпуска автомобиля;\n- ориентировочную стоимость автомобиля;\n- какая сумма займа Вам необходима?"
-    ]);
+    expect(plan.answers[0]?.text).toBe("Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10.");
+    expect(plan.nextQuestions).toEqual(["Подскажите, пожалуйста:\n- модель и год выпуска автомобиля;\n- ориентировочную стоимость автомобиля;\n- какая сумма займа Вам необходима?"]);
   });
 
   it("does not ask first-contact facts that are already provided", () => {
     const service = new ResponsePlanService();
     const facts = { vehicleMake: "Toyota", vehicleModel: "Camry", vehicleYear: 2021, vehicleValue: 1_500_000, requestedAmount: 500_000 } as const;
     const plan = service.build({ facts, decision: evaluateApplication(facts), isFirstMessage: true, questions: [] });
-    expect(plan.nextQuestions[0]).toContain("Здравствуйте! Меня зовут Айлин.");
+    expect(plan.answers[0]?.text).toContain("Здравствуйте! Меня зовут Айлин.");
     expect(plan.nextQuestions[0]).toContain("без изъятия автомобиля");
+  });
+
+  it("asks only for the missing model after a client gives a vehicle make", () => {
+    const service = new ResponsePlanService();
+    const facts = { vehicleMake: "Toyota" } as const;
+    const plan = service.build({ facts, decision: evaluateApplication(facts), isFirstMessage: true, questions: [] });
+    expect(plan.nextQuestions.join(" ")).toContain("модель автомобиля");
+    expect(plan.nextQuestions.join(" ")).not.toContain("ориентировочную стоимость");
+  });
+
+  it("responds to a complaint without repeating collection questions", () => {
+    const service = new ResponsePlanService();
+    const plan = service.build({ facts: {}, decision: evaluateApplication({}), isFirstMessage: false, questions: [], intents: ["complaint"], supportPhone: "+996 555 000 000" });
+    expect(plan.answers.map((answer) => answer.text).join(" ")).toContain("+996 555 000 000");
+    expect(plan.nextQuestions).toEqual([]);
   });
 
   it("clarifies a vague residence answer instead of repeating the generic question", () => {
@@ -158,7 +172,7 @@ describe("ResponsePlanService first contact", () => {
     ]);
   });
 
-  it("adds an FX equivalent note before continuing the normal flow", () => {
+  it("keeps FX conversion out of the client response", () => {
     const service = new ResponsePlanService();
     const facts = {
       vehicleMake: "Toyota",
@@ -185,8 +199,8 @@ describe("ResponsePlanService first contact", () => {
       }]
     });
 
-    expect(plan.answers[0]?.text).toContain("10 000 долларов США");
-    expect(plan.answers[0]?.text).toContain("874 500 сом");
+    expect(plan.answers.map((answer) => answer.text).join(" ")).not.toContain("10 000 долларов США");
+    expect(plan.answers.map((answer) => answer.text).join(" ")).not.toContain("874 500 сом");
   });
 
   it("uses a targeted clarification when FX conversion is unavailable", () => {

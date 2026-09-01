@@ -365,8 +365,8 @@ describe("Dialogue pipeline e2e scenarios", () => {
 
     expect(dialogue.currentFacts.requestedAmount).toBe(874_500);
     expect(dialogue.currentFacts.vehicleValue).toBe(20_000);
-    expect(answer).toContain("10 тыс долларов");
-    expect(answer).toContain("874 500 сом");
+    expect(answer).not.toContain("10 тыс долларов");
+    expect(answer).not.toContain("874 500 сом");
     expect(answer).not.toContain("нужную сумму в сомах");
   });
 });

@@ -1,7 +1,11 @@
 export interface RouterAiChatMessage {
   role: "system" | "user" | "assistant";
-  content: string;
+  content: string | RouterAiContentPart[];
 }
+
+export type RouterAiContentPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string } };
 
 export interface RouterAiChatRequest {
   model: string;
