@@ -29,6 +29,12 @@ describe("money normalization", () => {
     ]));
   });
 
+  it("keeps the multiplier and currency in a compact foreign amount", () => {
+    expect(detectMoneyMentions("Перепутал цену, мне нужно 10 к долларов")).toEqual(expect.arrayContaining([
+      expect.objectContaining({ sourceText: "10 к долларов", normalizedAmount: 10_000, currency: "USD" })
+    ]));
+  });
+
   it("falls back to larger-as-value smaller-as-requested for two ambiguous amounts", () => {
     const result = resolveMoneyFacts({
       text: "500 тыс и 1.2 млн",

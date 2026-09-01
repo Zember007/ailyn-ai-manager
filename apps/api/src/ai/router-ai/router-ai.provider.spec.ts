@@ -232,6 +232,48 @@ describe("RouterAiProvider", () => {
     expect(result.facts).not.toEqual(expect.arrayContaining([expect.objectContaining({ key: "requestedAmount" })]));
   });
 
+  it("reconciles a compact foreign-currency amount when RouterAI omits its multiplier or currency", async () => {
+    const client = {
+      isConfigured: vi.fn().mockReturnValue(true),
+      createChatCompletion: vi.fn().mockResolvedValue({
+        choices: [{ message: { content: JSON.stringify({
+          language: "ru",
+          facts: [{ key: "requestedAmount", value: 10, confidence: 0.95 }],
+          moneyMentions: [{
+            sourceText: "10 к долларов",
+            amount: 10,
+            normalizedAmount: 10,
+            currency: "KGS",
+            roleCandidate: "requestedAmount",
+            confidence: 0.95,
+            start: 22,
+            end: 35
+          }]
+        }) } }]
+      })
+    } as any;
+
+    const result = await new RouterAiProvider(client).extract({
+      text: "Перепутал цену, мне нужно 10 к долларов",
+      attachments: [],
+      dialogueContext: {
+        summary: "Current step asks for the requested amount.",
+        recentMessages: [],
+        currentFacts: { requestedAmount: 500_000 },
+        pendingFacts: ["requestedAmount"],
+        decisionEnvelope: { allowedNextFacts: ["requestedAmount"] }
+      }
+    });
+
+    expect(result.moneyMentions).toContainEqual(expect.objectContaining({
+      sourceText: "10 к долларов",
+      normalizedAmount: 10_000,
+      currency: "USD",
+      roleCandidate: "requestedAmount"
+    }));
+    expect(result.facts).not.toContainEqual(expect.objectContaining({ key: "requestedAmount" }));
+  });
+
   it("does not mistake a vehicle year inside the first message for vehicle value", async () => {
     process.env.DATABASE_URL ??= "postgresql://test:test@localhost:5432/ailyn";
     process.env.REDIS_URL ??= "redis://localhost:6379";
@@ -259,6 +301,30 @@ describe("RouterAiProvider", () => {
       expect.objectContaining({ key: "requestedProgram", value: "without_storage" }),
       expect.objectContaining({ key: "residenceRegion", value: "Бишкек" })
     ]));
+  });
+
+  it("treats an elliptical alternative-programme prompt as a question, not a programme switch", async () => {
+    const client = {
+      isConfigured: vi.fn().mockReturnValue(true),
+      createChatCompletion: vi.fn().mockResolvedValue({
+        choices: [{ message: { content: JSON.stringify({ language: "ru", facts: [], questions: [] }) } }]
+      })
+    } as any;
+
+    const result = await new RouterAiProvider(client).extract({
+      text: "А без изъятия",
+      attachments: [],
+      dialogueContext: {
+        summary: "The client asked about the parking programme.",
+        recentMessages: [{ author: "ai", text: "Программа со стоянкой означает, что автомобиль находится на охраняемой парковке." }],
+        currentFacts: { requestedProgram: "parking" },
+        pendingFacts: ["id_back"],
+        decisionEnvelope: { allowedNextFacts: ["id_back", "requestedProgram"] }
+      }
+    });
+
+    expect(result.questions).toContainEqual(expect.objectContaining({ text: "А без изъятия" }));
+    expect(result.facts).not.toContainEqual(expect.objectContaining({ key: "requestedProgram" }));
   });
 
   it("keeps an explicit programme choice when the preceding decision is terminal", async () => {

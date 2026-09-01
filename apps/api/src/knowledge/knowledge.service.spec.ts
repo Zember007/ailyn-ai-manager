@@ -38,6 +38,18 @@ describe("KnowledgeService approved resolution", () => {
     ]));
   });
 
+  it("uses the approved comparison answer without offering a personal preliminary amount", async () => {
+    const service = new KnowledgeService(createMemoryPrisma() as any);
+    const answers = await service.resolveAll(
+      "Подожди, а чем вы вообще занимаетесь, чем отличается займ без изъятия автомобиля или с постановкой автомобиля на охраняемую стоянку?",
+      "ru"
+    );
+
+    const comparison = answers.find((answer) => answer.key === "loan_program_comparison");
+    expect(comparison?.answerRu).toContain("автомобиль остаётся у Вас");
+    expect(comparison?.answerRu).not.toMatch(/предварительн(?:ая|ую) сумм/i);
+  });
+
   it("creates seeds through the legacy title/body schema without crashing", async () => {
     const prisma = createMemoryPrisma({ legacyTitleRequired: true, legacyBodyColumn: true });
     const service = new KnowledgeService(prisma as any);

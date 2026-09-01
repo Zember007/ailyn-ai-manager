@@ -16,7 +16,7 @@ import type {
 } from "../ai-provider.interface.js";
 import { RouterAiClient } from "./router-ai.client.js";
 import { extractionSchema, responseGenerationSchema } from "../../dialogue/pipeline.contracts.js";
-import { resolveMoneyFacts } from "../../dialogue/money-normalization.js";
+import { detectMoneyMentions, resolveMoneyFacts } from "../../dialogue/money-normalization.js";
 
 @Injectable()
 export class RouterAiProvider implements AiProvider {
@@ -170,7 +170,7 @@ function supplementExplicitPendingProgram(result: ExtractionResult, input: Extra
   const hasValidRequestedProgram = result.facts.some((fact) =>
     fact.key === "requestedProgram" && (fact.value === "without_storage" || fact.value === "parking")
   );
-  if (!hasValidRequestedProgram) {
+  if (!hasValidRequestedProgram && !looksLikeClientQuestion(input.text ?? "")) {
     const value = /без\s+из[ъь]?ятия/.test(text) ? "without_storage" : /(?:на\s+)?стоянк|с\s+постановк/.test(text) ? "parking" : undefined;
     if (value) additions.push({ key: "requestedProgram", value, confidence: 1 });
   }
@@ -486,7 +486,7 @@ function detectQuestions(text: string): ExtractionResult["questions"] {
 }
 
 function looksLikeClientQuestion(text: string): boolean {
-  return /(?:\?\s*$|^\s*(?:что|какая|какой|какие|где|когда|как|можно|почему|сколько)\b|\bчто\s+(?:вообще\s+)?такое\b|\bне\s+понял(?:а)?\b)/iu.test(text.trim());
+  return /(?:\?\s*$|^\s*(?:что|какая|какой|какие|где|когда|как|можно|почему|сколько)\b|\bчто\s+(?:вообще\s+)?такое\b|\bне\s+понял(?:а)?\b|^\s*а\s+(?:без\s+из[ъь]?ятия|(?:с\s+)?постановк(?:ой|у)?|(?:на\s+)?стоянк))/iu.test(text.trim());
 }
 
 function questionTopic(text: string): string {
@@ -563,6 +563,7 @@ function normalizeExtractionResult(payload: unknown, input?: ExtractionInput): E
     return normalized;
   }
 
+  normalized.moneyMentions = reconcileMoneyMentionsWithText(normalized.moneyMentions, input.text);
   normalized.moneyMentions = harmonizeMoneyMentionCurrencies(normalized.moneyMentions, input.text);
   normalized.facts = backfillMoneyFacts(normalized.facts, normalized.moneyMentions);
   return normalized;
@@ -801,6 +802,12 @@ function backfillMoneyFacts(
 
   for (const mention of moneyMentions) {
     if (mention.currency !== "KGS") {
+      // The structured model may have emitted a numeric KGS fact alongside a
+      // foreign-currency mention. Keep the amount exclusively in the FX path;
+      // otherwise a raw value such as `10 к долларов` can be stored as 10 som.
+      if (mention.roleCandidate === "vehicleValue" || mention.roleCandidate === "requestedAmount") {
+        byKey.delete(mention.roleCandidate);
+      }
       continue;
     }
     if (mention.roleCandidate === "vehicleValue" && !byKey.has("vehicleValue")) {
@@ -812,6 +819,32 @@ function backfillMoneyFacts(
   }
 
   return [...byKey.values()];
+}
+
+function reconcileMoneyMentionsWithText(
+  mentions: ExtractionResult["moneyMentions"],
+  text: string | undefined
+): ExtractionResult["moneyMentions"] {
+  if (!text || mentions.length === 0) return mentions;
+  const parsedFromText = detectMoneyMentions(text);
+  if (parsedFromText.length === 0) return mentions;
+
+  return mentions.map((mention) => {
+    const source = mention.sourceText.trim().toLocaleLowerCase("ru-RU");
+    const parsed = parsedFromText.find((candidate) =>
+      candidate.sourceText.trim().toLocaleLowerCase("ru-RU") === source
+    );
+    if (!parsed) return mention;
+    return {
+      ...mention,
+      amount: parsed.normalizedAmount,
+      normalizedAmount: parsed.normalizedAmount,
+      currency: parsed.currency,
+      confidence: Math.max(mention.confidence, parsed.confidence),
+      start: parsed.start,
+      end: parsed.end
+    };
+  });
 }
 
 function harmonizeMoneyMentionCurrencies(

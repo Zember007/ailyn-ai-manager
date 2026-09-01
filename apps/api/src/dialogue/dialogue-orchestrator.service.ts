@@ -137,6 +137,11 @@ export class DialogueOrchestratorService {
         attachments: message.attachments,
         dialogueContext
       });
+      const clientQuestions = extraction.questions.length > 0
+        ? extraction.questions
+        : (extraction.turnKind === "question" || extraction.turnKind === "mixed") && extractionText
+          ? [{ text: extractionText, topic: "general" }]
+          : [];
 
       void this.logs.debug("dialogue.receive", "Extraction completed", {
         conversationId,
@@ -156,6 +161,10 @@ export class DialogueOrchestratorService {
       });
       const incomingFacts: Partial<ApplicationFacts> = { language: extraction.language };
       for (const fact of extraction.facts) {
+        // An information request is not an instruction to switch the client's
+        // selected programme. For example, “А без изъятия?” asks for an
+        // explanation of the alternative rather than selecting it.
+        if (clientQuestions.length > 0 && fact.key === "requestedProgram") continue;
         if (!shouldAcceptExtractedFact(fact, extraction, application.facts, proposedRoute, acceptedRoute)) continue;
         (incomingFacts as Record<string, unknown>)[fact.key] = fact.value;
       }
@@ -280,11 +289,6 @@ export class DialogueOrchestratorService {
         }
       });
 
-      const clientQuestions = extraction.questions.length > 0
-        ? extraction.questions
-        : (extraction.turnKind === "question" || extraction.turnKind === "mixed") && extractionText
-          ? [{ text: extractionText, topic: "general" }]
-          : [];
       const knowledgeAnswers = this.knowledge
         ? await this.knowledge.resolve(clientQuestions, extraction.language === "kg" ? "kg" : "ru")
         : [];
