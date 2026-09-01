@@ -110,6 +110,10 @@ export class ResponsePlanService {
   ): string[] {
     if (intents.includes("complaint")) return [];
     if (["refuse", "redirect_existing_contract", "pause", "target_reached", "on_the_way", "arrived"].includes(decision.nextAction)) return [];
+    // The required statement already asks for the corrected year. Adding the
+    // generic collection prompt duplicates that question and can make the
+    // correction look optional.
+    if (decision.rulesApplied.includes("future_vehicle_year_correction")) return [];
     const documentFollowUp = buildPartialDocumentFollowUp(facts);
     if (documentFollowUp.length > 0) return documentFollowUp;
     if (isFirstMessage && !shouldSuppressFirstContactIntroduction(decision, facts)) {

@@ -130,7 +130,13 @@ export class RouterAiProvider implements AiProvider {
         },
         { timeoutMs: getStage1Timeout(this.config.routerAiTimeoutMs, 30_000) }
       );
-      return normalizeVisionResult(JSON.parse(response.choices?.[0]?.message?.content ?? "{}"));
+      const result = normalizeVisionResult(JSON.parse(response.choices?.[0]?.message?.content ?? "{}"));
+      // A filename explicitly identifying a passport/ID is a safe fallback for
+      // an otherwise unreadable Vision classification. Do not fabricate OCR
+      // fields: only preserve the model's extracted facts.
+      if (result.type !== "unknown") return result;
+      const fallback = inferAttachmentVision(input);
+      return fallback.type === "unknown" ? result : { ...fallback, extractedFacts: result.extractedFacts };
     } catch (error) {
       this.logger.warn(`RouterAI vision fallback activated: ${formatError(error)}`);
       return inferAttachmentVision(input);
@@ -162,10 +168,27 @@ function supplementExplicitPendingProgram(result: ExtractionResult, input: Extra
   const value = /без\s+из[ъь]?ятия/.test(text) ? "without_storage" : /(?:на\s+)?стоянк|с\s+постановк/.test(text) ? "parking" : undefined;
     if (value) additions.push({ key: "requestedProgram", value, confidence: 1 });
   }
-  const localMoney = resolveMoneyFacts({ text: input.text, currentFacts: input.dialogueContext?.currentFacts ?? {} });
-  const moneyMentions = result.moneyMentions.length > 0 ? result.moneyMentions : localMoney.mentions;
-  if (!additions.length && intents.length === result.intents.length && moneyMentions === result.moneyMentions) return result;
-  return { ...result, intents: [...new Set(intents)], facts: [...result.facts, ...additions], moneyMentions, changedFacts: [...result.changedFacts, ...additions.map((fact) => ({ key: fact.key, newValue: fact.value }))] };
+  const localMoney = resolveMoneyFacts({
+    text: input.text,
+    currentFacts: input.dialogueContext?.currentFacts ?? {},
+    pendingFacts: input.dialogueContext?.pendingFacts.filter((fact): fact is keyof ApplicationFacts => typeof fact === "string")
+  });
+  // A single amount is an answer to the current money question.  RouterAI still
+  // extracts the number; this bounded reconciliation only prevents a generic
+  // phrase such as "примерно 200 000 сом" from being assigned to the other
+  // money field and then triggering a false recovery prompt.
+  const pendingMoneyFact = input.dialogueContext?.pendingFacts.length === 1 &&
+    (input.dialogueContext.pendingFacts[0] === "vehicleValue" || input.dialogueContext.pendingFacts[0] === "requestedAmount")
+    ? input.dialogueContext.pendingFacts[0]
+    : undefined;
+  const moneyMentions = pendingMoneyFact && result.moneyMentions.length === 1
+    ? [{ ...result.moneyMentions[0], roleCandidate: pendingMoneyFact }]
+    : result.moneyMentions.length > 0 ? result.moneyMentions : localMoney.mentions;
+  const fallbackQuestions = result.questions.length === 0 && looksLikeClientQuestion(input.text ?? "")
+    ? detectQuestions(input.text ?? "")
+    : result.questions;
+  if (!additions.length && intents.length === result.intents.length && moneyMentions === result.moneyMentions && fallbackQuestions === result.questions) return result;
+  return { ...result, intents: [...new Set(intents)], questions: fallbackQuestions, facts: [...result.facts, ...additions], moneyMentions, changedFacts: [...result.changedFacts, ...additions.map((fact) => ({ key: fact.key, newValue: fact.value }))] };
 }
 
 function buildVisionPromptInput(input: VisionInput): Record<string, unknown> {
@@ -454,6 +477,10 @@ function parsePhoneNumber(text: string): string | undefined {
 function detectQuestions(text: string): ExtractionResult["questions"] {
   const segments = text.split(/[?;]+/).map((segment) => segment.trim()).filter(Boolean);
   return segments.map((segment) => ({ text: segment, topic: questionTopic(segment) }));
+}
+
+function looksLikeClientQuestion(text: string): boolean {
+  return /(?:\?\s*$|^\s*(?:что|какая|какой|какие|где|когда|как|можно|почему|сколько)\b|\bчто\s+(?:вообще\s+)?такое\b)/iu.test(text.trim());
 }
 
 function questionTopic(text: string): string {
@@ -830,10 +857,11 @@ function normalizeFacts(value: unknown): ExtractionResult["facts"] {
       return [];
     }
     const key = item.key as keyof ApplicationFacts;
+    const normalizedValue = normalizeApplicationFactValue(key, item.value);
     return [
       {
         key,
-        value: item.value,
+        value: normalizedValue,
         confidence: typeof item.confidence === "number" ? item.confidence : 0
       }
     ];
@@ -851,8 +879,24 @@ function normalizeChangedFacts(value: unknown): ExtractionResult["changedFacts"]
     if (!applicationFactKeys.has(item.key)) {
       return [];
     }
-    return [{ key: item.key as keyof ApplicationFacts, newValue: item.newValue }];
+    const key = item.key as keyof ApplicationFacts;
+    return [{ key, newValue: normalizeApplicationFactValue(key, item.newValue) }];
   });
+}
+
+// RouterAI occasionally serializes a structured numeric value as a JSON string.
+// This is deterministic post-processing of a value RouterAI already extracted,
+// not local natural-language interpretation. Without it, a future vehicle year
+// is silently rejected by the route validator before the business rule can ask
+// the client to correct the typo.
+function normalizeApplicationFactValue(key: keyof ApplicationFacts, value: unknown): unknown {
+  if (key !== "vehicleYear" && key !== "vehicleValue" && key !== "requestedAmount" && key !== "reportedInvalidVehicleYear") {
+    return value;
+  }
+  if (typeof value === "number") return value;
+  if (typeof value !== "string") return value;
+  const normalized = value.trim().replace(/[\s,]/g, "");
+  return /^\d+$/.test(normalized) ? Number(normalized) : value;
 }
 
 function normalizeRouteProposal(value: unknown): RouteProposal {

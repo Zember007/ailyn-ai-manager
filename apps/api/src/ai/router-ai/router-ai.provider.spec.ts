@@ -38,6 +38,32 @@ describe("RouterAiProvider", () => {
     });
   });
 
+  it("keeps a future year returned as a JSON string so business rules can request a correction", async () => {
+    const client = {
+      isConfigured: vi.fn().mockReturnValue(true),
+      createChatCompletion: vi.fn().mockResolvedValue({
+        choices: [{ message: { content: JSON.stringify({
+          language: "ru",
+          facts: [
+            { key: "vehicleMake", value: "Toyota", confidence: 0.99 },
+            { key: "vehicleModel", value: "Camry", confidence: 0.99 },
+            { key: "vehicleYear", value: "2032", confidence: 0.99 }
+          ],
+          changedFacts: [{ key: "vehicleYear", newValue: "2032" }]
+        }) } }]
+      })
+    } as any;
+
+    const result = await new RouterAiProvider(client).extract({
+      text: "Toyota Camry 2032 года.",
+      attachments: [],
+      facts: {}
+    } as any);
+
+    expect(result.facts).toContainEqual(expect.objectContaining({ key: "vehicleYear", value: 2032 }));
+    expect(result.changedFacts).toContainEqual({ key: "vehicleYear", newValue: 2032 });
+  });
+
   it("passes bounded dialogue context to RouterAI and preserves its route proposal", async () => {
     const dialogueContext = {
       summary: "Known vehicle and requested amount; deterministic state asks for documents.",
@@ -588,6 +614,18 @@ describe("RouterAiProvider", () => {
     expect(request.messages[1].content).toEqual(expect.arrayContaining([
       expect.objectContaining({ type: "image_url", image_url: { url: `data:image/jpeg;base64,${jpegBytes.toString("base64")}` } })
     ]));
+  });
+
+  it("uses an explicit passport filename when Vision returns unknown without inventing facts", async () => {
+    const client = {
+      isConfigured: vi.fn().mockReturnValue(true),
+      createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ type: "unknown", quality: "unknown", extractedFacts: [] }) } }] })
+    } as any;
+    const result = await new RouterAiProvider(client).analyzeImage({
+      attachment: { id: "id", fileName: "Кыргыз_паспорту_details_page.jpg", mimeType: "image/jpeg", contentBase64: Buffer.from([0xff, 0xd8, 0xff, 0xd9]).toString("base64") }
+    });
+
+    expect(result).toEqual({ type: "id_front", quality: "good", extractedFacts: [] });
   });
 
   it("falls back to local response when RouterAI errors", async () => {

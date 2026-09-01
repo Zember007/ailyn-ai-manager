@@ -74,13 +74,13 @@ export class MessagesController {
         })),
         ...files.map((file) => ({
           id: `upload-${crypto.randomUUID()}`,
-          fileName: file.originalname,
+          fileName: normalizeUploadFileName(file.originalname),
           mimeType: file.mimetype,
           contentBase64: file.buffer.toString("base64"),
           textContent: extractTextContent(file.mimetype, file.buffer),
           metadata: {
             byteSize: file.size,
-            storageKey: `web-test/${Date.now()}-${sanitizeFileName(file.originalname)}`
+            storageKey: `web-test/${Date.now()}-${sanitizeFileName(normalizeUploadFileName(file.originalname))}`
           }
         }))
       ].map((attachment) => ({
@@ -133,6 +133,15 @@ function normalizeBody(body: TestChatBody): TestChatBody {
 function sanitizeFileName(fileName: string): string {
   const normalized = fileName.trim().replace(/\s+/g, "-");
   return normalized.replace(/[^a-zA-Z0-9._-]/g, "").slice(0, 120) || "upload.bin";
+}
+
+function normalizeUploadFileName(fileName: string): string {
+  // Multipart parsers may expose an UTF-8 filename as Latin-1 mojibake.  Keep
+  // the client-visible name intact; the normalized value also lets the safe
+  // document fallback use an explicit "паспорт" name when Vision is uncertain.
+  if (!/[ÐÑ]/u.test(fileName)) return fileName;
+  const decoded = Buffer.from(fileName, "latin1").toString("utf8");
+  return decoded.includes("�") ? fileName : decoded;
 }
 
 function extractTextContent(mimeType: string, buffer: Buffer): string | undefined {

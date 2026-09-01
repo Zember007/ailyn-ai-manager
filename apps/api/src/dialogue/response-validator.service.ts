@@ -60,7 +60,10 @@ export class ResponseValidatorService {
       ];
       if (!requiredVisitParts.every((part) => message.includes(part))) errors.push("incomplete_visit_confirmation");
     }
-    if (plan && !["target_reached", "refuse", "redirect_existing_contract", "pause", "on_the_way", "arrived"].includes(decision.nextAction) && !(plan.nextQuestions.length || message.includes("?"))) errors.push("missing_next_action");
+    const hasRequiredDirective = (plan?.requiredStatements ?? []).some((statement) =>
+      !statement.startsWith("Попросить") && message.includes(statement)
+    );
+    if (plan && !["target_reached", "refuse", "redirect_existing_contract", "pause", "on_the_way", "arrived"].includes(decision.nextAction) && !(plan.nextQuestions.length || hasRequiredDirective || message.includes("?"))) errors.push("missing_next_action");
     if (decision.nextAction === "refuse" && /(?:подскажите|уточните|пришлите|какая\s+|какой\s+|сможет\s+ли|когда\s+будет|вас\s+интересует)/i.test(message)) {
       errors.push("unexpected_followup_after_refusal");
     }

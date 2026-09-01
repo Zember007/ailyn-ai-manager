@@ -26,6 +26,16 @@ describe("ResponsePlanService first contact", () => {
     expect(plan.nextQuestions.join(" ")).not.toContain("ориентировочную стоимость");
   });
 
+  it("prioritizes the exact correction for a future vehicle year over the next collection question", () => {
+    const service = new ResponsePlanService();
+    const facts = { vehicleMake: "Toyota", vehicleModel: "Camry", reportedInvalidVehicleYear: 2032 } as const;
+    const plan = service.build({ facts, decision: evaluateApplication(facts, { currentYear: 2026 }), isFirstMessage: true, questions: [] });
+    const correction = "Подскажите, пожалуйста, Вы, возможно, допустили опечатку. Автомобиля 2032 года выпуска пока не существует. Напишите, пожалуйста, правильный год выпуска автомобиля.";
+
+    expect(plan.requiredStatements).toContain(correction);
+    expect(plan.nextQuestions).toEqual([]);
+  });
+
   it("responds to a complaint without repeating collection questions", () => {
     const service = new ResponsePlanService();
     const plan = service.build({ facts: {}, decision: evaluateApplication({}), isFirstMessage: false, questions: [], intents: ["complaint"], supportPhone: "+996 555 000 000" });

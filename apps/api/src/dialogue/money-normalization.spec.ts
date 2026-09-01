@@ -75,4 +75,15 @@ describe("money normalization", () => {
     expect(correctedAmount.requestedAmount).toBe(450_000);
     expect(ambiguousWithPendingValue.vehicleValue).toBeUndefined();
   });
+
+  it("assigns a standalone approximate price to the only pending money field", () => {
+    const result = resolveMoneyFacts({
+      text: "примерно 200000 сом",
+      currentFacts: { requestedAmount: 100_000 },
+      pendingFacts: ["vehicleValue"]
+    });
+
+    expect(result.vehicleValue).toBe(200_000);
+    expect(result.requestedAmount).toBeUndefined();
+  });
 });

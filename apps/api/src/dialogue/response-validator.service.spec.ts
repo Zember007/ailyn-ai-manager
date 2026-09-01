@@ -24,6 +24,24 @@ describe("ResponseValidatorService", () => {
     expect(result.errors).not.toContain("informal_you");
   });
 
+  it("accepts a required correction as the current next action without a duplicate question", () => {
+    const service = new ResponseValidatorService();
+    const correction = "Подскажите, пожалуйста, Вы, возможно, допустили опечатку. Автомобиля 2032 года выпуска пока не существует. Напишите, пожалуйста, правильный год выпуска автомобиля.";
+    const result = service.validate({
+      message: correction,
+      decision: { ...decision, nextAction: "collect_vehicle", requiredStatements: [correction] },
+      plan: {
+        answers: [{ key: "required_statement_0", text: correction, exact: true }],
+        requiredStatements: [correction],
+        nextQuestions: [],
+        validation: { requiresPreliminaryDisclaimer: false, firstMessage: false }
+      } as any
+    });
+
+    expect(result.passed).toBe(true);
+    expect(result.errors).toEqual([]);
+  });
+
   it("rejects a repeated residence question when the fact is already known", () => {
     const service = new ResponseValidatorService();
     const result = service.validate({

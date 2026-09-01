@@ -240,9 +240,10 @@ describe("Dialogue pipeline e2e scenarios", () => {
 
     const answer = await dialogue.uploadDocuments(["id_front", "vehicle_registration_front"]);
 
+    expect(answer).toContain("Спасибо, фото лицевой стороны ID получили.");
     expect(answer).toContain("обратной стороны ID");
     expect(answer).toContain("обратной стороны свидетельства о регистрации ТС");
-    expect(answer).not.toContain("лицевой стороны ID");
+    expect(answer).not.toContain("Пришлите, пожалуйста, фото лицевой стороны ID");
   });
 
   it("continues with family status when the client declines document photos", async () => {
