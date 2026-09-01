@@ -144,6 +144,14 @@ export class RouterAiProvider implements AiProvider {
 function supplementExplicitPendingProgram(result: ExtractionResult, input: ExtractionInput): ExtractionResult {
   const text = (input.text ?? "").toLocaleLowerCase("ru-RU");
   const additions: ExtractionResult["facts"] = [];
+  const intents = [...result.intents];
+  if (/(?:подумаю|позже\s+(?:напиш|отвеч)|пока\s+не\s+решил)/i.test(text)) {
+    additions.push({ key: "clientPaused", value: true, confidence: 1 });
+    intents.push("pause");
+  }
+  if (/(?:охренел|ужасн|безобраз|кошмар|возмут|не\s+устраива)/i.test(text)) intents.push("complaint");
+  const explicitYear = text.match(/\b(19\d{2}|20\d{2})\b/);
+  if (explicitYear && result.facts.every((fact) => fact.key !== "vehicleYear")) additions.push({ key: "vehicleYear", value: Number(explicitYear[1]), confidence: 1 });
   if (result.facts.every((fact) => fact.key !== "declinedDocuments") && /(?:не\s+(?:могу|буду|хочу)|нет\s+возможности)[^.!?]{0,80}(?:документ|фото)/i.test(text)) additions.push({ key: "declinedDocuments", value: true, confidence: 1 });
   if (result.facts.every((fact) => fact.key !== "vehicleInCredit") && /машин[аеу]?[^.!?]{0,30}\s+в\s+кредит/i.test(text)) additions.push({ key: "vehicleInCredit", value: true, confidence: 1 });
   if (!result.facts.some((fact) => fact.key === "existingContractQuestion" && fact.value === true) && /(?:действующ(?:ему|ий)|по\s+договору|проверьте\s+оплату|я\s+оплатил)/i.test(text)) additions.push({ key: "existingContractQuestion", value: true, confidence: 1 });
@@ -154,8 +162,10 @@ function supplementExplicitPendingProgram(result: ExtractionResult, input: Extra
   const value = /без\s+из[ъь]?ятия/.test(text) ? "without_storage" : /(?:на\s+)?стоянк|с\s+постановк/.test(text) ? "parking" : undefined;
     if (value) additions.push({ key: "requestedProgram", value, confidence: 1 });
   }
-  if (!additions.length) return result;
-  return { ...result, facts: [...result.facts, ...additions], changedFacts: [...result.changedFacts, ...additions.map((fact) => ({ key: fact.key, newValue: fact.value }))] };
+  const localMoney = resolveMoneyFacts({ text: input.text, currentFacts: input.dialogueContext?.currentFacts ?? {} });
+  const moneyMentions = result.moneyMentions.length > 0 ? result.moneyMentions : localMoney.mentions;
+  if (!additions.length && intents.length === result.intents.length && moneyMentions === result.moneyMentions) return result;
+  return { ...result, intents: [...new Set(intents)], facts: [...result.facts, ...additions], moneyMentions, changedFacts: [...result.changedFacts, ...additions.map((fact) => ({ key: fact.key, newValue: fact.value }))] };
 }
 
 function buildVisionPromptInput(input: VisionInput): Record<string, unknown> {

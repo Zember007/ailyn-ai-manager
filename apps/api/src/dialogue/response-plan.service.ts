@@ -32,7 +32,8 @@ export class ResponsePlanService {
       ? { key: "first_contact_greeting", text: firstContactIntroduction, exact: true }
       : undefined;
     const specialAnswers = buildSpecialAnswers(input.facts, input.decision, input.questions, input.intents ?? [], input.supportPhone);
-    const decisionAnswers = this.answerDecision(input.decision, input.facts, input.intents ?? [])
+    const deferLegacyFlow = input.questions.length > 0 || input.intents?.some((intent) => ["complaint", "pause", "on_the_way", "arrived"].includes(intent));
+    const decisionAnswers = (deferLegacyFlow ? [] : this.answerDecision(input.decision, input.facts, input.intents ?? []))
       .filter((answer) => !previousAssistantMessages.some((message) => message.includes(answer.text)));
     const requiredAnswers = input.decision.requiredStatements
       .filter(isClientFacingRequiredStatement)
@@ -42,7 +43,7 @@ export class ResponsePlanService {
       .filter((answer): answer is KnowledgeAnswer => Boolean(answer))
       .filter((answer) => !previousAssistantMessages.some((message) => message.includes(answer.text)))
       .map((answer) => ({ topic: answer.key, meaning: answer.text, exactText: answer.text, ...answer }));
-    const nextQuestions = this.nextQuestions(input.decision, input.facts, input.isFirstMessage, input.recovery, input.intents ?? []);
+    const nextQuestions = deferLegacyFlow ? [] : this.nextQuestions(input.decision, input.facts, input.isFirstMessage, input.recovery, input.intents ?? []);
     const hasPersonalLimit = answers.some((answer) => answer.topic === "personal_limits");
     return {
       answers,
@@ -187,6 +188,10 @@ function buildSpecialAnswers(
   supportPhone = "+996 502 108 108"
 ): KnowledgeAnswer[] {
   const answers: KnowledgeAnswer[] = [];
+
+  if (facts.documents?.id_front === "received") {
+    answers.push({ key: "id_front_received", text: "Спасибо, фото лицевой стороны ID получили.", exact: true });
+  }
 
   if (intents.includes("complaint")) {
     answers.push({ key: "complaint", text: `Понимаю, что условия могут вызвать вопросы. Я готова уточнить всё, что важно для Вас. Если удобнее обсудить это с сотрудником, пожалуйста, позвоните по номеру ${supportPhone}.`, exact: true });
