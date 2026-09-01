@@ -47,7 +47,7 @@ export class RouterAiProvider implements AiProvider {
       );
       const parsed = extractionSchema.safeParse(JSON.parse(response.choices?.[0]?.message?.content ?? "{}"));
       if (!parsed.success) throw new Error("RouterAI extraction response does not match structured schema");
-      return normalizeExtractionResult(parsed.data);
+      return normalizeExtractionResult(parsed.data, input);
     } catch (error) {
       this.logger.warn(`RouterAI extraction fallback activated: ${formatError(error)}`);
       return localExtract(input);
@@ -455,10 +455,9 @@ function detectTurnIntents(
   return intents;
 }
 
-function normalizeExtractionResult(payload: unknown): ExtractionResult {
+function normalizeExtractionResult(payload: unknown, input?: ExtractionInput): ExtractionResult {
   const source = isRecord(payload) ? payload : {};
-
-  return {
+  const normalized: ExtractionResult = {
     language: normalizeLanguage(source.language),
     intents: normalizeStringArray(source.intents),
     questions: normalizeQuestions(source.questions),
@@ -469,6 +468,14 @@ function normalizeExtractionResult(payload: unknown): ExtractionResult {
     promptInjectionDetected: source.promptInjectionDetected === true,
     clarificationNeeded: source.clarificationNeeded === true
   };
+
+  if (!input) {
+    return normalized;
+  }
+
+  normalized.moneyMentions = harmonizeMoneyMentionCurrencies(normalized.moneyMentions, input.text);
+  normalized.facts = backfillMoneyFacts(normalized.facts, normalized.moneyMentions);
+  return normalized;
 }
 
 function buildLocalResponse(input: ResponseGenerationInput): string {
@@ -654,6 +661,74 @@ function normalizeMoneyMentions(value: unknown): ExtractionResult["moneyMentions
       end: item.end
     }];
   });
+}
+
+function backfillMoneyFacts(
+  facts: ExtractionResult["facts"],
+  moneyMentions: ExtractionResult["moneyMentions"]
+): ExtractionResult["facts"] {
+  const byKey = new Map<keyof ApplicationFacts, ExtractionResult["facts"][number]>();
+  for (const fact of facts) {
+    byKey.set(fact.key, fact);
+  }
+
+  for (const mention of moneyMentions) {
+    if (mention.currency !== "KGS") {
+      continue;
+    }
+    if (mention.roleCandidate === "vehicleValue" && !byKey.has("vehicleValue")) {
+      byKey.set("vehicleValue", { key: "vehicleValue", value: mention.normalizedAmount, confidence: mention.confidence });
+    }
+    if (mention.roleCandidate === "requestedAmount" && !byKey.has("requestedAmount")) {
+      byKey.set("requestedAmount", { key: "requestedAmount", value: mention.normalizedAmount, confidence: mention.confidence });
+    }
+  }
+
+  return [...byKey.values()];
+}
+
+function harmonizeMoneyMentionCurrencies(
+  mentions: ExtractionResult["moneyMentions"],
+  text: string | undefined
+): ExtractionResult["moneyMentions"] {
+  if (mentions.length !== 2 || !text) {
+    return mentions;
+  }
+
+  const foreignMention = mentions.find((mention) => mention.currency !== "KGS" && hasExplicitCurrencyMarker(mention.sourceText));
+  if (!foreignMention) {
+    return mentions;
+  }
+
+  const inferredMention = mentions.find((mention) =>
+    mention !== foreignMention &&
+    mention.currency === "KGS" &&
+    !hasExplicitCurrencyMarker(mention.sourceText) &&
+    mention.roleCandidate !== "unknown" &&
+    foreignMention.roleCandidate !== "unknown" &&
+    mention.roleCandidate !== foreignMention.roleCandidate
+  );
+  if (!inferredMention) {
+    return mentions;
+  }
+
+  const between = text.slice(
+    Math.min(foreignMention.end, inferredMention.end),
+    Math.max(foreignMention.start, inferredMention.start)
+  );
+  if (/[.!?\n]/.test(between)) {
+    return mentions;
+  }
+
+  return mentions.map((mention) =>
+    mention === inferredMention
+      ? { ...mention, currency: foreignMention.currency, confidence: Math.max(0.7, mention.confidence - 0.08) }
+      : mention
+  );
+}
+
+function hasExplicitCurrencyMarker(sourceText: string): boolean {
+  return /(?:\$|€|₸|₽|\busd\b|\beur\b|\bkzt\b|\brub\b|\bkgs\b|доллар|евро|тенге|сом|руб)/iu.test(sourceText);
 }
 
 function normalizeFacts(value: unknown): ExtractionResult["facts"] {

@@ -10,18 +10,21 @@ import type {
 import type { MoneyCurrencyCode } from "./money-normalization.js";
 
 const NBKR_DAILY_RATES_URL = "https://www.nbkr.kg/XML/daily.xml";
+const NBKR_CACHE_TTL_MS = 30 * 60 * 1000;
+const NBKR_FETCH_TIMEOUT_MS = 1_500;
 
 @Injectable()
 export class DeferredIntegrationsService implements SpeechToTextProvider, FxRateProvider, WorkingCalendarProvider, ManagerNotificationChannel {
+  private fxFeedCache?: { fetchedAt: number; xml: string };
+  private fxFeedPromise?: Promise<string | undefined>;
+
   async transcribe(): Promise<DeferredIntegrationResult<string>> { return { available: false, code: "SPEC_GAP_STT" }; }
   async convertToSom(input: { amount: number; currency: Exclude<MoneyCurrencyCode, "KGS"> }): Promise<FxConversionResult | DeferredIntegrationResult<number>> {
     try {
-      const response = await fetch(NBKR_DAILY_RATES_URL, { headers: { accept: "application/xml,text/xml" } });
-      if (!response.ok) {
+      const xml = await this.loadNbkrFeed();
+      if (!xml) {
         return { available: false, code: "SPEC_GAP_FX" };
       }
-
-      const xml = await response.text();
       const rate = extractNbkrRate(xml, input.currency);
       if (!rate) {
         return { available: false, code: "SPEC_GAP_FX" };
@@ -43,6 +46,46 @@ export class DeferredIntegrationsService implements SpeechToTextProvider, FxRate
   }
   async isWorkingTime(): Promise<DeferredIntegrationResult<boolean>> { return { available: false, code: "SPEC_GAP_CALENDAR" }; }
   async deliver(): Promise<DeferredIntegrationResult<void>> { return { available: false, code: "SPEC_GAP_MANAGER_DELIVERY" }; }
+
+  private async loadNbkrFeed(): Promise<string | undefined> {
+    const cached = this.fxFeedCache;
+    if (cached && Date.now() - cached.fetchedAt < NBKR_CACHE_TTL_MS) {
+      return cached.xml;
+    }
+
+    if (!this.fxFeedPromise) {
+      this.fxFeedPromise = this.fetchNbkrFeed();
+    }
+
+    try {
+      return await this.fxFeedPromise;
+    } finally {
+      this.fxFeedPromise = undefined;
+    }
+  }
+
+  private async fetchNbkrFeed(): Promise<string | undefined> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), NBKR_FETCH_TIMEOUT_MS);
+
+    try {
+      const response = await fetch(NBKR_DAILY_RATES_URL, {
+        headers: { accept: "application/xml,text/xml" },
+        signal: controller.signal
+      });
+      if (!response.ok) {
+        return undefined;
+      }
+
+      const xml = await response.text();
+      this.fxFeedCache = { xml, fetchedAt: Date.now() };
+      return xml;
+    } catch {
+      return undefined;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
 }
 
 function extractNbkrRate(

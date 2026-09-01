@@ -338,6 +338,99 @@ describe("RouterAiProvider", () => {
     ]));
   });
 
+  it("backfills KGS money facts from RouterAI money mentions when facts are sparse", async () => {
+    const client = {
+      isConfigured: vi.fn().mockReturnValue(true),
+      createChatCompletion: vi.fn().mockResolvedValue({
+        model: "routerai-text",
+        choices: [{ message: { content: JSON.stringify({
+          language: "ru",
+          moneyMentions: [
+            {
+              sourceText: "стоит 1500000",
+              amount: 1_500_000,
+              normalizedAmount: 1_500_000,
+              currency: "KGS",
+              roleCandidate: "vehicleValue",
+              confidence: 0.94,
+              start: 12,
+              end: 24
+            },
+            {
+              sourceText: "нужно 500000",
+              amount: 500_000,
+              normalizedAmount: 500_000,
+              currency: "KGS",
+              roleCandidate: "requestedAmount",
+              confidence: 0.94,
+              start: 25,
+              end: 37
+            }
+          ]
+        }) } }]
+      })
+    } as any;
+
+    const provider = new RouterAiProvider(client);
+    const result = await provider.extract({
+      text: "Камри 2022 стоит 1500000, нужно 500000",
+      attachments: [],
+      facts: {}
+    });
+
+    expect(result.facts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: "vehicleValue", value: 1_500_000 }),
+      expect.objectContaining({ key: "requestedAmount", value: 500_000 })
+    ]));
+  });
+
+  it("inherits a shared foreign currency across two short RouterAI money mentions", async () => {
+    const client = {
+      isConfigured: vi.fn().mockReturnValue(true),
+      createChatCompletion: vi.fn().mockResolvedValue({
+        model: "routerai-text",
+        choices: [{ message: { content: JSON.stringify({
+          language: "ru",
+          moneyMentions: [
+            {
+              sourceText: "20 тфыс долларов",
+              amount: 20_000,
+              normalizedAmount: 20_000,
+              currency: "USD",
+              roleCandidate: "vehicleValue",
+              confidence: 0.95,
+              start: 18,
+              end: 34
+            },
+            {
+              sourceText: "10",
+              amount: 10_000,
+              normalizedAmount: 10_000,
+              currency: "KGS",
+              roleCandidate: "requestedAmount",
+              confidence: 0.86,
+              start: 40,
+              end: 42
+            }
+          ]
+        }) } }]
+      })
+    } as any;
+
+    const provider = new RouterAiProvider(client);
+    const result = await provider.extract({
+      text: "камри 2022 стоит 20 тфыс долларов надо 10",
+      attachments: [],
+      facts: {}
+    });
+
+    expect(result.moneyMentions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ sourceText: "20 тфыс долларов", currency: "USD", roleCandidate: "vehicleValue" }),
+      expect.objectContaining({ sourceText: "10", currency: "USD", roleCandidate: "requestedAmount" })
+    ]));
+    expect(result.facts).not.toEqual(expect.arrayContaining([expect.objectContaining({ key: "requestedAmount" })]));
+  });
+
   it("calls RouterAI vision before local attachment inference when configured", async () => {
     const client = {
       isConfigured: vi.fn().mockReturnValue(true),

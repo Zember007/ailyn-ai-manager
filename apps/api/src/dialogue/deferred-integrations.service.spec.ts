@@ -7,7 +7,7 @@ describe("DeferredIntegrationsService FX conversion", () => {
   });
 
   it("converts USD, EUR, and KZT to som using the NBKR daily feed", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+    const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       text: async () => `<?xml version="1.0" encoding="UTF-8"?>
 <CurrencyRates Date="31.08.2026">
@@ -15,7 +15,8 @@ describe("DeferredIntegrationsService FX conversion", () => {
   <Currency ISOCode="EUR"><Nominal>1</Nominal><Value>101.2500</Value></Currency>
   <Currency ISOCode="KZT"><Nominal>10</Nominal><Value>1.7600</Value></Currency>
 </CurrencyRates>`
-    }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
 
     const service = new DeferredIntegrationsService();
 
@@ -37,6 +38,7 @@ describe("DeferredIntegrationsService FX conversion", () => {
       currency: "KZT",
       nominal: 10
     }));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("fails closed when the NBKR feed is unavailable or malformed", async () => {
@@ -51,6 +53,23 @@ describe("DeferredIntegrationsService FX conversion", () => {
       code: "SPEC_GAP_FX"
     });
     await expect(service.convertToSom({ amount: 10_000, currency: "USD" })).resolves.toEqual({
+      available: false,
+      code: "SPEC_GAP_FX"
+    });
+  });
+
+  it("fails closed quickly when the NBKR feed hangs", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn((_url: string, init?: RequestInit) => new Promise((_, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const service = new DeferredIntegrationsService();
+    const pending = service.convertToSom({ amount: 10_000, currency: "USD" });
+    await vi.advanceTimersByTimeAsync(1_500);
+
+    await expect(pending).resolves.toEqual({
       available: false,
       code: "SPEC_GAP_FX"
     });
