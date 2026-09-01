@@ -144,9 +144,12 @@ export class RouterAiProvider implements AiProvider {
   }
 }
 
-// Narrow safety net for an explicit reply to the immediately pending programme
-// question. RouterAI remains the primary interpreter; this only prevents a clear
-// choice from being discarded when the structured response omits that fact.
+// Narrow safety net for an explicit programme choice. RouterAI remains the
+// primary interpreter; this only prevents an unequivocal client choice from
+// being discarded when the structured response omits or malforms that fact.
+// It deliberately does not depend on the current deterministic stage: a
+// terminal decision can leave pendingFacts empty even though a preceding
+// assistant message asked the programme question.
 function supplementExplicitPendingProgram(result: ExtractionResult, input: ExtractionInput): ExtractionResult {
   const text = (input.text ?? "").toLocaleLowerCase("ru-RU");
   const additions: ExtractionResult["facts"] = [];
@@ -164,8 +167,11 @@ function supplementExplicitPendingProgram(result: ExtractionResult, input: Extra
   if (!result.facts.some((fact) => fact.key === "existingContractPaymentMessage" && fact.value === true) && /(?:проверьте\s+оплату|я\s+оплатил)/i.test(text)) additions.push({ key: "existingContractPaymentMessage", value: true, confidence: 1 });
   if (!result.facts.some((fact) => fact.key === "familyStatus" && fact.value === "married") && /(?:я\s+)?(?:женат|замужем|в\s+браке)/i.test(text)) additions.push({ key: "familyStatus", value: "married", confidence: 1 });
   if (!result.facts.some((fact) => fact.key === "spouseConsentReady" && fact.value === false) && /согласие[^.!?]{0,30}(?:не\s+готово|нет|не\s+оформлено)/i.test(text)) additions.push({ key: "spouseConsentReady", value: false, confidence: 1 });
-  if (result.facts.every((fact) => fact.key !== "requestedProgram") && input.dialogueContext?.pendingFacts.includes("requestedProgram")) {
-  const value = /без\s+из[ъь]?ятия/.test(text) ? "without_storage" : /(?:на\s+)?стоянк|с\s+постановк/.test(text) ? "parking" : undefined;
+  const hasValidRequestedProgram = result.facts.some((fact) =>
+    fact.key === "requestedProgram" && (fact.value === "without_storage" || fact.value === "parking")
+  );
+  if (!hasValidRequestedProgram) {
+    const value = /без\s+из[ъь]?ятия/.test(text) ? "without_storage" : /(?:на\s+)?стоянк|с\s+постановк/.test(text) ? "parking" : undefined;
     if (value) additions.push({ key: "requestedProgram", value, confidence: 1 });
   }
   const localMoney = resolveMoneyFacts({

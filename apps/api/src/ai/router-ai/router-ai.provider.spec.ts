@@ -261,6 +261,35 @@ describe("RouterAiProvider", () => {
     ]));
   });
 
+  it("keeps an explicit programme choice when the preceding decision is terminal", async () => {
+    const client = {
+      isConfigured: vi.fn().mockReturnValue(true),
+      createChatCompletion: vi.fn().mockResolvedValue({
+        choices: [{ message: { content: JSON.stringify({ language: "ru", facts: [] }) } }]
+      })
+    } as any;
+
+    const result = await new RouterAiProvider(client).extract({
+      text: "без изъятия",
+      attachments: [],
+      dialogueContext: {
+        summary: "Deterministic state: status=refuse.",
+        recentMessages: [
+          { author: "ai", text: "Подскажите, пожалуйста, Вас интересует займ без изъятия автомобиля или с постановкой автомобиля на охраняемую стоянку?" }
+        ],
+        currentFacts: { vehicleRegistrationRegion: "10" },
+        pendingFacts: [],
+        decisionEnvelope: { allowedNextFacts: [] }
+      }
+    });
+
+    expect(result.facts).toContainEqual(expect.objectContaining({
+      key: "requestedProgram",
+      value: "without_storage",
+      confidence: 1
+    }));
+  });
+
   it("parses decimal millions and compact thousands without losing magnitude", async () => {
     const provider = new RouterAiProvider({ isConfigured: vi.fn().mockReturnValue(false) } as any);
     const result = await provider.extract({

@@ -213,6 +213,9 @@ export class DialogueOrchestratorService {
         currentFacts: application.facts,
         pendingFacts,
         changedFactKeys,
+        understoodFactKeys: extraction.facts
+          .filter((fact) => isValidRouteFactValue(fact.key, fact.value))
+          .map((fact) => String(fact.key)),
         currentRequiredFacts: decision.requiredFacts.map(String),
         extractionQuestions: extraction.questions.length,
         intents: extraction.intents,
@@ -747,6 +750,7 @@ export function detectRecoveryHint(input: {
   currentFacts: ApplicationFacts;
   pendingFacts: (keyof ApplicationFacts | DocumentCode)[];
   changedFactKeys: string[];
+  understoodFactKeys?: string[];
   currentRequiredFacts: string[];
   extractionQuestions: number;
   intents: string[];
@@ -776,11 +780,14 @@ export function detectRecoveryHint(input: {
     return undefined;
   }
 
-  if (input.changedFactKeys.length === 0 || unresolvedFacts.length === input.pendingFacts.length) {
-    return { unresolvedFacts, reason: "unrecognized_reply" };
-  }
+  // A client may answer a different, but explicit, question from the recent
+  // dialogue. That fact is still useful and must advance the conversation;
+  // do not call it an unrecognised reply merely because the old pending field
+  // remains unresolved. This also covers a repeated confirmation of an
+  // already saved fact, which understandably does not create fact history.
+  if (input.changedFactKeys.length > 0 || (input.understoodFactKeys?.length ?? 0) > 0) return undefined;
 
-  return undefined;
+  return { unresolvedFacts, reason: "unrecognized_reply" };
 }
 
 function sameFactSet(left: string[], right: string[]): boolean {

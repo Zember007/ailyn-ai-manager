@@ -137,6 +137,60 @@ describe("DialogueOrchestratorService", () => {
     expect(recovery).toBeUndefined();
   });
 
+  it("does not recover an old pending field after a clear contextual programme choice", () => {
+    const recovery = detectRecoveryHint({
+      previousFacts: {
+        vehicleMake: "Toyota",
+        vehicleModel: "Camry",
+        vehicleYear: 2021
+      },
+      currentFacts: {
+        vehicleMake: "Toyota",
+        vehicleModel: "Camry",
+        vehicleYear: 2021,
+        requestedProgram: "without_storage"
+      },
+      pendingFacts: ["vehicleValue"],
+      changedFactKeys: ["requestedProgram"],
+      currentRequiredFacts: ["vehicleValue"],
+      extractionQuestions: 0,
+      intents: [],
+      text: "без изъятия",
+      attachments: [],
+      attachmentIssueDetected: false
+    });
+
+    expect(recovery).toBeUndefined();
+  });
+
+  it("does not recover an old pending field after the client repeats a saved programme choice", () => {
+    const recovery = detectRecoveryHint({
+      previousFacts: {
+        vehicleMake: "Toyota",
+        vehicleModel: "Camry",
+        vehicleYear: 2021,
+        requestedProgram: "without_storage"
+      },
+      currentFacts: {
+        vehicleMake: "Toyota",
+        vehicleModel: "Camry",
+        vehicleYear: 2021,
+        requestedProgram: "without_storage"
+      },
+      pendingFacts: ["vehicleValue"],
+      changedFactKeys: [],
+      understoodFactKeys: ["requestedProgram"],
+      currentRequiredFacts: ["vehicleValue"],
+      extractionQuestions: 0,
+      intents: [],
+      text: "займ без изъятия",
+      attachments: [],
+      attachmentIssueDetected: false
+    });
+
+    expect(recovery).toBeUndefined();
+  });
+
   it("returns a refreshed conversation snapshot after persisting the inbound and ai reply", async () => {
     const initialConversation = {
       id: "conv-1",
