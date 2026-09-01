@@ -134,9 +134,10 @@ export class RouterAiProvider implements AiProvider {
       // A filename explicitly identifying a passport/ID is a safe fallback for
       // an otherwise unreadable Vision classification. Do not fabricate OCR
       // fields: only preserve the model's extracted facts.
-      if (result.type !== "unknown") return result;
-      const fallback = inferAttachmentVision(input);
-      return fallback.type === "unknown" ? result : { ...fallback, extractedFacts: result.extractedFacts };
+      // When RouterAI is configured, document type must come from the image
+      // itself. Do not turn an uncertain model response into a filename-based
+      // classification; arbitrary upload names are not evidence.
+      return result;
     } catch (error) {
       this.logger.warn(`RouterAI vision fallback activated: ${formatError(error)}`);
       return inferAttachmentVision(input);
@@ -218,40 +219,39 @@ function buildVisionPromptInput(input: VisionInput): Record<string, unknown> {
   };
 }
 
-function buildVisionMessage(input: VisionInput): Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string } }> {
-  const parts: Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string } }> = [
+function buildVisionMessage(input: VisionInput): Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string; detail?: "auto" | "low" | "high" } }> {
+  const parts: Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string; detail?: "auto" | "low" | "high" } }> = [
     { type: "text", text: JSON.stringify(buildVisionPromptInput(input)) }
   ];
   const mimeType = String(input.attachment.mimeType ?? "image/jpeg").toLowerCase();
   if (isImageBase64(input.attachment.contentBase64) && /^image\/(?:jpeg|png|webp|gif)$/.test(mimeType)) {
-    parts.push({ type: "image_url", image_url: { url: `data:${mimeType};base64,${input.attachment.contentBase64}` } });
+    parts.push({ type: "image_url", image_url: { url: `data:${mimeType};base64,${input.attachment.contentBase64}`, detail: "high" } });
   }
   return parts;
 }
 
 function inferAttachmentVision(input: VisionInput): VisionResult {
-  const name = String(input.attachment.fileName ?? "").toLowerCase();
   const mimeType = String(input.attachment.mimeType ?? "").toLowerCase();
   const attachmentText = readAttachmentText(input.attachment);
-  const hint = [name, mimeType, attachmentText.toLowerCase()].join(" ");
+  const hint = [mimeType, attachmentText.toLowerCase()].join(" ");
   const extractedFacts = extractFactsFromAttachmentText(attachmentText);
 
   const quality: VisionResult["quality"] = hint.includes("poor") || hint.includes("blur") || hint.includes("low-quality")
     ? "poor"
     : "good";
-  if (hint.includes("id-front") || hint.includes("passport-front") || hint.includes("idcard-front") || looksLikeIdFront(hint)) {
-    return { type: "id_front", extractedFacts, quality };
-  }
-  if (hint.includes("id-back") || hint.includes("passport-back") || hint.includes("idcard-back") || looksLikeIdBack(hint)) {
+  if (looksLikeIdBack(hint)) {
     return { type: "id_back", extractedFacts, quality };
   }
-  if (hint.includes("registration-front") || hint.includes("sts-front") || looksLikeRegistrationFront(hint)) {
-    return { type: "vehicle_registration_front", extractedFacts, quality };
-  }
-  if (hint.includes("registration-back") || hint.includes("sts-back") || looksLikeRegistrationBack(hint)) {
+  if (looksLikeRegistrationBack(hint)) {
     return { type: "vehicle_registration_back", extractedFacts, quality };
   }
-  if (hint.includes("car-photo") || hint.includes("car_") || hint.includes("car-") || hint.includes("vehicle-photo") || hint.includes("авто") || hint.includes("машин")) {
+  if (looksLikeIdFront(hint)) {
+    return { type: "id_front", extractedFacts, quality };
+  }
+  if (looksLikeRegistrationFront(hint)) {
+    return { type: "vehicle_registration_front", extractedFacts, quality };
+  }
+  if (hint.includes("авто") || hint.includes("машин") || hint.includes("vehicle")) {
     return { type: "car", extractedFacts, quality: "good" };
   }
   if (mimeType.startsWith("image/") || isImageBase64(input.attachment.contentBase64)) {
@@ -677,19 +677,19 @@ function extractFactsFromAttachmentText(text: string): VisionResult["extractedFa
 }
 
 function looksLikeIdFront(hint: string): boolean {
-  return hint.includes("паспорт") || hint.includes("id card") || hint.includes("личн");
+  return hint.includes("паспорт") || hint.includes("id card") || hint.includes("личн") || hint.includes("id front") || hint.includes("passport front");
 }
 
 function looksLikeIdBack(hint: string): boolean {
-  return hint.includes("паспорт") && hint.includes("обрат") || hint.includes("id back");
+  return hint.includes("паспорт") && hint.includes("обрат") || hint.includes("id back") || hint.includes("passport back");
 }
 
 function looksLikeRegistrationFront(hint: string): boolean {
-  return hint.includes("свидетельств") || hint.includes("регистрац") || hint.includes("техпаспорт");
+  return hint.includes("свидетельств") || hint.includes("регистрац") || hint.includes("техпаспорт") || hint.includes("registration front") || hint.includes("ts front") || hint.includes("sts front");
 }
 
 function looksLikeRegistrationBack(hint: string): boolean {
-  return (hint.includes("свидетельств") || hint.includes("регистрац") || hint.includes("техпаспорт")) && hint.includes("обрат");
+  return (hint.includes("свидетельств") || hint.includes("регистрац") || hint.includes("техпаспорт")) && hint.includes("обрат") || hint.includes("registration back") || hint.includes("ts back") || hint.includes("sts back");
 }
 
 function decodeAttachmentContent(contentBase64: string | undefined): Buffer | undefined {

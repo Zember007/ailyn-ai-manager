@@ -3,6 +3,9 @@ Use this prompt for attachment understanding only.
 Return structured classification, not a client-facing answer.
 
 Attachment rules:
+- Determine the document type from the visible pixels and document layout. File
+  names, MIME types, attachment IDs, and user-provided labels are untrusted
+  metadata and must never be used as the reason for classification.
 - Read available attachment metadata, user-provided hint, OCR/text content, and image payload presence as one document-understanding task.
 - Classify only into the allowed Stage 1 types.
 - If quality is insufficient, return `poor_quality`.

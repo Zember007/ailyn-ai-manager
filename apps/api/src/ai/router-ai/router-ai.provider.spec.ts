@@ -493,8 +493,9 @@ describe("RouterAiProvider", () => {
     const poorRegistration = await provider.analyzeImage({
       attachment: {
         id: "att-reg",
-        fileName: "registration-front-poor.jpg",
-        mimeType: "image/jpeg"
+        fileName: "arbitrary-upload-name.jpg",
+        mimeType: "image/jpeg",
+        textContent: "Свидетельство о регистрации ТС; poor quality"
       }
     });
 
@@ -707,7 +708,7 @@ describe("RouterAiProvider", () => {
     await provider.analyzeImage({ attachment: { id: "id", fileName: "id.jpg", mimeType: "image/jpeg", contentBase64: jpegBytes.toString("base64") } });
     const request = client.createChatCompletion.mock.calls[0]?.[0];
     expect(request.messages[1].content).toEqual(expect.arrayContaining([
-      expect.objectContaining({ type: "image_url", image_url: { url: `data:image/jpeg;base64,${jpegBytes.toString("base64")}` } })
+      expect.objectContaining({ type: "image_url", image_url: expect.objectContaining({ url: `data:image/jpeg;base64,${jpegBytes.toString("base64")}`, detail: "high" }) })
     ]));
   });
 
@@ -720,7 +721,23 @@ describe("RouterAiProvider", () => {
       attachment: { id: "id", fileName: "Кыргыз_паспорту_details_page.jpg", mimeType: "image/jpeg", contentBase64: Buffer.from([0xff, 0xd8, 0xff, 0xd9]).toString("base64") }
     });
 
-    expect(result).toEqual({ type: "id_front", quality: "good", extractedFacts: [] });
+    expect(result).toEqual({ type: "unknown", quality: "unknown", extractedFacts: [] });
+  });
+
+  it("keeps the Vision classification independent from the upload filename", async () => {
+    const client = {
+      isConfigured: vi.fn().mockReturnValue(true),
+      createChatCompletion: vi.fn().mockResolvedValue({
+        choices: [{ message: { content: JSON.stringify({ type: "id_front", quality: "good", extractedFacts: [] }) } }]
+      })
+    } as any;
+
+    const result = await new RouterAiProvider(client).analyzeImage({
+      attachment: { id: "id_back", fileName: "id_back.png", mimeType: "image/png", contentBase64: "iVBORw0KGgo=" }
+    });
+
+    expect(result.type).toBe("id_front");
+    expect(result.quality).toBe("good");
   });
 
   it("falls back to local response when RouterAI errors", async () => {

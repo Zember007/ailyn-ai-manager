@@ -447,7 +447,13 @@ export class DialogueOrchestratorService {
         hasRecognitionIssue = true;
       }
       for (const fact of vision.extractedFacts) {
-        (extractedFacts as Record<string, unknown>)[fact.key] = fact.value;
+        // Only the readable front side of the ID is authoritative for the
+        // borrower's lead-card name. Some Vision responses also echo a name
+        // from the registration certificate; keep that from overwriting the
+        // identity field and normalize an occasional ownerFullName label.
+        if (fact.key === "fullName" && docCode !== "id_front") continue;
+        const factKey = docCode === "id_front" && fact.key === "ownerFullName" ? "fullName" : fact.key;
+        (extractedFacts as Record<string, unknown>)[factKey] = fact.value;
       }
       await this.store.addAttachment({
         conversationId,

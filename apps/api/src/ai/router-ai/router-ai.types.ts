@@ -5,7 +5,7 @@ export interface RouterAiChatMessage {
 
 export type RouterAiContentPart =
   | { type: "text"; text: string }
-  | { type: "image_url"; image_url: { url: string } };
+  | { type: "image_url"; image_url: { url: string; detail?: "auto" | "low" | "high" } };
 
 export interface RouterAiChatRequest {
   model: string;
