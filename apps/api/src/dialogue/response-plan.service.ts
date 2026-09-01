@@ -210,7 +210,9 @@ function buildSpecialAnswers(
     });
   }
 
-  if (facts.familyStatus === "married" && decision.nextAction !== "refuse") {
+  const effectiveFamilyStatus = facts.borrowerIsOwner === false ? facts.ownerFamilyStatus : facts.familyStatus;
+
+  if (effectiveFamilyStatus === "married" && decision.nextAction !== "refuse") {
     answers.push({
       key: "family_married_guidance",
       text: "Для оформления потребуется оригинал нотариального согласия супруга или супруги. Его можно оформить у любого нотариуса или у нотариуса в нашем здании. Ориентировочная стоимость оформления согласия — 1500 сом.",
@@ -218,7 +220,7 @@ function buildSpecialAnswers(
     });
   }
 
-  if (facts.familyStatus === "single") {
+  if (effectiveFamilyStatus === "single") {
     answers.push({
       key: "family_single_guidance",
       text: "Поняла, нотариальное согласие супруга или супруги в таком случае не требуется. Можем перейти к следующему этапу оформления.",
@@ -226,7 +228,7 @@ function buildSpecialAnswers(
     });
   }
 
-  if (facts.familyStatus === "divorced" && facts.vehicleBoughtDuringMarriage === undefined) {
+  if (effectiveFamilyStatus === "divorced" && facts.vehicleBoughtDuringMarriage === undefined) {
     answers.push({
       key: "family_divorced_guidance",
       text: "Нотариальное согласие бывшего супруга или супруги не требуется. Подскажите, пожалуйста, автомобиль был приобретён во время брака или после развода?",
@@ -234,7 +236,7 @@ function buildSpecialAnswers(
     });
   }
 
-  if (facts.familyStatus === "divorced" && facts.vehicleBoughtDuringMarriage) {
+  if (effectiveFamilyStatus === "divorced" && facts.vehicleBoughtDuringMarriage) {
     answers.push({
       key: "family_divorce_certificate",
       text: "Для визита потребуется оригинал свидетельства о расторжении брака. Если удобно, можете заранее прислать его фотографию.",
@@ -242,7 +244,7 @@ function buildSpecialAnswers(
     });
   }
 
-  if (facts.familyStatus === "divorced" && facts.vehicleBoughtDuringMarriage === false) {
+  if (effectiveFamilyStatus === "divorced" && facts.vehicleBoughtDuringMarriage === false) {
     answers.push({
       key: "family_after_divorce_guidance",
       text: "Поняла, в таком случае свидетельство о расторжении брака для этого условия не требуется. Можем перейти к следующему этапу оформления.",

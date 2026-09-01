@@ -43,6 +43,13 @@ describe("ResponsePlanService first contact", () => {
     expect(plan.nextQuestions).toEqual([]);
   });
 
+  it("uses the owner family status when the borrower is not the owner", () => {
+    const service = new ResponsePlanService();
+    const facts = { borrowerIsOwner: false, ownerFamilyStatus: "single" as const };
+    const plan = service.build({ facts, decision: evaluateApplication(facts), isFirstMessage: false, questions: [] });
+    expect(plan.answers.map((answer) => answer.exactText).join(" ")).toContain("нотариальное согласие супруга или супруги в таком случае не требуется");
+  });
+
   it("clarifies a vague residence answer instead of repeating the generic question", () => {
     const service = new ResponsePlanService();
     const facts = {

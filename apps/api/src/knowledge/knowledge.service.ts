@@ -267,6 +267,13 @@ const seeds: Omit<KnowledgeItemDto, "id">[] = [
     priority: 90, status: "approved", version: 1, active: true
   },
   {
+    key: "spouse_consent_purpose",
+    category: "documents",
+    aliases: ["spouse_consent_purpose", "зачем нотариальное согласие", "для чего нотариальное согласие"],
+    answerRu: "Нотариальное согласие требуется только если собственник автомобиля состоит в браке. Оно подтверждает, что супруг или супруга не возражает против оформления займа под залог автомобиля.",
+    priority: 95, status: "approved", version: 1, active: true
+  },
+  {
     key: "foreign_currency_disbursement",
     category: "finance",
     aliases: ["займ в долларах", "выдаёте доллары", "в иностранной валюте"],

@@ -145,11 +145,12 @@ export class DialogueOrchestratorService {
       // recovery from replacing a successfully understood short answer with
       // the previous question.
       const extraction = alignExtractionToPendingFacts(rawExtraction, pendingFacts, application.facts);
-      const clientQuestions = extraction.questions.length > 0
+      const detectedQuestions = extraction.questions.length > 0
         ? extraction.questions
         : (extraction.turnKind === "question" || extraction.turnKind === "mixed") && extractionText
           ? [{ text: extractionText, topic: "general" }]
           : [];
+      const clientQuestions = routeQuestionsByContext(detectedQuestions, pendingFacts);
 
       void this.logs.debug("dialogue.receive", "Extraction completed", {
         conversationId,
@@ -541,6 +542,22 @@ export function alignExtractionToPendingFacts(
     : { ...baseRoute, fact: mapFactKey(baseRoute.fact) };
   if (facts === extraction.facts && changedFacts === extraction.changedFacts && route === extraction.route) return extraction;
   return { ...extraction, facts, changedFacts, route };
+}
+
+function routeQuestionsByContext(
+  questions: { text: string; topic: string }[],
+  pendingFacts: (keyof ApplicationFacts | DocumentCode)[]
+): { text: string; topic: string }[] {
+  const pending = new Set(pendingFacts.map(String));
+  // An elliptical question such as “зачем это нужно?” inherits the subject
+  // from the active deterministic field. The cheap extraction model supplies
+  // the question; this only routes it to the corresponding approved KB item.
+  if (pending.has("spouseConsentReady")) {
+    return questions.map((question) => question.topic === "general"
+      ? { ...question, topic: "spouse_consent_purpose" }
+      : question);
+  }
+  return questions;
 }
 
 export function buildDialogueContext(input: {
