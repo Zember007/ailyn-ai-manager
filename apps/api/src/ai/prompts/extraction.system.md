@@ -44,6 +44,7 @@ Extraction rules:
 - Do not generate any client-facing answer text.
 - Do not invent document fields if the document is unreadable or missing.
 - `pendingFacts` contains the deterministic fields requested on the previous turn. Use it to interpret short contextual replies, but never invent a category when the reply is ambiguous.
+- Bind a recognized answer to the active field name from `pendingFacts`, even when the semantic concept has both a borrower and an owner variant. For example, if `pendingFacts` contains `ownerFamilyStatus`, a clear marital-status answer belongs in `ownerFamilyStatus` (not the generic `familyStatus`). Do the same for any equivalent owner/borrower field pair supplied by the context.
 - Read `dialogueContext` as bounded current conversation state: its compact summary, recent messages, current facts, pending facts, and deterministic decision envelope. Do not assume dialogue outside that supplied context.
 - Propose `route.kind=set_fact` only when the current client turn explicitly or contextually confirms that fact and the fact appears in `decisionEnvelope.allowedNextFacts`.
 - Propose `route.kind=clarify` when the client is addressing an allowed fact but the value cannot be mapped safely.

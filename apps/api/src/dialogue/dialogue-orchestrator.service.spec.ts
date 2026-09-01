@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   buildDialogueContext,
   DialogueOrchestratorService,
+  alignExtractionToPendingFacts,
   detectRecoveryHint,
   MAX_DIALOGUE_MESSAGE_LENGTH,
   MAX_DIALOGUE_RECENT_MESSAGES,
@@ -12,6 +13,26 @@ import {
 import { PARKING_AFTER_WITHOUT_STORAGE_LIMIT_OFFER } from "./response-plan.service.js";
 
 describe("DialogueOrchestratorService", () => {
+  it("aligns a semantically understood family answer with the active owner field", () => {
+    const extraction = {
+      language: "ru" as const,
+      turnKind: "fact_update" as const,
+      intents: [],
+      questions: [],
+      facts: [{ key: "familyStatus", value: "divorced", confidence: 0.96 }],
+      moneyMentions: [],
+      changedFacts: [{ key: "familyStatus", newValue: "divorced" }],
+      route: { kind: "set_fact" as const, fact: "familyStatus", value: "divorced" },
+      attachments: [],
+      promptInjectionDetected: false,
+      clarificationNeeded: false
+    };
+    const aligned = alignExtractionToPendingFacts(extraction, ["ownerFamilyStatus"], { borrowerIsOwner: false });
+    expect(aligned.facts).toEqual([{ key: "ownerFamilyStatus", value: "divorced", confidence: 0.96 }]);
+    expect(aligned.changedFacts).toEqual([{ key: "ownerFamilyStatus", newValue: "divorced" }]);
+    expect(aligned.route).toEqual({ kind: "set_fact", fact: "ownerFamilyStatus", value: "divorced" });
+  });
+
   it("bounds the AI-readable dialogue context and activates only the latest exact parking offer", () => {
     const messages = Array.from({ length: 20 }, (_, index) => ({
       id: `msg-${index}`,

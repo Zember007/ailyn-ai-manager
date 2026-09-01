@@ -132,11 +132,19 @@ export class DialogueOrchestratorService {
         currentFacts: application.facts,
         decision: previousDecision
       });
-      const extraction = await this.ai.getProvider().extract({
+      const rawExtraction = await this.ai.getProvider().extract({
         text: extractionText,
         attachments: message.attachments,
         dialogueContext
       });
+      // The same semantic answer can target different application fields
+      // depending on the active owner context. Keep interpretation in the AI
+      // provider, but align an otherwise valid fact to the field requested by
+      // the deterministic decision (for example familyStatus ->
+      // ownerFamilyStatus when the borrower is not the owner). This prevents
+      // recovery from replacing a successfully understood short answer with
+      // the previous question.
+      const extraction = alignExtractionToPendingFacts(rawExtraction, pendingFacts, application.facts);
       const clientQuestions = extraction.questions.length > 0
         ? extraction.questions
         : (extraction.turnKind === "question" || extraction.turnKind === "mixed") && extractionText
@@ -509,6 +517,31 @@ export const MAX_DIALOGUE_RECENT_MESSAGES = 8;
 export const MAX_DIALOGUE_MESSAGE_LENGTH = 800;
 export const MAX_DIALOGUE_SUMMARY_LENGTH = 1_600;
 const ROUTE_CORRECTION_MIN_CONFIDENCE = 0.9;
+
+export function alignExtractionToPendingFacts(
+  extraction: ExtractionResult,
+  pendingFacts: (keyof ApplicationFacts | DocumentCode)[],
+  currentFacts: ApplicationFacts
+): ExtractionResult {
+  const pending = new Set(pendingFacts.map(String));
+  const mapFactKey = (key: keyof ApplicationFacts): keyof ApplicationFacts => {
+    if (key === "familyStatus" && pending.has("ownerFamilyStatus") && currentFacts.borrowerIsOwner === false) {
+      return "ownerFamilyStatus";
+    }
+    if (key === "ownerFamilyStatus" && pending.has("familyStatus") && currentFacts.borrowerIsOwner !== false) {
+      return "familyStatus";
+    }
+    return key;
+  };
+  const facts = (extraction.facts ?? []).map((fact) => ({ ...fact, key: mapFactKey(fact.key) }));
+  const changedFacts = (extraction.changedFacts ?? []).map((fact) => ({ ...fact, key: mapFactKey(fact.key) }));
+  const baseRoute = extraction.route ?? { kind: "none" as const };
+  const route = baseRoute.kind === "none"
+    ? baseRoute
+    : { ...baseRoute, fact: mapFactKey(baseRoute.fact) };
+  if (facts === extraction.facts && changedFacts === extraction.changedFacts && route === extraction.route) return extraction;
+  return { ...extraction, facts, changedFacts, route };
+}
 
 export function buildDialogueContext(input: {
   messages: Stage1Message[];
