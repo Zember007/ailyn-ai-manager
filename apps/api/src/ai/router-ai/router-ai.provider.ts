@@ -34,6 +34,8 @@ export class RouterAiProvider implements AiProvider {
         {
           model: this.config.routerAiTextModel ?? "routerai-text-model-not-configured",
           temperature: 0,
+          max_tokens: 600,
+          reasoning: { enabled: false },
           response_format: { type: "json_object" },
           messages: [
             {
@@ -45,7 +47,7 @@ export class RouterAiProvider implements AiProvider {
         },
         { timeoutMs: getStage1Timeout(this.config.routerAiTimeoutMs, 30_000) }
       );
-      const parsed = extractionSchema.safeParse(JSON.parse(response.choices?.[0]?.message?.content ?? "{}"));
+      const parsed = extractionSchema.safeParse(prepareExtractionPayload(JSON.parse(response.choices?.[0]?.message?.content ?? "{}")));
       if (!parsed.success) throw new Error("RouterAI extraction response does not match structured schema");
       return normalizeExtractionResult(parsed.data, input);
     } catch (error) {
@@ -76,6 +78,8 @@ export class RouterAiProvider implements AiProvider {
         {
           model: this.config.routerAiTextModel ?? "routerai-text-model-not-configured",
           temperature: 0.2,
+          max_tokens: 400,
+          reasoning: { enabled: false },
           response_format: { type: "json_object" },
           messages: [
             {
@@ -476,6 +480,37 @@ function normalizeExtractionResult(payload: unknown, input?: ExtractionInput): E
   normalized.moneyMentions = harmonizeMoneyMentionCurrencies(normalized.moneyMentions, input.text);
   normalized.facts = backfillMoneyFacts(normalized.facts, normalized.moneyMentions);
   return normalized;
+}
+
+function prepareExtractionPayload(payload: unknown): unknown {
+  if (!isRecord(payload)) {
+    return payload;
+  }
+
+  const facts = Array.isArray(payload.facts)
+    ? payload.facts.flatMap((item) => {
+        if (!isRecord(item)) return [];
+        const key = typeof item.key === "string" ? item.key : typeof item.field === "string" ? item.field : undefined;
+        if (!key) return [];
+        // Foreign-currency amounts must stay in moneyMentions for FX conversion.
+        if ((key === "vehicleValue" || key === "requestedAmount") && item.currency && item.currency !== "KGS") return [];
+        return [{
+          ...item,
+          key,
+          value: "value" in item ? item.value : "amount" in item ? item.amount : undefined
+        }];
+      })
+    : payload.facts;
+  const changedFacts = Array.isArray(payload.changedFacts)
+    ? payload.changedFacts.flatMap((item) => {
+        if (!isRecord(item)) return [];
+        const key = typeof item.key === "string" ? item.key : typeof item.field === "string" ? item.field : undefined;
+        if (!key) return [];
+        return [{ ...item, key, newValue: "newValue" in item ? item.newValue : "amount" in item ? item.amount : undefined }];
+      })
+    : payload.changedFacts;
+
+  return { ...payload, facts, changedFacts };
 }
 
 function buildLocalResponse(input: ResponseGenerationInput): string {

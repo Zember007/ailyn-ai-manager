@@ -7,6 +7,8 @@ export interface RouterAiChatRequest {
   model: string;
   messages: RouterAiChatMessage[];
   temperature?: number;
+  max_tokens?: number;
+  reasoning?: { enabled: boolean };
   response_format?: { type: "json_object" };
 }
 

@@ -793,7 +793,7 @@ describe("DialogueOrchestratorService", () => {
     }));
   });
 
-  it("converts a foreign requested amount, avoids redundant recovery, and stores FX trace metadata", async () => {
+  it("keeps both amounts from the typo-filled client reply and does not ask for vehicle value again", async () => {
     const initialConversation = {
       id: "conv-1",
       externalContactId: "web-client-1",
@@ -820,11 +820,11 @@ describe("DialogueOrchestratorService", () => {
           facts: [
             { key: "vehicleMake", value: "Toyota", confidence: 0.9 },
             { key: "vehicleModel", value: "Camry", confidence: 0.9 },
-            { key: "vehicleYear", value: 2010, confidence: 0.9 },
-            { key: "vehicleValue", value: 1_600_000, confidence: 0.9 }
+            { key: "vehicleYear", value: 2022, confidence: 0.9 }
           ],
           moneyMentions: [
-            { sourceText: "10 тыс долларов", amount: 10_000, normalizedAmount: 10_000, currency: "USD", roleCandidate: "requestedAmount", confidence: 0.96, start: 28, end: 44 }
+            { sourceText: "20 тфыс долларов", amount: 20_000, normalizedAmount: 20_000, currency: "USD", roleCandidate: "vehicleValue", confidence: 0.96, start: 18, end: 35 },
+            { sourceText: "10", amount: 10_000, normalizedAmount: 10_000, currency: "USD", roleCandidate: "requestedAmount", confidence: 0.96, start: 41, end: 43 }
           ],
           changedFacts: [],
           attachments: [],
@@ -832,7 +832,7 @@ describe("DialogueOrchestratorService", () => {
           clarificationNeeded: false
         }),
         generateResponse: vi.fn().mockResolvedValue({
-          message: "По текущему курсу 10 тыс долларов — это ориентировочно 874 500 сом. Подскажите, пожалуйста, Вас интересует займ без изъятия автомобиля или с постановкой автомобиля на охраняемую стоянку?",
+          message: "Подскажите, пожалуйста, Вас интересует займ без изъятия автомобиля или с постановкой автомобиля на охраняемую стоянку?",
           model: "stage1-response-plan-fast-path",
           promptVersion: "stage1-response-plan-v1"
         }),
@@ -844,8 +844,8 @@ describe("DialogueOrchestratorService", () => {
       facts: {
         vehicleMake: "Toyota",
         vehicleModel: "Camry",
-        vehicleYear: 2010,
-        vehicleValue: 1_600_000,
+        vehicleYear: 2022,
+        vehicleValue: 1_749_000,
         requestedAmount: 874_500
       }
     };
@@ -875,15 +875,15 @@ describe("DialogueOrchestratorService", () => {
       getConversation: vi.fn().mockResolvedValue({
         ...initialConversation,
         messages: [
-          { id: "msg-client-1", author: "client", body: "камри 2010 года надо 10 тыс долларов стоит 20 тыс", createdAt: "2026-08-31T10:33:17.000Z", attachmentIds: [], attachments: [] },
-          { id: "msg-ai-1", author: "ai", body: "По текущему курсу 10 тыс долларов — это ориентировочно 874 500 сом. Подскажите, пожалуйста, Вас интересует займ без изъятия автомобиля или с постановкой автомобиля на охраняемую стоянку?", createdAt: "2026-08-31T10:33:57.000Z", attachmentIds: [], attachments: [] }
+          { id: "msg-client-1", author: "client", body: "камри 2022 стоит 20 тфыс долларов надо 10", createdAt: "2026-08-31T10:33:17.000Z", attachmentIds: [], attachments: [] },
+          { id: "msg-ai-1", author: "ai", body: "Подскажите, пожалуйста, Вас интересует займ без изъятия автомобиля или с постановкой автомобиля на охраняемую стоянку?", createdAt: "2026-08-31T10:33:57.000Z", attachmentIds: [], attachments: [] }
         ],
         application: updatedApplication
       })
     } as any;
     const responsePlan = {
       build: vi.fn().mockReturnValue({
-        answers: [{ topic: "fx_equivalent", meaning: "По текущему курсу 10 тыс долларов — это ориентировочно 874 500 сом.", exactText: "По текущему курсу 10 тыс долларов — это ориентировочно 874 500 сом." }],
+        answers: [],
         nextAction: "collect_residence",
         nextQuestions: ["Подскажите, пожалуйста, Вас интересует займ без изъятия автомобиля или с постановкой автомобиля на охраняемую стоянку?"],
         allowedFacts: {},
@@ -898,7 +898,7 @@ describe("DialogueOrchestratorService", () => {
       validate: vi.fn().mockReturnValue({
         passed: true,
         errors: [],
-        finalMessage: "По текущему курсу 10 тыс долларов — это ориентировочно 874 500 сом. Подскажите, пожалуйста, Вас интересует займ без изъятия автомобиля или с постановкой автомобиля на охраняемую стоянку?"
+        finalMessage: "Подскажите, пожалуйста, Вас интересует займ без изъятия автомобиля или с постановкой автомобиля на охраняемую стоянку?"
       })
     } as any;
     const settings = {
@@ -914,16 +914,15 @@ describe("DialogueOrchestratorService", () => {
       error: vi.fn()
     } as any;
     const deferredIntegrations = {
-      convertToSom: vi.fn().mockResolvedValue({
-        available: true,
-        value: 874_500,
-        currency: "USD",
-        rate: 87.45,
-        nominal: 1,
-        source: "NBKR",
-        sourceUrl: "https://www.nbkr.kg/XML/daily.xml",
-        effectiveDate: "2026-08-31"
-      })
+      convertToSom: vi.fn()
+        .mockResolvedValueOnce({
+          available: true, value: 1_749_000, currency: "USD", rate: 87.45, nominal: 1,
+          source: "NBKR", sourceUrl: "https://www.nbkr.kg/XML/daily.xml", effectiveDate: "2026-08-31"
+        })
+        .mockResolvedValueOnce({
+          available: true, value: 874_500, currency: "USD", rate: 87.45, nominal: 1,
+          source: "NBKR", sourceUrl: "https://www.nbkr.kg/XML/daily.xml", effectiveDate: "2026-08-31"
+        })
     } as any;
 
     const service = new DialogueOrchestratorService(ai, store, responsePlan, validator, settings, logs, deferredIntegrations);
@@ -933,31 +932,37 @@ describe("DialogueOrchestratorService", () => {
       channel: "web-test",
       externalContactId: "web-client-1",
       externalConversationId: "web-conversation-1",
-      text: "камри 2010 года надо 10 тыс долларов стоит 20 тыс",
+      text: "камри 2022 стоит 20 тфыс долларов надо 10",
       attachments: [],
       timestamp: new Date("2026-08-31T10:33:17.000Z")
     });
 
-    expect(deferredIntegrations.convertToSom).toHaveBeenCalledWith({ amount: 10_000, currency: "USD" });
+    expect(deferredIntegrations.convertToSom).toHaveBeenNthCalledWith(1, { amount: 20_000, currency: "USD" });
+    expect(deferredIntegrations.convertToSom).toHaveBeenNthCalledWith(2, { amount: 10_000, currency: "USD" });
     expect(store.updateFacts).toHaveBeenCalledWith(application, expect.objectContaining({
+      vehicleValue: 1_749_000,
       requestedAmount: 874_500
     }));
     expect(responsePlan.build).toHaveBeenCalledWith(expect.objectContaining({
       recovery: undefined,
-      fxConversions: [expect.objectContaining({
-        role: "requestedAmount",
-        somValue: 874_500,
-        source: "NBKR",
-        effectiveDate: "2026-08-31"
-      })]
+      fxConversions: expect.arrayContaining([
+        expect.objectContaining({ role: "vehicleValue", somValue: 1_749_000, source: "NBKR", effectiveDate: "2026-08-31" }),
+        expect.objectContaining({ role: "requestedAmount", somValue: 874_500, source: "NBKR", effectiveDate: "2026-08-31" })
+      ])
     }));
     expect(store.addMessage).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({
       metadata: expect.objectContaining({
         trace: expect.objectContaining({
-          moneyMentions: expect.arrayContaining([expect.objectContaining({ sourceText: "10 тыс долларов" })]),
-          fxConversions: expect.arrayContaining([expect.objectContaining({ somValue: 874_500 })])
+          moneyMentions: expect.arrayContaining([expect.objectContaining({ sourceText: "20 тфыс долларов" })]),
+          fxConversions: expect.arrayContaining([
+            expect.objectContaining({ somValue: 1_749_000 }),
+            expect.objectContaining({ somValue: 874_500 })
+          ])
         })
       })
+    }));
+    expect(responsePlan.build).not.toHaveBeenCalledWith(expect.objectContaining({
+      nextQuestions: expect.arrayContaining(["Какая ориентировочная стоимость автомобиля?"])
     }));
   });
 });

@@ -37,6 +37,73 @@ describe("RouterAiProvider", () => {
     });
   });
 
+  it("gives RouterAI an explicit rule for the typo-filled vehicle value and requested amount", async () => {
+    process.env.DATABASE_URL ??= "postgresql://test:test@localhost:5432/ailyn";
+    process.env.REDIS_URL ??= "redis://localhost:6379";
+
+    const client = {
+      isConfigured: vi.fn().mockReturnValue(true),
+      createChatCompletion: vi.fn().mockResolvedValue({
+        choices: [{ message: { content: JSON.stringify({ language: "ru" }) } }]
+      })
+    } as any;
+    const provider = new RouterAiProvider(client);
+
+    await provider.extract({
+      text: "камри 2022 стоит 20 тфыс долларов надо 10",
+      attachments: [],
+      facts: {},
+      pendingFacts: ["vehicleValue", "requestedAmount"]
+    } as any);
+
+    expect(client.createChatCompletion).toHaveBeenCalledWith(expect.objectContaining({
+      max_tokens: 600,
+      reasoning: { enabled: false },
+      messages: expect.arrayContaining([
+        expect.objectContaining({ content: expect.stringContaining("vehicleValue=20 000 USD") }),
+        expect.objectContaining({ content: expect.stringContaining("камри 2022 стоит 20 тфыс долларов надо 10") })
+      ])
+    }), expect.anything());
+  });
+
+  it("accepts GPT-style field names while keeping foreign amounts for FX conversion", async () => {
+    const client = {
+      isConfigured: vi.fn().mockReturnValue(true),
+      createChatCompletion: vi.fn().mockResolvedValue({
+        model: "openai/gpt-5.4-mini",
+        choices: [{ message: { content: JSON.stringify({
+          language: "ru",
+          intents: ["statement"],
+          questions: [],
+          facts: [
+            { field: "vehicleValue", amount: 20_000, currency: "USD" },
+            { field: "requestedAmount", amount: 10_000, currency: "USD" }
+          ],
+          moneyMentions: [
+            { sourceText: "20 тфыс долларов", amount: 20_000, normalizedAmount: 20_000, currency: "USD", roleCandidate: "vehicleValue", confidence: 0.98, start: 18, end: 35 },
+            { sourceText: "10", amount: 10, normalizedAmount: 10_000, currency: "USD", roleCandidate: "requestedAmount", confidence: 0.92, start: 41, end: 43 }
+          ],
+          changedFacts: [],
+          attachments: [],
+          promptInjectionDetected: false,
+          clarificationNeeded: false
+        }) } }]
+      })
+    } as any;
+
+    const provider = new RouterAiProvider(client);
+    const result = await provider.extract({ text: "камри 2022 стоит 20 тфыс долларов надо 10", attachments: [], facts: {} } as any);
+
+    expect(result.moneyMentions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ roleCandidate: "vehicleValue", normalizedAmount: 20_000, currency: "USD" }),
+      expect.objectContaining({ roleCandidate: "requestedAmount", normalizedAmount: 10_000, currency: "USD" })
+    ]));
+    expect(result.facts).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: "vehicleValue" }),
+      expect.objectContaining({ key: "requestedAmount" })
+    ]));
+  });
+
   it("falls back to local extraction when RouterAI errors", async () => {
     process.env.DATABASE_URL ??= "postgresql://test:test@localhost:5432/ailyn";
     process.env.REDIS_URL ??= "redis://localhost:6379";
