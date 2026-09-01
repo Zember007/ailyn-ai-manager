@@ -309,7 +309,6 @@ function shouldSuppressFirstContactIntroduction(decision: DecisionResult, facts:
 }
 
 const firstContactIntroduction = "Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10.";
-const firstContactMessage = `${firstContactIntroduction}\n\n${formatFirstContactRequest(["vehicle", "vehicleValue", "requestedAmount"])}`;
 
 function formatFirstContactRequest(missing: ("vehicle" | "vehicleValue" | "requestedAmount")[]): string {
   const labels = {
