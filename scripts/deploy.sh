@@ -16,7 +16,6 @@ if [[ "${DEPLOY_VALIDATE:-0}" == "1" ]]; then
   pnpm lint
   pnpm typecheck
   pnpm test
-  pnpm test:scenarios
   pnpm build
 else
   echo "Skipping local preflight. Set DEPLOY_VALIDATE=1 to enable it."

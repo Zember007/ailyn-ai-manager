@@ -738,7 +738,7 @@ function renderMarkdown({ apiUrl, runId, currentDate, workingHoursContext, summa
     "",
     "## Notes",
     "",
-    "- `pnpm test:scenarios` and `pnpm test` were also run separately and should be reviewed together with this live API report.",
+    "- `pnpm test` were also run separately and should be reviewed together with this live API report.",
     "- Some scenarios depend on natural-language date resolution, audio STT, image semantics, or knowledge completeness; live results reflect the current implementation rather than idealized acceptance expectations."
   ];
   return lines.join("\n");
