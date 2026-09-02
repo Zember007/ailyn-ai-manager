@@ -97,11 +97,11 @@ function currentDateTime(timezone: string) {
   return `${part("year")}-${part("month")}-${part("day")}T${part("hour")}:${part("minute")}:00`;
 }
 
-function selectKnowledge(query: string) {
-  const tokens = new Set(query.toLocaleLowerCase("ru-RU").match(/[\p{L}\p{N}]{4,}/gu) ?? []);
-  const core = generatedDocumentationChunks.slice(0, 8);
-  const relevant = generatedDocumentationChunks.map((chunk) => ({ chunk, score: chunk.keywords.reduce((n, word) => n + (tokens.has(word) ? 1 : 0), 0) })).filter((item) => item.score > 0).sort((a, b) => b.score - a.score).slice(0, 8).map((item) => item.chunk);
-  return [...new Map([...core, ...relevant].map((chunk) => [chunk.key, chunk])).values()].map(({ key, text }) => ({ key, text }));
+function selectKnowledge(_query: string) {
+  // The complete normalized DOCX is intentionally sent on every turn. This
+  // keeps private rules, contacts, prices and edge cases available even when
+  // the user's short message has no matching keywords.
+  return generatedDocumentationChunks.map(({ key, text }) => ({ key, text }));
 }
 
 function loadPrompt(name: string) {

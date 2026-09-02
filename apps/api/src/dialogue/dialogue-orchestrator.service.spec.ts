@@ -22,6 +22,10 @@ describe("single-agent dialogue", () => {
     expect(request.response_format).toEqual({ type: "json_object" });
     expect(JSON.stringify(request.messages)).toContain("Старая реплика");
     expect(JSON.stringify(request.messages)).toContain("docx_0001");
+    expect(JSON.stringify(request.messages)).toContain("Б. Молодой Гвардии, 22, Бишкек");
+    expect(JSON.stringify(request.messages)).toContain("+996 502 108 108");
+    const context = JSON.parse((request.messages[1].content as Array<{ type: string; text?: string }>)[0].text ?? "{}");
+    expect(context.knowledge.length).toBeGreaterThan(300);
     expect(request.messages[1].content).toEqual(expect.arrayContaining([expect.objectContaining({ type: "image_url" })]));
   });
 
