@@ -19,6 +19,7 @@ describe("single-agent dialogue", () => {
     expect(client.createChatCompletion).toHaveBeenCalledTimes(1);
     const request = client.createChatCompletion.mock.calls[0][0];
     expect(request.model).toBe(process.env.ROUTERAI_TEXT_MODEL ?? "routerai-text-model-not-configured");
+    expect(request.response_format).toEqual({ type: "json_object" });
     expect(JSON.stringify(request.messages)).toContain("Старая реплика");
     expect(JSON.stringify(request.messages)).toContain("docx_0001");
     expect(request.messages[1].content).toEqual(expect.arrayContaining([expect.objectContaining({ type: "image_url" })]));
@@ -58,6 +59,18 @@ describe("single-agent dialogue", () => {
     expect(output.result?.leadCardPatch).toEqual(expect.objectContaining({ visitRequested: true, visitTime: "12:00" }));
     expect(output.result?.leadCardPatch.visitDate).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     expect(JSON.stringify(client.createChatCompletion.mock.calls[0][0].messages)).toContain("interpretedCurrentMessage");
+  });
+
+  it("accepts a plain Chuy residence answer on the first model response", async () => {
+    const withReadableResidence = {
+      ...validResult,
+      leadCardPatch: { residenceRegion: "Чуйская область", residenceCategory: "Чуйская область" },
+      dialogueState: { stage: "COLLECTING_DOCUMENTS", status: "need_more_data", nextAction: "Запросить документы" }
+    };
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify(withReadableResidence) } }] }) } as any;
+    const output = await new AgentTurnService(client).run({ messages: [{ author: "ai", body: "Уточните прописку", createdAt: "2026-09-02" } as any], facts: { requestedProgram: "without_storage" }, settings: {}, text: "Чуйская область", attachments: [] });
+    expect(output.result?.leadCardPatch).toEqual(expect.objectContaining({ residenceRegion: "Чуйская область", residenceCategory: "CHUY" }));
+    expect(client.createChatCompletion).toHaveBeenCalledTimes(1);
   });
 
   it("removes a repeated greeting when Ailyn has already answered in the conversation", async () => {

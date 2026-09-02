@@ -13,7 +13,10 @@ export interface RouterAiChatRequest {
   temperature?: number;
   max_tokens?: number;
   reasoning?: { enabled: boolean };
-  response_format?: { type: "json_object" };
+  response_format?:
+    | { type: "json_object" }
+    | { type: "json_schema"; json_schema: { name: string; strict: boolean; schema: Record<string, unknown> } };
+  structured_outputs?: boolean;
 }
 
 export interface RouterAiChatResponse {

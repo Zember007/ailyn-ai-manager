@@ -25,6 +25,9 @@ export class AgentTurnService {
     if (!this.client.isConfigured()) return { reply: NEUTRAL_REPLY, model: "unconfigured", promptVersion: PROMPT_VERSION, error: "routerai_not_configured" };
     const systemPrompt = loadPrompt("agent.system.md");
     const request = {
+      // The configured production model (openai/gpt-5.4-mini) can return an
+      // empty object for json_schema. JSON mode plus the strict Zod boundary
+      // is compatible and lets normal short replies succeed on the first call.
       model: this.config.routerAiTextModel ?? "routerai-text-model-not-configured", temperature: 0.2, max_tokens: 1600, reasoning: { enabled: false }, response_format: { type: "json_object" as const },
       messages: [{ role: "system" as const, content: systemPrompt }, { role: "user" as const, content: buildMessage(input) }]
     };
@@ -140,6 +143,9 @@ function normalizeAgentPayload(payload: Record<string, unknown>, inputText?: str
     }
     if (typeof patch.residenceCategory === "string" && ["UNKNOWN", "NONE", "NULL", ""].includes(patch.residenceCategory.trim().toUpperCase())) {
       delete patch.residenceCategory;
+    } else if (typeof patch.residenceCategory === "string") {
+      const normalizedCategory = residenceCategoryAliases[patch.residenceCategory.trim().toLocaleUpperCase("ru-RU")];
+      if (normalizedCategory) patch.residenceCategory = normalizedCategory;
     }
     Object.assign(patch, explicitLeadFacts(inputText, patch));
     payload.leadCardPatch = patch;
@@ -183,6 +189,13 @@ const residenceRegionAliases: Record<string, string> = {
   CHUY: "Чуйская область",
   OTHER_KG: "Другой регион Кыргызстана",
   FOREIGN: "Другая страна"
+};
+
+const residenceCategoryAliases: Record<string, string> = {
+  BISHKEK: "BISHKEK", "БИШКЕК": "BISHKEK",
+  CHUY: "CHUY", CHUI: "CHUY", "ЧУЙ": "CHUY", "ЧУЙСКАЯ ОБЛАСТЬ": "CHUY",
+  OTHER_KG: "OTHER_KG", "ДРУГОЙ РЕГИОН КЫРГЫЗСТАНА": "OTHER_KG",
+  FOREIGN: "FOREIGN", "ДРУГАЯ СТРАНА": "FOREIGN"
 };
 
 const familyStatusAliases: Record<string, string> = {
