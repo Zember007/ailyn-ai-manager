@@ -349,4 +349,35 @@ describe("ResponsePlanService first contact", () => {
     expect(missingBackPlan.nextQuestions).toEqual(["Пришлите, пожалуйста, фото обратной стороны ID."]);
     expect(poorRegistrationPlan.nextQuestions).toEqual(["Пришлите, пожалуйста, более качественное фото лицевой стороны свидетельства о регистрации ТС."]);
   });
+
+  it("acknowledges every document accepted in the current turn without repeating old receipts", () => {
+    const service = new ResponsePlanService();
+    const facts = {
+      documents: {
+        id_front: "received" as const,
+        id_back: "received" as const,
+        vehicle_registration_front: "received" as const,
+        vehicle_registration_back: "received" as const
+      }
+    };
+    const plan = service.build({
+      facts,
+      decision: evaluateApplication(facts),
+      isFirstMessage: false,
+      questions: [],
+      receivedDocuments: ["id_front", "id_back", "vehicle_registration_front", "vehicle_registration_back"]
+    });
+    const laterPlan = service.build({
+      facts,
+      decision: evaluateApplication(facts),
+      isFirstMessage: false,
+      questions: [],
+      receivedDocuments: []
+    });
+
+    expect(plan.answers.find((answer) => answer.key === "documents_received")?.text).toBe(
+      "Спасибо, получили: лицевую и обратную стороны ID, лицевую и обратную стороны свидетельства о регистрации ТС."
+    );
+    expect(laterPlan.answers.some((answer) => answer.key === "documents_received")).toBe(false);
+  });
 });

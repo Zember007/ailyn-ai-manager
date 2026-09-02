@@ -23,14 +23,14 @@ export class KnowledgeBaseResolverService {
         : await this.knowledge.resolveAll(question.topic, language);
       if (items.length) {
         for (const item of items) {
-        answers.push({ key: item.key, text: language === "kg" && item.answerKg ? item.answerKg : item.answerRu, exact: true });
+          answers.push({ key: item.key, text: language === "kg" && item.answerKg ? item.answerKg : item.answerRu, exact: true });
         }
-      } else {
-        const documentationAnswer = this.documentation.resolve(question.text);
-        if (documentationAnswer) {
-          answers.push({ ...documentationAnswer, exact: true });
-          continue;
-        }
+      }
+      const documentationAnswer = this.documentation.resolve(question.text);
+      if (documentationAnswer) {
+        answers.push({ ...documentationAnswer, exact: true });
+      }
+      if (items.length === 0 && !documentationAnswer) {
         const fallback = await this.knowledge.fallback();
         answers.push({ key: fallback.key, text: fallback.answerRu, exact: true, blocked: true });
       }

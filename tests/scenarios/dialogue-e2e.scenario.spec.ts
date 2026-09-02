@@ -72,13 +72,16 @@ class DialogueHarness {
     }
 
     this.facts = { ...this.facts, ...extractedFacts, documents: { ...(this.facts.documents ?? {}) } };
+    const receivedDocuments: DocumentCode[] = [];
     for (const attachment of attachments) {
       const vision = await this.ai.analyzeImage({ attachment });
-      const documentKey = vision.type === "car" ? "car_photo" : vision.type === "poor_quality" ? "unknown" : vision.type;
+      const documentKey = vision.type === "car" ? "car_photo" : vision.type;
+      if (!["id_front", "id_back", "vehicle_registration_front", "vehicle_registration_back", "car_photo"].includes(documentKey)) continue;
       this.facts.documents = {
         ...(this.facts.documents ?? {}),
         [documentKey]: vision.quality === "poor" ? "poor_quality" : "received"
       };
+      if (vision.quality !== "poor") receivedDocuments.push(documentKey);
     }
 
     this.decision = evaluateApplication(this.facts);
@@ -89,7 +92,8 @@ class DialogueHarness {
       questions: extraction.questions,
       intents: extraction.intents,
       previousAssistantMessages: this.assistantMessages,
-      fxConversions
+      fxConversions,
+      receivedDocuments
     });
     this.started = true;
 
@@ -240,7 +244,7 @@ describe("Dialogue pipeline e2e scenarios", () => {
 
     const answer = await dialogue.uploadDocuments(["id_front", "vehicle_registration_front"]);
 
-    expect(answer).toContain("Спасибо, фото лицевой стороны ID получили.");
+    expect(answer).toContain("Спасибо, получили: лицевую сторону ID, лицевую сторону свидетельства о регистрации ТС.");
     expect(answer).toContain("обратной стороны ID");
     expect(answer).toContain("обратной стороны свидетельства о регистрации ТС");
     expect(answer).not.toContain("Пришлите, пожалуйста, фото лицевой стороны ID");

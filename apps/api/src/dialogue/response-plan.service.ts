@@ -1,5 +1,5 @@
 import { Injectable } from "@nestjs/common";
-import type { ApplicationFacts, DecisionResult } from "@ailyn/business-rules";
+import type { ApplicationFacts, DecisionResult, DocumentCode } from "@ailyn/business-rules";
 import type { ResponsePlan } from "../ai/ai-provider.interface.js";
 import type { FxConversionTrace, KnowledgeAnswer, ResponsePlanV62 } from "./pipeline.contracts.js";
 import { formatMoney } from "./money-normalization.js";
@@ -25,13 +25,21 @@ export class ResponsePlanService {
     };
     fxConversions?: FxConversionTrace[];
     supportPhone?: string;
+    receivedDocuments?: DocumentCode[];
   }): ResponsePlan & ResponsePlanV62 {
     const language = input.facts.language === "kg" ? "kg" : "ru";
     const previousAssistantMessages = input.previousAssistantMessages ?? [];
     const firstContactAnswer = input.isFirstMessage && !shouldSuppressFirstContactIntroduction(input.decision, input.facts)
       ? { key: "first_contact_greeting", text: firstContactIntroduction, exact: true }
       : undefined;
-    const specialAnswers = buildSpecialAnswers(input.facts, input.decision, input.questions, input.intents ?? [], input.supportPhone);
+    const specialAnswers = buildSpecialAnswers(
+      input.facts,
+      input.decision,
+      input.questions,
+      input.intents ?? [],
+      input.supportPhone,
+      buildDocumentAcknowledgement(input.receivedDocuments ?? [])
+    );
     const deferLegacyFlow = input.questions.length > 0 || input.intents?.some((intent) => ["complaint", "pause", "on_the_way", "arrived"].includes(intent));
     const decisionAnswers = (deferLegacyFlow ? [] : this.answerDecision(input.decision, input.facts, input.intents ?? []))
       .filter((answer) => !previousAssistantMessages.some((message) => message.includes(answer.text)));
@@ -189,13 +197,12 @@ function buildSpecialAnswers(
   decision: DecisionResult,
   questions: { topic: string; text: string }[],
   intents: string[],
-  supportPhone = "+996 502 108 108"
+  supportPhone = "+996 502 108 108",
+  documentAcknowledgement?: KnowledgeAnswer
 ): KnowledgeAnswer[] {
   const answers: KnowledgeAnswer[] = [];
 
-  if (facts.documents?.id_front === "received") {
-    answers.push({ key: "id_front_received", text: "Спасибо, фото лицевой стороны ID получили.", exact: true });
-  }
+  if (documentAcknowledgement) answers.push(documentAcknowledgement);
 
   if (intents.includes("complaint")) {
     answers.push({ key: "complaint", text: `Понимаю, что условия могут вызвать вопросы. Я готова уточнить всё, что важно для Вас. Если удобнее обсудить это с сотрудником, пожалуйста, позвоните по номеру ${supportPhone}.`, exact: true });
@@ -274,6 +281,31 @@ function buildSpecialAnswers(
   }
 
   return answers;
+}
+
+function buildDocumentAcknowledgement(receivedDocuments: DocumentCode[]): KnowledgeAnswer | undefined {
+  const received = new Set(receivedDocuments);
+  const parts: string[] = [];
+
+  if (received.has("id_front") && received.has("id_back")) {
+    parts.push("лицевую и обратную стороны ID");
+  } else {
+    if (received.has("id_front")) parts.push("лицевую сторону ID");
+    if (received.has("id_back")) parts.push("обратную сторону ID");
+  }
+  if (received.has("vehicle_registration_front") && received.has("vehicle_registration_back")) {
+    parts.push("лицевую и обратную стороны свидетельства о регистрации ТС");
+  } else {
+    if (received.has("vehicle_registration_front")) parts.push("лицевую сторону свидетельства о регистрации ТС");
+    if (received.has("vehicle_registration_back")) parts.push("обратную сторону свидетельства о регистрации ТС");
+  }
+
+  if (parts.length === 0) return undefined;
+  return {
+    key: "documents_received",
+    text: `Спасибо, получили: ${parts.join(", ")}.`,
+    exact: true
+  };
 }
 
 function buildVisitAnswer(facts: ApplicationFacts, decision: DecisionResult): KnowledgeAnswer | undefined {

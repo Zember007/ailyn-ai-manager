@@ -198,6 +198,7 @@ export class DialogueOrchestratorService {
         mentions: extraction.moneyMentions,
         currentFacts: application.facts,
         incomingFacts,
+        writableMoneyMentionKeys: getWritableMoneyMentionKeys(extraction, application.facts),
         deferredIntegrations: this.deferredIntegrations
       });
 
@@ -307,7 +308,8 @@ export class DialogueOrchestratorService {
         fxConversions: fxResolution.traces,
         previousAssistantMessages: conversation.messages.filter((item) => item.author === "ai").map((item) => item.body),
         knowledgeAnswers,
-        supportPhone: stageSettings?.phone
+        supportPhone: stageSettings?.phone,
+        receivedDocuments: documentFacts.receivedDocuments
       });
 
       void this.logs.debug("dialogue.receive", "Response plan prepared", {
@@ -422,9 +424,10 @@ export class DialogueOrchestratorService {
     conversationId: string,
     messageId: string,
     attachments: InboundMessage["attachments"]
-  ): Promise<{ facts: Partial<ApplicationFacts>; hasRecognitionIssue: boolean }> {
+  ): Promise<{ facts: Partial<ApplicationFacts>; hasRecognitionIssue: boolean; receivedDocuments: DocumentCode[] }> {
     const documents: ApplicationFacts["documents"] = {};
     const extractedFacts: Partial<ApplicationFacts> = {};
+    const receivedDocuments: DocumentCode[] = [];
     let hasRecognitionIssue = false;
     for (const attachment of attachments) {
       if (isAudioAttachment(attachment)) {
@@ -447,6 +450,7 @@ export class DialogueOrchestratorService {
       const docCode = mapVisionTypeToDocument(vision.type);
       if (docCode) {
         documents[docCode] = vision.quality === "poor" ? "poor_quality" : "received";
+        if (vision.quality !== "poor") receivedDocuments.push(docCode);
       }
       if (vision.quality !== "good" || vision.type === "unknown") {
         hasRecognitionIssue = true;
@@ -473,7 +477,8 @@ export class DialogueOrchestratorService {
     }
     return {
       facts: mergeFacts(Object.keys(documents).length > 0 ? { documents } : {}, extractedFacts),
-      hasRecognitionIssue
+      hasRecognitionIssue,
+      receivedDocuments: [...new Set(receivedDocuments)]
     };
   }
 
@@ -574,8 +579,21 @@ export function selectClientQuestions(
   // would replace the normal lead-collection flow with unrelated chunks.
   const questions = extraction.questions ?? [];
   const questionTurn = extraction.turnKind === "question" || extraction.turnKind === "mixed";
-  if (questionTurn) return questions.length > 0 ? questions : text ? [{ text, topic: "general" }] : [];
+  if (questionTurn) {
+    const completeTurn = text?.trim();
+    return deduplicateQuestions([
+      ...questions,
+      ...(completeTurn ? [{ text: completeTurn, topic: "general" }] : [])
+    ]);
+  }
   return questions.length > 0 && hasClientQuestionSignal(text) ? questions : [];
+}
+
+function deduplicateQuestions(questions: { text: string; topic: string }[]): { text: string; topic: string }[] {
+  return questions.filter((question, index) => questions.findIndex((candidate) =>
+    candidate.text.trim().toLocaleLowerCase("ru-RU") === question.text.trim().toLocaleLowerCase("ru-RU") &&
+    candidate.topic === question.topic
+  ) === index);
 }
 
 export function buildDialogueContext(input: {
@@ -763,10 +781,45 @@ function mergeFacts(...items: Partial<ApplicationFacts>[]): Partial<ApplicationF
   return merged;
 }
 
-async function resolveForeignCurrencyFacts(input: {
+export function getWritableMoneyMentionKeys(
+  extraction: Pick<ExtractionResult, "turnKind" | "moneyMentions" | "questions" | "facts" | "changedFacts" | "intents">,
+  currentFacts: ApplicationFacts
+): Set<string> {
+  if (["question", "control", "attachment", "unknown"].includes(extraction.turnKind ?? "")) return new Set();
+  if (!extraction.turnKind && (extraction.questions?.length ?? 0) > 0) return new Set();
+  const keys = new Set<string>();
+  for (const mention of extraction.moneyMentions ?? []) {
+    if (mention.roleCandidate === "unknown") continue;
+    if (currentFacts[mention.roleCandidate] === undefined || isExplicitMoneyCorrection(extraction, mention)) {
+      keys.add(moneyMentionKey(mention));
+    }
+  }
+  return keys;
+}
+
+function isExplicitMoneyCorrection(
+  extraction: Pick<ExtractionResult, "facts" | "changedFacts" | "intents">,
+  mention: MoneyMention
+): boolean {
+  if (mention.roleCandidate === "unknown") return false;
+  const changed = (extraction.changedFacts ?? []).some((fact) =>
+    fact.key === mention.roleCandidate && valuesEqual(fact.newValue, mention.normalizedAmount)
+  );
+  if (changed) return true;
+  return extraction.intents.includes("correction") && (extraction.facts ?? []).some((fact) =>
+    fact.key === mention.roleCandidate && fact.confidence >= 0.8 && valuesEqual(fact.value, mention.normalizedAmount)
+  );
+}
+
+function moneyMentionKey(mention: MoneyMention): string {
+  return `${mention.start}:${mention.end}:${mention.roleCandidate}:${mention.normalizedAmount}:${mention.currency}`;
+}
+
+export async function resolveForeignCurrencyFacts(input: {
   mentions?: MoneyMention[];
   currentFacts: ApplicationFacts;
   incomingFacts: Partial<ApplicationFacts>;
+  writableMoneyMentionKeys: Set<string>;
   deferredIntegrations: DeferredIntegrationsService;
 }): Promise<{ facts: Partial<ApplicationFacts>; traces: FxConversionTrace[]; blockedRoles: ("requestedAmount" | "vehicleValue")[] }> {
   const facts: Partial<ApplicationFacts> = {};
@@ -776,6 +829,7 @@ async function resolveForeignCurrencyFacts(input: {
   for (const rawMention of input.mentions ?? []) {
     if (rawMention.roleCandidate === "unknown") continue;
     const role: "requestedAmount" | "vehicleValue" = rawMention.roleCandidate;
+    if (!input.writableMoneyMentionKeys.has(moneyMentionKey(rawMention))) continue;
     const sourceCurrencyKey = role === "requestedAmount" ? "requestedAmountSourceCurrency" : "vehicleValueSourceCurrency";
     const inheritedCurrency = input.currentFacts[sourceCurrencyKey];
     const mention = rawMention.currency === "KGS" && inheritedCurrency && inheritedCurrency !== "KGS" && !hasExplicitMoneyCurrency(rawMention.sourceText)
@@ -785,10 +839,6 @@ async function resolveForeignCurrencyFacts(input: {
       (facts as Record<string, unknown>)[sourceCurrencyKey] = "KGS";
       continue;
     }
-    const inheritedWithoutMarker = rawMention.currency === "KGS" && inheritedCurrency && inheritedCurrency !== "KGS" && !hasExplicitMoneyCurrency(rawMention.sourceText);
-    if (role === "requestedAmount" && !inheritedWithoutMarker && (input.currentFacts.requestedAmount !== undefined || input.incomingFacts.requestedAmount !== undefined || facts.requestedAmount !== undefined)) continue;
-    if (role === "vehicleValue" && !inheritedWithoutMarker && (input.currentFacts.vehicleValue !== undefined || input.incomingFacts.vehicleValue !== undefined || facts.vehicleValue !== undefined)) continue;
-
     const conversion = await input.deferredIntegrations.convertToSom({
       amount: mention.normalizedAmount,
       currency: mention.currency

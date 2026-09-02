@@ -82,10 +82,10 @@ const seeds: Omit<KnowledgeItemDto, "id">[] = [
     key: "unknown_fallback",
     category: "fallback",
     aliases: [],
-    answerRu: "К сожалению, у меня нет достоверной информации по этому вопросу. Вы можете связаться с менеджером или приехать в офис — сотрудники с удовольствием подскажут Вам.",
+    answerRu: "К сожалению, у меня нет достоверной информации по этому вопросу. Пожалуйста, позвоните менеджеру по телефону +996 502 108 108 или напишите в WhatsApp +996 776 108 108 — сотрудники подскажут Вам.",
     priority: 1,
     status: "approved",
-    version: 2,
+    version: 3,
     active: true
   },
   {
@@ -297,8 +297,12 @@ const seeds: Omit<KnowledgeItemDto, "id">[] = [
     answerRu: "Да, конечно. С собакой можно, если это не создаёт неудобств другим посетителям.", priority: 80, status: "approved", version: 1, active: true
   },
   {
-    key: "office_wifi_charging", category: "office", aliases: ["есть wi-fi", "есть wifi", "зарядить телефон", "зарядка телефона"],
-    answerRu: "Да, для посетителей доступен Wi-Fi; при необходимости поможем зарядить телефон.", priority: 80, status: "approved", version: 1, active: true
+    key: "office_wifi_charging", category: "office", aliases: ["есть wi-fi", "есть wifi", "есть вайфай", "вайфай", "зарядить телефон", "зарядка телефона"],
+    answerRu: "Да, для посетителей доступен Wi-Fi; при необходимости поможем зарядить телефон.", priority: 80, status: "approved", version: 2, active: true
+  },
+  {
+    key: "office_amenities", category: "office", aliases: ["office_amenities", "какие удобства в офисе", "условия в офисе", "что есть в офисе", "что у вас там есть"],
+    answerRu: "В офисе есть зона ожидания, Wi-Fi, вода и кулер; при необходимости поможем зарядить телефон.", priority: 90, status: "approved", version: 1, active: true
   },
   {
     key: "office_waiting_water", category: "office", aliases: ["есть место подождать", "зона ожидания", "можно воды", "есть кулер", "подождать в помещении"],

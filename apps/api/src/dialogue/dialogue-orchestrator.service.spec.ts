@@ -9,7 +9,9 @@ import {
   MAX_DIALOGUE_MESSAGE_LENGTH,
   MAX_DIALOGUE_RECENT_MESSAGES,
   MAX_DIALOGUE_SUMMARY_LENGTH,
-  validateRouteProposal
+  validateRouteProposal,
+  getWritableMoneyMentionKeys,
+  resolveForeignCurrencyFacts
 } from "./dialogue-orchestrator.service.js";
 import { PARKING_AFTER_WITHOUT_STORAGE_LIMIT_OFFER } from "./response-plan.service.js";
 
@@ -46,6 +48,154 @@ describe("DialogueOrchestratorService", () => {
       clarificationNeeded: false
     }, "Стойте, а зачем это нужно");
     expect(questions).toHaveLength(1);
+  });
+
+  it("preserves the complete raw question when RouterAI omits one subquestion", () => {
+    const questions = selectClientQuestions({
+      language: "ru",
+      turnKind: "question",
+      intents: [],
+      questions: [{ text: "можно ли с собакой", topic: "office_visitors" }],
+      facts: [],
+      moneyMentions: [],
+      changedFacts: [],
+      route: { kind: "none" },
+      attachments: [],
+      promptInjectionDetected: false,
+      clarificationNeeded: false
+    }, "Ну есть Вайфай? И можно ли с собакой?");
+
+    expect(questions).toEqual(expect.arrayContaining([
+      { text: "можно ли с собакой", topic: "office_visitors" },
+      { text: "Ну есть Вайфай? И можно ли с собакой?", topic: "general" }
+    ]));
+  });
+
+  it("converts and replaces an existing requested amount on an explicit USD correction", async () => {
+    const extraction = {
+      language: "ru" as const,
+      turnKind: "fact_update" as const,
+      intents: ["correction"],
+      questions: [],
+      facts: [{ key: "requestedAmount" as const, value: 6_000, confidence: 0.98 }],
+      moneyMentions: [{
+        sourceText: "6к долларов",
+        amount: 6_000,
+        normalizedAmount: 6_000,
+        currency: "USD" as const,
+        roleCandidate: "requestedAmount" as const,
+        confidence: 0.98,
+        start: 13,
+        end: 25
+      }],
+      changedFacts: [{ key: "requestedAmount" as const, newValue: 6_000 }],
+      route: { kind: "none" as const },
+      attachments: [],
+      promptInjectionDetected: false,
+      clarificationNeeded: false
+    };
+    const deferredIntegrations = {
+      convertToSom: vi.fn().mockResolvedValue({
+        available: true,
+        value: 524_700,
+        currency: "KGS",
+        rate: 87.45,
+        nominal: 1,
+        source: "NBKR",
+        sourceUrl: "https://www.nbkr.kg/XML/daily.xml",
+        effectiveDate: "2026-09-02"
+      })
+    } as any;
+    const incomingFacts = { requestedAmount: 6_000 };
+
+    const result = await resolveForeignCurrencyFacts({
+      mentions: extraction.moneyMentions,
+      currentFacts: { requestedAmount: 437_250, requestedAmountSourceCurrency: "USD" },
+      incomingFacts,
+      writableMoneyMentionKeys: getWritableMoneyMentionKeys(extraction, { requestedAmount: 437_250, requestedAmountSourceCurrency: "USD" }),
+      deferredIntegrations
+    });
+
+    expect(result.facts).toEqual(expect.objectContaining({
+      requestedAmount: 524_700,
+      requestedAmountSourceCurrency: "USD"
+    }));
+    expect(deferredIntegrations.convertToSom).toHaveBeenCalledWith({ amount: 6_000, currency: "USD" });
+  });
+
+  it("does not mutate an existing amount for a hypothetical currency question", async () => {
+    const extraction = {
+      language: "ru" as const,
+      turnKind: "question" as const,
+      intents: [],
+      questions: [{ text: "А если нужно 6к долларов?", topic: "possible_amount" }],
+      facts: [],
+      moneyMentions: [{
+        sourceText: "6к долларов",
+        amount: 6_000,
+        normalizedAmount: 6_000,
+        currency: "USD" as const,
+        roleCandidate: "requestedAmount" as const,
+        confidence: 0.95,
+        start: 13,
+        end: 25
+      }],
+      changedFacts: [],
+      route: { kind: "none" as const },
+      attachments: [],
+      promptInjectionDetected: false,
+      clarificationNeeded: false
+    };
+    const deferredIntegrations = { convertToSom: vi.fn() } as any;
+
+    const result = await resolveForeignCurrencyFacts({
+      mentions: extraction.moneyMentions,
+      currentFacts: { requestedAmount: 437_250, requestedAmountSourceCurrency: "USD" },
+      incomingFacts: {},
+      writableMoneyMentionKeys: getWritableMoneyMentionKeys(extraction, { requestedAmount: 437_250, requestedAmountSourceCurrency: "USD" }),
+      deferredIntegrations
+    });
+
+    expect(result.facts).toEqual({});
+    expect(deferredIntegrations.convertToSom).not.toHaveBeenCalled();
+  });
+
+  it("does not replace a saved USD amount with a hypothetical amount inside a mixed turn", async () => {
+    const extraction = {
+      language: "ru" as const,
+      turnKind: "mixed" as const,
+      intents: [],
+      questions: [{ text: "А если нужно 6к долларов?", topic: "possible_amount" }],
+      facts: [{ key: "requestedAmount" as const, value: 500_000, confidence: 0.98 }],
+      moneyMentions: [{
+        sourceText: "6к долларов",
+        amount: 6_000,
+        normalizedAmount: 6_000,
+        currency: "USD" as const,
+        roleCandidate: "requestedAmount" as const,
+        confidence: 0.95,
+        start: 28,
+        end: 40
+      }],
+      changedFacts: [],
+      route: { kind: "none" as const },
+      attachments: [],
+      promptInjectionDetected: false,
+      clarificationNeeded: false
+    };
+    const deferredIntegrations = { convertToSom: vi.fn() } as any;
+    const currentFacts = { requestedAmount: 437_250, requestedAmountSourceCurrency: "USD" as const };
+
+    const result = await resolveForeignCurrencyFacts({
+      mentions: extraction.moneyMentions,
+      currentFacts,
+      incomingFacts: { requestedAmount: 500_000 },
+      writableMoneyMentionKeys: getWritableMoneyMentionKeys(extraction, currentFacts),
+      deferredIntegrations
+    });
+
+    expect(result.facts).toEqual({});
+    expect(deferredIntegrations.convertToSom).not.toHaveBeenCalled();
   });
 
   it("aligns a semantically understood family answer with the active owner field", () => {
@@ -378,7 +528,7 @@ describe("DialogueOrchestratorService", () => {
     expect(responsePlan.build).toHaveBeenCalledWith(expect.objectContaining({ isFirstMessage: true }));
   });
 
-  it("merges facts extracted from attachments into the application update payload", async () => {
+  it("acknowledges a recognized document whenever it is persisted as received", async () => {
     const initialConversation = {
       id: "conv-1",
       externalContactId: "web-client-1",
@@ -415,7 +565,7 @@ describe("DialogueOrchestratorService", () => {
         }),
         analyzeImage: vi.fn().mockResolvedValue({
           type: "id_front",
-          quality: "good",
+          quality: "unknown",
           extractedFacts: [{ key: "fullName", value: "Иванов Иван Иванович", confidence: 0.8 }]
         })
       })
@@ -515,6 +665,9 @@ describe("DialogueOrchestratorService", () => {
         documents: expect.objectContaining({ id_front: "received" })
       })
     );
+    expect(responsePlan.build).toHaveBeenCalledWith(expect.objectContaining({
+      receivedDocuments: ["id_front"]
+    }));
   });
 
   it("uses an audio attachment transcript as normal extraction text", async () => {

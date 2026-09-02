@@ -50,6 +50,34 @@ describe("KnowledgeService approved resolution", () => {
     expect(comparison?.answerRu).not.toMatch(/предварительн(?:ая|ую) сумм/i);
   });
 
+  it("resolves every office topic in a compound Wi-Fi and dog question", async () => {
+    const service = new KnowledgeService(createMemoryPrisma() as any);
+    const answers = await service.resolveAll("Ну есть Вайфай? И можно ли с собакой?", "ru");
+
+    expect(answers.map((answer) => answer.key)).toEqual(expect.arrayContaining([
+      "office_wifi_charging",
+      "office_visitors"
+    ]));
+  });
+
+  it("answers a contextual office amenities question from approved knowledge", async () => {
+    const service = new KnowledgeService(createMemoryPrisma() as any);
+    const answers = await service.resolveAll("А что у вас там есть?", "ru");
+
+    expect(answers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: "office_amenities" })
+    ]));
+    expect(answers.find((answer) => answer.key === "office_amenities")?.answerRu).toContain("зона ожидания");
+  });
+
+  it("includes phone and WhatsApp in the last-resort fallback", async () => {
+    const service = new KnowledgeService(createMemoryPrisma() as any);
+    const answer = await service.fallback();
+
+    expect(answer.answerRu).toContain("+996 502 108 108");
+    expect(answer.answerRu).toContain("WhatsApp +996 776 108 108");
+  });
+
   it("creates seeds through the legacy title/body schema without crashing", async () => {
     const prisma = createMemoryPrisma({ legacyTitleRequired: true, legacyBodyColumn: true });
     const service = new KnowledgeService(prisma as any);

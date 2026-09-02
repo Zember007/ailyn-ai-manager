@@ -233,7 +233,8 @@ function buildVisionMessage(input: VisionInput): Array<{ type: "text"; text: str
 function inferAttachmentVision(input: VisionInput): VisionResult {
   const mimeType = String(input.attachment.mimeType ?? "").toLowerCase();
   const attachmentText = readAttachmentText(input.attachment);
-  const hint = [mimeType, attachmentText.toLowerCase()].join(" ");
+  const fileNameHint = input.attachment.fileName?.toLowerCase().replace(/[._-]+/g, " ");
+  const hint = [mimeType, fileNameHint, attachmentText.toLowerCase()].filter(Boolean).join(" ");
   const extractedFacts = extractFactsFromAttachmentText(attachmentText);
 
   const quality: VisionResult["quality"] = hint.includes("poor") || hint.includes("blur") || hint.includes("low-quality")
@@ -251,7 +252,7 @@ function inferAttachmentVision(input: VisionInput): VisionResult {
   if (looksLikeRegistrationFront(hint)) {
     return { type: "vehicle_registration_front", extractedFacts, quality };
   }
-  if (hint.includes("авто") || hint.includes("машин") || hint.includes("vehicle")) {
+  if (hint.includes("авто") || hint.includes("машин") || hint.includes("vehicle") || hint.includes("car photo")) {
     return { type: "car", extractedFacts, quality: "good" };
   }
   if (mimeType.startsWith("image/") || isImageBase64(input.attachment.contentBase64)) {
