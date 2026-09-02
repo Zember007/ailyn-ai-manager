@@ -5,6 +5,6 @@ import { RouterAiProvider } from "./router-ai/router-ai.provider.js";
 
 @Module({
   providers: [AiService, RouterAiClient, RouterAiProvider],
-  exports: [AiService]
+  exports: [AiService, RouterAiClient]
 })
 export class AiModule {}
