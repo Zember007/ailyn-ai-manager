@@ -10,12 +10,12 @@ describe("money normalization", () => {
 
     expect(result.mentions).toEqual(expect.arrayContaining([
       expect.objectContaining({ sourceText: "10 тыс долларов", currency: "USD", roleCandidate: "requestedAmount", normalizedAmount: 10_000 }),
-      expect.objectContaining({ sourceText: "20 тыс", currency: "KGS", roleCandidate: "vehicleValue", normalizedAmount: 20_000 })
+      expect.objectContaining({ sourceText: "20 тыс", currency: null, roleCandidate: "vehicleValue", normalizedAmount: 20_000 })
     ]));
     expect(result.requestedAmount).toBe(10_000);
     expect(result.requestedAmountCurrency).toBe("USD");
     expect(result.vehicleValue).toBe(20_000);
-    expect(result.vehicleValueCurrency).toBe("KGS");
+    expect(result.vehicleValueCurrency).toBeUndefined();
   });
 
   it("supports spaced, compact, suffix, and decimal money formats", () => {
@@ -56,7 +56,7 @@ describe("money normalization", () => {
     });
 
     expect(amountOnly.requestedAmount).toBe(400_000);
-    expect(amountOnly.requestedAmountCurrency).toBe("KGS");
+    expect(amountOnly.requestedAmountCurrency).toBeUndefined();
     expect(valueOnly.vehicleValue).toBe(2_000_000);
     expect(valueOnly.vehicleValueCurrency).toBe("RUB");
   });

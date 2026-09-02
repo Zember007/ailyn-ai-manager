@@ -80,7 +80,7 @@ export function detectMoneyMentions(text: string): MoneyMention[] {
     const unit = match[3] ?? "";
     const prefixCurrency = normalizeCurrency(match[1]);
     const suffixCurrency = normalizeCurrency(match[4]);
-    const currency = suffixCurrency ?? prefixCurrency ?? "KGS";
+    const currency = suffixCurrency ?? prefixCurrency ?? null;
     const amount = parseNormalizedAmount(numberPart, unit);
 
     if (amount === undefined || !looksLikeMoneyMention({ fullText: source, raw, amount, unit, prefixCurrency, suffixCurrency, contextBefore, contextAfter })) {

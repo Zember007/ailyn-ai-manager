@@ -194,6 +194,7 @@ export class DialogueOrchestratorService {
         delete incomingFacts.residenceRegion;
         delete incomingFacts.residenceCategory;
       }
+      discardUnknownCurrencyMoneyFacts(incomingFacts, extraction.moneyMentions);
       const fxResolution = await resolveForeignCurrencyFacts({
         mentions: extraction.moneyMentions,
         currentFacts: application.facts,
@@ -813,6 +814,18 @@ function isExplicitMoneyCorrection(
 
 function moneyMentionKey(mention: MoneyMention): string {
   return `${mention.start ?? -1}:${mention.end ?? -1}:${mention.roleCandidate}:${mention.normalizedAmount}:${mention.currency}`;
+}
+
+export function discardUnknownCurrencyMoneyFacts(
+  facts: Partial<ApplicationFacts>,
+  mentions: MoneyMention[] | undefined
+): void {
+  for (const mention of mentions ?? []) {
+    if (mention.currency !== null || mention.roleCandidate === "unknown") {
+      continue;
+    }
+    delete facts[mention.roleCandidate];
+  }
 }
 
 export async function resolveForeignCurrencyFacts(input: {

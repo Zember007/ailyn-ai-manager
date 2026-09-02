@@ -801,7 +801,13 @@ function backfillMoneyFacts(
   moneyMentions: ExtractionResult["moneyMentions"]
 ): ExtractionResult["facts"] {
   const byKey = new Map<keyof ApplicationFacts, ExtractionResult["facts"][number]>();
+  const unknownMoneyRoles = new Set<"requestedAmount" | "vehicleValue">(moneyMentions.flatMap((mention) =>
+    mention.currency === null && mention.roleCandidate !== "unknown" ? [mention.roleCandidate] : []
+  ));
   for (const fact of facts) {
+    if ((fact.key === "requestedAmount" || fact.key === "vehicleValue") && unknownMoneyRoles.has(fact.key)) {
+      continue;
+    }
     byKey.set(fact.key, fact);
   }
 

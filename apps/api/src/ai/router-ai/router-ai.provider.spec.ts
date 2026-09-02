@@ -335,6 +335,53 @@ describe("RouterAiProvider", () => {
     expect(result.facts).not.toContainEqual(expect.objectContaining({ key: "requestedAmount" }));
   });
 
+  it("does not persist a model numeric money fact when its mention currency is unknown", async () => {
+    const client = {
+      isConfigured: vi.fn().mockReturnValue(true),
+      createChatCompletion: vi.fn().mockResolvedValue({
+        choices: [{ message: { content: JSON.stringify({
+          language: "ru",
+          facts: [{ key: "requestedAmount", value: 500_000, confidence: 0.95 }],
+          moneyMentions: [{
+            sourceText: "500к",
+            amount: 500_000,
+            normalizedAmount: 500_000,
+            currency: null,
+            roleCandidate: "requestedAmount",
+            confidence: 0.95
+          }]
+        }) } }]
+      })
+    } as any;
+
+    const result = await new RouterAiProvider(client).extract({ text: "нужно 500к", attachments: [], facts: {} } as any);
+
+    expect(result.moneyMentions).toContainEqual(expect.objectContaining({ currency: null, roleCandidate: "requestedAmount" }));
+    expect(result.facts).not.toContainEqual(expect.objectContaining({ key: "requestedAmount" }));
+  });
+
+  it("keeps unmarked fallback money unknown but persists an explicit som amount", async () => {
+    const provider = new RouterAiProvider({ isConfigured: vi.fn().mockReturnValue(false) } as any);
+
+    const unknown = await provider.extract({ text: "нужно 500к", attachments: [], facts: {} } as any);
+    const explicitSom = await provider.extract({
+      text: "нужно 500к сом",
+      attachments: [],
+      dialogueContext: {
+        summary: "Current step asks for the requested amount.",
+        recentMessages: [],
+        currentFacts: { vehicleValue: 1_000_000 },
+        pendingFacts: ["requestedAmount"],
+        decisionEnvelope: { allowedNextFacts: ["requestedAmount"] }
+      }
+    });
+
+    expect(unknown.moneyMentions).toContainEqual(expect.objectContaining({ sourceText: "500к", currency: null }));
+    expect(unknown.facts).not.toContainEqual(expect.objectContaining({ key: "requestedAmount" }));
+    expect(explicitSom.moneyMentions).toContainEqual(expect.objectContaining({ sourceText: "500к сом", currency: "KGS" }));
+    expect(explicitSom.facts).toContainEqual(expect.objectContaining({ key: "requestedAmount", value: 500_000 }));
+  });
+
   it("does not mistake a vehicle year inside the first message for vehicle value", async () => {
     process.env.DATABASE_URL ??= "postgresql://test:test@localhost:5432/ailyn";
     process.env.REDIS_URL ??= "redis://localhost:6379";
@@ -425,9 +472,13 @@ describe("RouterAiProvider", () => {
       facts: {}
     });
 
-    expect(result.facts).toEqual(expect.arrayContaining([
-      expect.objectContaining({ key: "vehicleValue", value: 1_500_000 }),
-      expect.objectContaining({ key: "requestedAmount", value: 500_000 })
+    expect(result.moneyMentions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ sourceText: "1.5 млн", normalizedAmount: 1_500_000, currency: null }),
+      expect.objectContaining({ sourceText: "500к", normalizedAmount: 500_000, currency: null })
+    ]));
+    expect(result.facts).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: "vehicleValue" }),
+      expect.objectContaining({ key: "requestedAmount" })
     ]));
   });
 
@@ -441,11 +492,9 @@ describe("RouterAiProvider", () => {
 
     expect(result.moneyMentions).toEqual(expect.arrayContaining([
       expect.objectContaining({ sourceText: "10 тыс долларов", currency: "USD", roleCandidate: "requestedAmount", normalizedAmount: 10_000 }),
-      expect.objectContaining({ sourceText: "20 тыс", currency: "KGS", roleCandidate: "vehicleValue", normalizedAmount: 20_000 })
+      expect.objectContaining({ sourceText: "20 тыс", currency: null, roleCandidate: "vehicleValue", normalizedAmount: 20_000 })
     ]));
-    expect(result.facts).toEqual(expect.arrayContaining([
-      expect.objectContaining({ key: "vehicleValue", value: 20_000 })
-    ]));
+    expect(result.facts).not.toEqual(expect.arrayContaining([expect.objectContaining({ key: "vehicleValue" })]));
     expect(result.facts).not.toEqual(expect.arrayContaining([expect.objectContaining({ key: "requestedAmount" })]));
   });
 
@@ -475,9 +524,9 @@ describe("RouterAiProvider", () => {
     } as any);
 
     expect(correction.intents).toContain("correction");
-    expect(correction.facts).toEqual(expect.arrayContaining([expect.objectContaining({ key: "requestedAmount", value: 450_000 })]));
+    expect(correction.facts).not.toEqual(expect.arrayContaining([expect.objectContaining({ key: "requestedAmount" })]));
     expect(objection.intents).toEqual(expect.arrayContaining(["limit_objection", "clarification_request"]));
-    expect(objection.facts).toEqual(expect.arrayContaining([expect.objectContaining({ key: "requestedAmount", value: 800_000 })]));
+    expect(objection.facts).not.toEqual(expect.arrayContaining([expect.objectContaining({ key: "requestedAmount" })]));
     expect(alreadyProvided.intents).toContain("already_provided");
   });
 

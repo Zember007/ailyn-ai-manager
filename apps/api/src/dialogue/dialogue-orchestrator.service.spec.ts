@@ -10,6 +10,7 @@ import {
   MAX_DIALOGUE_RECENT_MESSAGES,
   MAX_DIALOGUE_SUMMARY_LENGTH,
   validateRouteProposal,
+  discardUnknownCurrencyMoneyFacts,
   getWritableMoneyMentionKeys,
   resolveForeignCurrencyFacts
 } from "./dialogue-orchestrator.service.js";
@@ -148,14 +149,17 @@ describe("DialogueOrchestratorService", () => {
     };
     const deferredIntegrations = { convertToSom: vi.fn() } as any;
 
+    const incomingFacts = { requestedAmount: 500_000 };
+    discardUnknownCurrencyMoneyFacts(incomingFacts, extraction.moneyMentions);
     const result = await resolveForeignCurrencyFacts({
       mentions: extraction.moneyMentions,
       currentFacts: {},
-      incomingFacts: {},
+      incomingFacts,
       writableMoneyMentionKeys: getWritableMoneyMentionKeys(extraction, {}),
       deferredIntegrations
     });
 
+    expect(incomingFacts).toEqual({});
     expect(result.facts).toEqual({});
     expect(deferredIntegrations.convertToSom).not.toHaveBeenCalled();
   });
