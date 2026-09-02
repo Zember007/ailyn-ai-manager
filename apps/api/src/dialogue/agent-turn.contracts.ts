@@ -1,0 +1,30 @@
+import { z } from "@ailyn/schemas";
+import type { ApplicationFacts } from "@ailyn/business-rules";
+
+const documentStatus = z.enum(["missing", "received", "poor_quality", "blocked"]);
+const applicationFactsPatchSchema = z.object({
+  language: z.enum(["ru", "kg", "mixed", "unknown"]).optional(), fullName: z.string().min(1).max(200).optional(), phone: z.string().min(3).max(40).optional(),
+  citizenship: z.string().max(120).optional(), residenceRegion: z.string().max(160).optional(), residenceText: z.string().max(300).optional(), residenceCategory: z.enum(["BISHKEK", "CHUY", "OTHER_KG", "FOREIGN"]).optional(), residenceNeedsClarification: z.boolean().optional(),
+  vehicleRegistrationCountry: z.string().max(120).optional(), vehicleRegistrationRegion: z.string().max(120).optional(), vehicleType: z.string().max(120).optional(), vehicleMake: z.string().max(120).optional(), vehicleModel: z.string().max(120).optional(), vehicleYear: z.number().int().min(1900).max(2100).optional(), reportedInvalidVehicleYear: z.number().int().nullable().optional(), vehicleValue: z.number().nonnegative().optional(), requestedAmount: z.number().nonnegative().optional(), vehicleValueSourceCurrency: z.enum(["KGS", "USD", "EUR", "KZT", "RUB"]).optional(), requestedAmountSourceCurrency: z.enum(["KGS", "USD", "EUR", "KZT", "RUB"]).optional(), requestedProgram: z.enum(["without_storage", "parking"]).optional(),
+  ownerChanged: z.boolean().optional(), plateChanged: z.boolean().optional(), ownerIsLegalEntity: z.boolean().optional(), borrowerIsLegalEntity: z.boolean().optional(), vehicleInCredit: z.boolean().optional(), vehiclePledged: z.boolean().optional(), vehicleArrested: z.boolean().optional(), registrationRestricted: z.boolean().optional(), refinancingRequested: z.boolean().optional(), buyoutRequested: z.boolean().optional(), accidentNotDrivable: z.boolean().optional(), foreignTravelQuestion: z.boolean().optional(), existingContractQuestion: z.boolean().optional(), existingContractPaymentMessage: z.boolean().optional(), borrowerIsOwner: z.boolean().optional(), ownerCanVisit: z.boolean().optional(),
+  familyStatus: z.enum(["married", "single", "divorced", "unknown"]).optional(), vehicleBoughtDuringMarriage: z.boolean().optional(), spouseConsentReady: z.boolean().optional(), spouseAway: z.boolean().optional(), guarantorAvailable: z.boolean().optional(), documents: z.object({ id_front: documentStatus.optional(), id_back: documentStatus.optional(), vehicle_registration_front: documentStatus.optional(), vehicle_registration_back: documentStatus.optional(), car_photo: documentStatus.optional(), unknown: documentStatus.optional() }).partial().optional(), visitRequested: z.boolean().optional(), visitDate: z.string().max(40).optional(), visitTime: z.string().max(40).optional(), clientPaused: z.boolean().optional(), clientClosed: z.boolean().optional(), declinedDocuments: z.boolean().optional(), declinedCarPhoto: z.boolean().optional(), ownerFullName: z.string().max(200).optional(), ownerResidenceRegion: z.string().max(160).optional(), ownerFamilyStatus: z.enum(["married", "single", "divorced", "unknown"]).optional(), vehiclePurchasedDuringMarriage: z.boolean().optional(), divorceCertificateReady: z.boolean().optional(), visitConfirmationPending: z.boolean().optional(), handedToManager: z.boolean().optional(), onTheWay: z.boolean().optional(), arrivedAtOffice: z.boolean().optional()
+}).strict();
+
+export const agentTurnResultSchema = z.object({
+  reply: z.string().min(1).max(4000),
+  language: z.enum(["ru", "kg", "mixed", "unknown"]),
+  intent: z.string().min(1).max(120),
+  leadCardPatch: applicationFactsPatchSchema,
+  cardSummary: z.string().max(2000),
+  dialogueState: z.object({
+    stage: z.enum(["NEW", "COLLECTING_VEHICLE", "COLLECTING_VALUE", "COLLECTING_AMOUNT", "COLLECTING_RESIDENCE", "ELIGIBILITY_CHECK", "COLLECTING_DOCUMENTS", "COLLECTING_FAMILY_STATUS", "CHECKING_GUARANTOR", "SCHEDULING_VISIT", "TARGET_REACHED_DOCUMENTS", "TARGET_REACHED_VISIT", "REFUSED", "PAUSED", "EXISTING_CONTRACT_REDIRECT"]),
+    status: z.enum(["continue", "refuse", "need_more_data", "redirect_existing_contract", "target_reached", "blocked"]),
+    nextAction: z.string().min(1).max(120)
+  }),
+  targetEvent: z.enum(["documents", "visit"]).nullable(),
+  managerUpdate: z.object({ kind: z.enum(["none", "initial", "delta"]), changedFields: z.array(z.string().min(1)).max(60) }),
+  attachments: z.array(z.object({ attachmentId: z.string().min(1), type: z.enum(["id_front", "id_back", "vehicle_registration_front", "vehicle_registration_back", "car", "unknown", "poor_quality"]), status: z.enum(["received", "poor_quality", "blocked"]) })).max(20)
+});
+
+export type AgentTurnResult = z.infer<typeof agentTurnResultSchema>;
+export type AgentLeadCardPatch = Partial<ApplicationFacts>;
