@@ -1,5 +1,5 @@
 import { Injectable } from "@nestjs/common";
-import type { ApplicationFacts } from "@ailyn/business-rules";
+import { calculateLoanLimits, defaultBusinessRuleSettings, type ApplicationFacts, type BusinessRuleSettings } from "@ailyn/business-rules";
 import { AgentTurnService } from "./agent-turn.service.js";
 import type { InboundMessage } from "../channels/channel.interface.js";
 import { SettingsService } from "../settings/settings.service.js";
@@ -21,8 +21,17 @@ export class DialogueOrchestratorService {
     let changedFactKeys: string[] = [];
     let managerEvent: "initial" | "delta" | null = null;
     if (turn.result) {
-      changedFactKeys = await this.store.updateFacts(application, turn.result.leadCardPatch);
-      await this.store.saveAgentState(application, { ...turn.result.dialogueState, cardSummary: turn.result.cardSummary, intent: turn.result.intent });
+      const leadCardPatch: Partial<ApplicationFacts> = {
+        ...turn.result.leadCardPatch,
+        ...(turn.result.language === "unknown" ? {} : { language: turn.result.language })
+      };
+      changedFactKeys = await this.store.updateFacts(application, leadCardPatch);
+      await this.store.saveAgentState(application, {
+        ...turn.result.dialogueState,
+        cardSummary: turn.result.cardSummary,
+        intent: turn.result.intent,
+        preliminaryLimit: selectedProgramLimit({ ...application.facts, ...leadCardPatch }, await this.settings.getValues())
+      });
       application = (await this.store.getApplication(application.id)) ?? application;
       for (const attachment of message.attachments) {
         const recognized = turn.result.attachments.find((item) => item.attachmentId === attachment.id);
@@ -59,3 +68,9 @@ export function validateRouteProposal(): { kind: "none" } { return { kind: "none
 export function discardUnknownCurrencyMoneyFacts(): void {}
 export function getWritableMoneyMentionKeys(): [] { return []; }
 export async function resolveForeignCurrencyFacts(): Promise<{ facts: Partial<ApplicationFacts>; traces: []; blockedRoles: [] }> { return { facts: {}, traces: [], blockedRoles: [] }; }
+
+function selectedProgramLimit(facts: ApplicationFacts, settings: object): number | null {
+  if (!facts.requestedProgram || !facts.residenceRegion) return null;
+  const limits = calculateLoanLimits(facts, { ...defaultBusinessRuleSettings, ...(settings as Partial<BusinessRuleSettings>) });
+  return facts.requestedProgram === "without_storage" ? limits.withoutStorage ?? null : limits.parking ?? null;
+}

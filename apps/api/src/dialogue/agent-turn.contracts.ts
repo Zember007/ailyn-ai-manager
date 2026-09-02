@@ -16,6 +16,7 @@ export const agentTurnResultSchema = z.object({
   intent: z.string().min(1).max(120),
   leadCardPatch: applicationFactsPatchSchema,
   cardSummary: z.string().max(2000),
+  preliminaryLimit: z.number().nonnegative().max(10_000_000).nullable().optional(),
   dialogueState: z.object({
     stage: z.enum(["NEW", "COLLECTING_VEHICLE", "COLLECTING_VALUE", "COLLECTING_AMOUNT", "COLLECTING_RESIDENCE", "ELIGIBILITY_CHECK", "COLLECTING_DOCUMENTS", "COLLECTING_FAMILY_STATUS", "CHECKING_GUARANTOR", "SCHEDULING_VISIT", "TARGET_REACHED_DOCUMENTS", "TARGET_REACHED_VISIT", "REFUSED", "PAUSED", "EXISTING_CONTRACT_REDIRECT"]),
     status: z.enum(["continue", "refuse", "need_more_data", "redirect_existing_contract", "target_reached", "blocked"]),

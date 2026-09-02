@@ -60,8 +60,8 @@ export function LeadCard({ application, attachments = [] }: Readonly<{ applicati
       <Field label="Год" value={facts.vehicleYear} />
       <Field label="Оценочная стоимость" value={facts.vehicleValue} />
       <Field label="Нужная сумма" value={facts.requestedAmount} />
-      <Field label="Доступные программы" value={translatePrograms(application?.decision?.eligiblePrograms as string[] | undefined)} />
-      <Field label="Предварительные лимиты" value={application?.decision?.calculatedLimits} />
+      <Field label="Текущая программа" value={translateProgram(facts.requestedProgram)} />
+      <Field label="Предварительный лимит" value={application?.agentState?.preliminaryLimit} />
       <Field label="Семейное положение" value={facts.familyStatus} />
       <Field label="Поручитель" value={translateBoolean(facts.guarantorAvailable)} />
       <Field label="Документы" value={attachments.map((attachment) => `${translateAttachmentType(attachment.type)}: ${translateStatus(attachment.status)}`).join(", ")} />
@@ -185,12 +185,12 @@ function translateStage(stage?: string): string {
   return map[value] ?? value;
 }
 
-function translatePrograms(programs?: string[]): string {
-  if (!programs?.length) return "Не определены";
-  return programs.map((program) => ({
+function translateProgram(program?: unknown): string {
+  if (typeof program !== "string") return "Не указана";
+  return ({
     without_storage: "Без изъятия",
     parking: "Стоянка"
-  }[program] ?? program)).join(", ");
+  }[program] ?? program);
 }
 
 function translateBoolean(value: unknown): string {

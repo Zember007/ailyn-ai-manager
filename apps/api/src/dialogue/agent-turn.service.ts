@@ -10,7 +10,7 @@ import { generatedDocumentationChunks } from "./documentation-chunks.generated.j
 import { agentTurnResultSchema, type AgentTurnResult } from "./agent-turn.contracts.js";
 import type { Stage1Message } from "./stage1-store.service.js";
 
-const PROMPT_VERSION = "single-agent-v1";
+const PROMPT_VERSION = "single-agent-v3";
 const NEUTRAL_REPLY = "Извините, сейчас не удалось обработать сообщение. Пожалуйста, напишите ещё раз или обратитесь к сотрудникам компании.";
 
 @Injectable()
@@ -46,13 +46,29 @@ export class AgentTurnService {
 }
 
 function buildMessage(input: { messages: Stage1Message[]; facts: ApplicationFacts; settings: object; text?: string; attachments: InboundAttachment[] }) {
-  const context = { history: input.messages.map(({ author, body, createdAt }) => ({ author, text: body, createdAt })), leadCard: input.facts, settings: input.settings, currentMessage: input.text ?? "", knowledge: selectKnowledge([input.text ?? "", JSON.stringify(input.facts), input.messages.at(-1)?.body ?? ""].join(" ")) };
+  const settings = input.settings as Record<string, unknown>;
+  const timezone = typeof settings.timezone === "string" ? settings.timezone : "Asia/Bishkek";
+  const context = { now: currentDateTime(timezone), timezone, history: input.messages.map(({ author, body, createdAt }) => ({ author, text: body, createdAt })), leadCard: input.facts, settings: input.settings, currentMessage: input.text ?? "", knowledge: selectKnowledge([input.text ?? "", JSON.stringify(input.facts), input.messages.at(-1)?.body ?? ""].join(" ")) };
   const parts: Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string; detail: "high" } }> = [{ type: "text", text: JSON.stringify(context) }];
   for (const attachment of input.attachments) {
     parts.push({ type: "text", text: JSON.stringify({ attachment: { id: attachment.id, fileName: attachment.fileName, mimeType: attachment.mimeType, textContent: attachment.textContent, metadata: attachment.metadata } }) });
     if (attachment.contentBase64 && /^image\/(jpeg|png|webp|gif)$/i.test(attachment.mimeType ?? "")) parts.push({ type: "image_url", image_url: { url: `data:${attachment.mimeType};base64,${attachment.contentBase64}`, detail: "high" } });
   }
   return parts;
+}
+
+function currentDateTime(timezone: string) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23"
+  }).formatToParts(new Date());
+  const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((item) => item.type === type)?.value ?? "00";
+  return `${part("year")}-${part("month")}-${part("day")}T${part("hour")}:${part("minute")}:00`;
 }
 
 function selectKnowledge(query: string) {
@@ -91,6 +107,10 @@ function normalizeAgentPayload(payload: Record<string, unknown>): Record<string,
         patch[key] = patch[key].trim().toLowerCase() === "true";
       }
     }
+    if (typeof patch.residenceRegion === "string") {
+      const normalizedRegion = residenceRegionAliases[patch.residenceRegion.trim().toUpperCase()];
+      if (normalizedRegion) patch.residenceRegion = normalizedRegion;
+    }
     payload.leadCardPatch = patch;
   }
   const state = payload.dialogueState;
@@ -122,6 +142,13 @@ const leadCardAliases: Record<string, string> = {
   loanAmount: "requestedAmount", neededAmount: "requestedAmount", requestedLoanAmount: "requestedAmount",
   clientName: "fullName", customerName: "fullName", clientPhone: "phone", customerPhone: "phone",
   residence: "residenceRegion", program: "requestedProgram", visitDatetime: "visitDate"
+};
+
+const residenceRegionAliases: Record<string, string> = {
+  BISHKEK: "Бишкек",
+  CHUY: "Чуйская область",
+  OTHER_KG: "Другой регион Кыргызстана",
+  FOREIGN: "Другая страна"
 };
 
 const numericLeadCardKeys = new Set(["vehicleYear", "reportedInvalidVehicleYear", "vehicleValue", "requestedAmount"]);

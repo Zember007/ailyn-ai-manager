@@ -54,6 +54,7 @@ export interface Stage1Application {
   facts: Record<string, unknown>;
   factHistory: { key: string; previousValue: unknown; newValue: unknown; changedAt: string }[];
   decision?: Record<string, unknown>;
+  agentState?: { nextAction: string; cardSummary: string; intent: string; preliminaryLimit?: number | null };
   createdAt: string;
   updatedAt: string;
 }

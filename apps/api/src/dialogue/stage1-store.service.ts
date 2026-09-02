@@ -35,6 +35,7 @@ export interface Stage1Application {
   facts: ApplicationFacts;
   factHistory: { key: string; previousValue: unknown; newValue: unknown; changedAt: string }[];
   decision?: DecisionResult;
+  agentState?: { nextAction: string; cardSummary: string; intent: string; preliminaryLimit?: number | null };
   createdAt: string;
   updatedAt: string;
 }
@@ -365,7 +366,7 @@ export class Stage1StoreService {
     });
   }
 
-  async saveAgentState(application: Stage1Application, state: { stage: ApplicationStage; status: DecisionResult["status"]; nextAction: string; cardSummary: string; intent: string }): Promise<void> {
+  async saveAgentState(application: Stage1Application, state: { stage: ApplicationStage; status: DecisionResult["status"]; nextAction: string; cardSummary: string; intent: string; preliminaryLimit?: number | null }): Promise<void> {
     const current = await this.prisma.application.findUnique({ where: { id: application.id }, select: { metadata: true } });
     await this.prisma.application.update({
       where: { id: application.id },
@@ -477,6 +478,7 @@ export class Stage1StoreService {
         changedAt: fact.createdAt.toISOString()
       })),
       decision: metadata.decision as DecisionResult | undefined,
+      agentState: metadata.agentState as Stage1Application["agentState"],
       createdAt: application.createdAt.toISOString(),
       updatedAt: application.updatedAt.toISOString()
     };
