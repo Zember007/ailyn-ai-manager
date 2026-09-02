@@ -12,6 +12,7 @@ import type { Stage1Message } from "./stage1-store.service.js";
 
 const PROMPT_VERSION = "single-agent-v3";
 const NEUTRAL_REPLY = "Извините, сейчас не удалось обработать сообщение. Пожалуйста, напишите ещё раз или обратитесь к сотрудникам компании.";
+const MAX_MODEL_ATTEMPTS = 3;
 
 @Injectable()
 export class AgentTurnService {
@@ -22,26 +23,31 @@ export class AgentTurnService {
 
   async run(input: { messages: Stage1Message[]; facts: ApplicationFacts; settings: object; text?: string; attachments: InboundAttachment[]; currencyConversions?: unknown[] }): Promise<{ result?: AgentTurnResult; reply: string; model: string; promptVersion: string; error?: string }> {
     if (!this.client.isConfigured()) return { reply: NEUTRAL_REPLY, model: "unconfigured", promptVersion: PROMPT_VERSION, error: "routerai_not_configured" };
-    try {
-      const response = await this.client.createChatCompletion({
-        model: this.config.routerAiTextModel ?? "routerai-text-model-not-configured", temperature: 0.2, max_tokens: 1600, reasoning: { enabled: false }, response_format: { type: "json_object" },
-        messages: [{ role: "system", content: loadPrompt("agent.system.md") }, { role: "user", content: buildMessage(input) }]
-      }, { timeoutMs: this.config.routerAiTimeoutMs });
-      const payload = normalizeAgentPayload(JSON.parse(response.choices?.[0]?.message?.content ?? "{}") as Record<string, unknown>, input.text);
-      const parsed = agentTurnResultSchema.safeParse(payload);
-      if (!parsed.success) {
-        const issues = parsed.error.issues.map((issue) => `${issue.path.join(".") || "root"}: ${issue.message}`).join("; ");
-        const state = payload.dialogueState && typeof payload.dialogueState === "object"
-          ? (payload.dialogueState as Record<string, unknown>).stage
-          : undefined;
-        throw new Error(`Agent response does not match AgentTurnResult (${issues}; stage=${JSON.stringify(state)}; targetEvent=${JSON.stringify(payload.targetEvent)})`);
+    const request = {
+      model: this.config.routerAiTextModel ?? "routerai-text-model-not-configured", temperature: 0.2, max_tokens: 1600, reasoning: { enabled: false }, response_format: { type: "json_object" as const },
+      messages: [{ role: "system" as const, content: loadPrompt("agent.system.md") }, { role: "user" as const, content: buildMessage(input) }]
+    };
+    let lastError = "unknown_model_error";
+    for (let attempt = 1; attempt <= MAX_MODEL_ATTEMPTS; attempt += 1) {
+      try {
+        const response = await this.client.createChatCompletion(request, { timeoutMs: this.config.routerAiTimeoutMs });
+        const payload = normalizeAgentPayload(JSON.parse(response.choices?.[0]?.message?.content ?? "{}") as Record<string, unknown>, input.text);
+        const parsed = agentTurnResultSchema.safeParse(payload);
+        if (!parsed.success) {
+          const issues = parsed.error.issues.map((issue) => `${issue.path.join(".") || "root"}: ${issue.message}`).join("; ");
+          const state = payload.dialogueState && typeof payload.dialogueState === "object"
+            ? (payload.dialogueState as Record<string, unknown>).stage
+            : undefined;
+          throw new Error(`Agent response does not match AgentTurnResult (${issues}; stage=${JSON.stringify(state)}; targetEvent=${JSON.stringify(payload.targetEvent)})`);
+        }
+        return { result: parsed.data, reply: parsed.data.reply, model: response.model ?? this.config.routerAiTextModel ?? "routerai", promptVersion: PROMPT_VERSION };
+      } catch (error) {
+        lastError = error instanceof Error ? error.message : String(error);
+        if (attempt < MAX_MODEL_ATTEMPTS) this.logger.warn(`Single-agent attempt ${attempt}/${MAX_MODEL_ATTEMPTS} failed; retrying: ${lastError}`);
       }
-      return { result: parsed.data, reply: parsed.data.reply, model: response.model ?? this.config.routerAiTextModel ?? "routerai", promptVersion: PROMPT_VERSION };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.logger.warn(`Single-agent fallback activated: ${message}`);
-      return { reply: NEUTRAL_REPLY, model: this.config.routerAiTextModel ?? "routerai", promptVersion: PROMPT_VERSION, error: message };
     }
+    this.logger.warn(`Single-agent fallback activated after ${MAX_MODEL_ATTEMPTS} attempts: ${lastError}`);
+    return { reply: NEUTRAL_REPLY, model: this.config.routerAiTextModel ?? "routerai", promptVersion: PROMPT_VERSION, error: lastError };
   }
 }
 

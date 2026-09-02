@@ -29,6 +29,19 @@ describe("single-agent dialogue", () => {
     const output = await new AgentTurnService(client).run({ messages: [], facts: {}, settings: {}, text: "test", attachments: [] });
     expect(output.result).toBeUndefined();
     expect(output.reply).toContain("не удалось обработать");
+    expect(client.createChatCompletion).toHaveBeenCalledTimes(3);
+  });
+
+  it("retries a malformed multimodal photo turn and persists the first valid retry", async () => {
+    const malformed = { choices: [{ message: { content: JSON.stringify({ ...validResult, leadCardPatch: { arbitrary: true } }) } }] };
+    const valid = { model: "one-model", choices: [{ message: { content: JSON.stringify(validResult) } }] };
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValueOnce(malformed).mockResolvedValueOnce(valid) } as any;
+    const output = await new AgentTurnService(client).run({ messages: [], facts: {}, settings: {}, text: "", attachments: [{ id: "id-front", mimeType: "image/jpeg", contentBase64: "abc" }] });
+    expect(output.result).toEqual(validResult);
+    expect(client.createChatCompletion).toHaveBeenCalledTimes(2);
+    for (const [request] of client.createChatCompletion.mock.calls) {
+      expect(request.messages[1].content).toEqual(expect.arrayContaining([expect.objectContaining({ type: "image_url" })]));
+    }
   });
 
   it("persists an explicit divorce status and a relative visit in normalized fields", async () => {
