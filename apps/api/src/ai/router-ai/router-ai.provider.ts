@@ -166,7 +166,15 @@ function supplementExplicitPendingProgram(result: ExtractionResult, input: Extra
   if (result.facts.every((fact) => fact.key !== "vehicleInCredit") && /машин[аеу]?[^.!?]{0,30}\s+в\s+кредит/i.test(text)) additions.push({ key: "vehicleInCredit", value: true, confidence: 1 });
   if (!result.facts.some((fact) => fact.key === "existingContractQuestion" && fact.value === true) && /(?:действующ(?:ему|ий)|по\s+договору|проверьте\s+оплату|я\s+оплатил)/i.test(text)) additions.push({ key: "existingContractQuestion", value: true, confidence: 1 });
   if (!result.facts.some((fact) => fact.key === "existingContractPaymentMessage" && fact.value === true) && /(?:проверьте\s+оплату|я\s+оплатил)/i.test(text)) additions.push({ key: "existingContractPaymentMessage", value: true, confidence: 1 });
-  if (!result.facts.some((fact) => fact.key === "familyStatus" && fact.value === "married") && /(?:я\s+)?(?:женат|замужем|в\s+браке)/i.test(text)) additions.push({ key: "familyStatus", value: "married", confidence: 1 });
+  if (!result.facts.some((fact) => fact.key === "familyStatus")) {
+    if (/(?:развед[её]н|разведена|в\s+разводе)/i.test(text)) {
+      additions.push({ key: "familyStatus", value: "divorced", confidence: 1 });
+    } else if (/(?:не\s+в\s+браке|не\s+женат|не\s+замужем|никогда\s+не\s+состоял(?:а)?)/i.test(text)) {
+      additions.push({ key: "familyStatus", value: "single", confidence: 1 });
+    } else if (/(?:я\s+)?(?:женат|замужем|в\s+браке)/i.test(text)) {
+      additions.push({ key: "familyStatus", value: "married", confidence: 1 });
+    }
+  }
   if (!result.facts.some((fact) => fact.key === "spouseConsentReady" && fact.value === false) && /согласие[^.!?]{0,30}(?:не\s+готово|нет|не\s+оформлено)/i.test(text)) additions.push({ key: "spouseConsentReady", value: false, confidence: 1 });
   const hasValidRequestedProgram = result.facts.some((fact) =>
     fact.key === "requestedProgram" && (fact.value === "without_storage" || fact.value === "parking")
@@ -353,11 +361,11 @@ function localExtract(input: ExtractionInput): ExtractionResult {
     facts.push({ key: "existingContractQuestion", value: true, confidence: 0.9 });
   }
   if (/(?:я\s+оплатил|проверьте\s+оплату)/i.test(text)) facts.push({ key: "existingContractPaymentMessage", value: true, confidence: 0.9 });
-  if (/(?:не\s+женат|не\s+замужем|никогда\s+не\s+состоял(?:а)?|никогда\s+не\s+был\s+женат|никогда\s+не\s+была\s+замужем)/i.test(text)) {
+  if (/(?:не\s+в\s+браке|не\s+женат|не\s+замужем|никогда\s+не\s+состоял(?:а)?|никогда\s+не\s+был\s+женат|никогда\s+не\s+была\s+замужем)/i.test(text)) {
     facts.push({ key: "familyStatus", value: "single", confidence: 0.9 });
   } else if (/(?:развед[её]н|разведена|в\s+разводе)/i.test(text)) {
     facts.push({ key: "familyStatus", value: "divorced", confidence: 0.9 });
-  } else if (/(?:женат|замужем|состою\s+в\s+браке)/i.test(text)) {
+  } else if (/(?:женат|замужем|состою\s+в\s+браке|(?:^|\s)в\s+браке)/i.test(text)) {
     facts.push({ key: "familyStatus", value: "married", confidence: 0.9 });
   }
   if (/(?:согласие|документ)[^.!?]{0,30}(?:готово|есть|оформлено)/i.test(text)) facts.push({ key: "spouseConsentReady", value: true, confidence: 0.85 });
