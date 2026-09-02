@@ -855,6 +855,7 @@ function reconcileMoneyMentionsWithText(
     }
     return {
       ...mention,
+      sourceText: parsed.sourceText,
       amount: parsed.normalizedAmount,
       normalizedAmount: parsed.normalizedAmount,
       // A parser's implicit KGS default is not evidence that the model's

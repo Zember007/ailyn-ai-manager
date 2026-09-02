@@ -434,7 +434,7 @@ describe("RouterAiProvider", () => {
     const formatMismatch = await provider.extract({ text: "нужно 500 000", attachments: [], facts: {} } as any);
     const absentSource = await provider.extract({ text: "нужно 500 000", attachments: [], facts: {} } as any);
 
-    expect(formatMismatch.moneyMentions).toContainEqual(expect.objectContaining({ sourceText: "500,000", currency: null, start: 6, end: 13 }));
+    expect(formatMismatch.moneyMentions).toContainEqual(expect.objectContaining({ sourceText: "500 000", currency: null, start: 6, end: 13 }));
     expect(formatMismatch.facts).not.toContainEqual(expect.objectContaining({ key: "requestedAmount" }));
     expect(absentSource.moneyMentions).toContainEqual(expect.objectContaining({ sourceText: "999к", currency: null }));
     expect(absentSource.facts).not.toContainEqual(expect.objectContaining({ key: "requestedAmount" }));
