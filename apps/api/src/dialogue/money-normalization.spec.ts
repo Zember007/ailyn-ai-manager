@@ -61,6 +61,18 @@ describe("money normalization", () => {
     expect(valueOnly.vehicleValueCurrency).toBe("RUB");
   });
 
+  it("does not reuse an explicitly requested amount as the vehicle value", () => {
+    const result = resolveMoneyFacts({
+      text: "хочу оставить камри под залог, нужно около 6 тысяч долларов",
+      currentFacts: {}
+    });
+
+    expect(result.requestedAmount).toBe(6_000);
+    expect(result.requestedAmountCurrency).toBe("USD");
+    expect(result.vehicleValue).toBeUndefined();
+    expect(result.vehicleValueCurrency).toBeUndefined();
+  });
+
   it("uses pending facts and correction cues instead of freezing the first saved amount", () => {
     const pendingAmount = resolveMoneyFacts({
       text: "800 тысяч",

@@ -142,6 +142,13 @@ function chooseMoneyMention(
     return available[0];
   }
 
+  // Never copy an explicitly classified amount into the other lead-card
+  // field. For example, "нужно 6 тысяч долларов" is only the requested loan
+  // amount; it is not evidence of the vehicle's value.
+  if (available.length === 1 && available[0].roleCandidate !== "unknown") {
+    return undefined;
+  }
+
   const unresolvedRequested = currentFacts.requestedAmount === undefined || context.allowRequestedRevision;
   const unresolvedVehicle = currentFacts.vehicleValue === undefined || context.allowVehicleRevision;
   if (available.length >= 2 && unresolvedRequested && unresolvedVehicle) {

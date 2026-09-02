@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { AgentTurnService } from "./agent-turn.service.js";
-import { DialogueOrchestratorService, resolveForeignCurrencyFacts } from "./dialogue-orchestrator.service.js";
+import { DialogueOrchestratorService, composeReply, resolveForeignCurrencyFacts } from "./dialogue-orchestrator.service.js";
 
 const validResult = {
   reply: "Подскажите, пожалуйста, модель и год выпуска автомобиля.", language: "ru", intent: "new_loan", leadCardPatch: { vehicleMake: "Toyota", vehicleYear: 2020 }, cardSummary: "Toyota 2020, ожидаются остальные данные.",
@@ -75,6 +75,12 @@ describe("single-agent dialogue", () => {
     expect(result.clientText).toContain("6 000 долларов США — ориентировочно 522 000 сом");
     expect(result.clientText).toContain("20 000 долларов США — ориентировочно 1 740 000 сом");
     expect(integrations.convertToSom).toHaveBeenCalledTimes(2);
+  });
+
+  it("places the currency explanation after the greeting and removes an exact model duplicate", () => {
+    const currency = "По официальному курсу НБКР: 6 000 долларов США — ориентировочно 524 700 сом.";
+    const reply = composeReply(`Здравствуйте! Я Айлин, менеджер. ${currency}\n\nПодскажите год автомобиля. ${currency}`, currency);
+    expect(reply).toBe("Здравствуйте! Я Айлин, менеджер.\n\nПо официальному курсу НБКР: 6 000 долларов США — ориентировочно 524 700 сом.\n\nПодскажите год автомобиля.");
   });
 
   it("persists a validated patch and preserves the public result shape", async () => {

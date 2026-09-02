@@ -52,13 +52,28 @@ export class DialogueOrchestratorService {
       }
     }
     const validation = { passed: Boolean(turn.result), errors: turn.error ? [turn.error] : [] };
-    const reply = [currency.clientText, turn.reply].filter((item): item is string => Boolean(item)).join("\n\n");
+    const reply = composeReply(turn.reply, currency.clientText);
     await this.store.addMessage(conversation, { author: "ai", body: reply, attachmentIds: [], attachments: [], metadata: { sourceMessageId: inbound.id, routerAiModel: turn.model, promptVersion: turn.promptVersion, validation, trace: { singleModel: true, changedFactKeys, managerEvent, intent: turn.result?.intent, targetEvent: turn.result?.targetEvent } } });
     const refreshedConversation = (await this.store.getConversation(conversation.id)) ?? conversation;
     const refreshedApplication = (await this.store.getApplication(application.id)) ?? refreshedConversation.application ?? application;
     void this.logs.log("dialogue.single-agent", "Processed dialogue turn", { conversationId: conversation.id, metadata: { applicationId: refreshedApplication.id, validModelResult: Boolean(turn.result), model: turn.model } });
     return { conversation: refreshedConversation, application: refreshedApplication, reply, validation, routerAiModel: turn.model, promptVersion: turn.promptVersion };
   }
+}
+
+/** Keep the conversational order: greeting/introduction first, then the
+ * server-confirmed currency explanation, then the model's next-step reply.
+ * The model is instructed not to repeat this explanation, but removing an
+ * exact duplicate here makes the public reply idempotent as well. */
+export function composeReply(modelReply: string, currencyText?: string): string {
+  const cleanReply = currencyText
+    ? modelReply.split(currencyText).join("").replace(/\n{3,}/g, "\n\n").replace(/[ \t]{2,}/g, " ").trim()
+    : modelReply.trim();
+  if (!currencyText) return cleanReply;
+  const introduction = cleanReply.match(/^\s*((?:Здравствуйте|Добрый\s+(?:день|вечер)|Салам(?:атсызбы)?)[!,.]?\s*(?:(?:Меня\s+зовут|Я)\s+Айлин[^.!?\n]*[.!?]\s*)?)/iu)?.[1]?.trim();
+  if (!introduction) return [currencyText, cleanReply].filter(Boolean).join("\n\n");
+  const rest = cleanReply.slice(introduction.length).trim();
+  return [introduction, currencyText, rest].filter(Boolean).join("\n\n");
 }
 
 // Public compatibility symbols kept while the old orchestration path is removed.
