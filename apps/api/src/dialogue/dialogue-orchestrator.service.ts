@@ -75,9 +75,14 @@ export function getWritableMoneyMentionKeys(): [] { return []; }
 export async function resolveForeignCurrencyFacts(text: string | undefined, currentFacts: ApplicationFacts, integrations?: DeferredIntegrationsService): Promise<{ facts: Partial<ApplicationFacts>; conversions: { role: "requestedAmount" | "vehicleValue"; amount: number; currency: ForeignMoneyCurrencyCode; somValue: number; effectiveDate: string }[]; clientText?: string }> {
   if (!text || !integrations) return { facts: {}, conversions: [] };
   const money = resolveMoneyFacts({ text, currentFacts });
+  const mentionFor = (role: "requestedAmount" | "vehicleValue") => money.mentions.find((item) => item.roleCandidate === role);
+  const requestedMention = mentionFor("requestedAmount");
+  const vehicleMention = mentionFor("vehicleValue");
+  const detectedCurrencies = [money.requestedAmountCurrency, money.vehicleValueCurrency, ...money.mentions.map((item) => item.currency)].filter(isForeignCurrency);
+  const sharedCurrency = new Set(detectedCurrencies).size === 1 ? detectedCurrencies[0] : undefined;
   const candidates: Array<{ role: "requestedAmount" | "vehicleValue"; amount?: number; currency?: string }> = [
-    { role: "requestedAmount", amount: money.requestedAmount, currency: money.requestedAmountCurrency },
-    { role: "vehicleValue", amount: money.vehicleValue, currency: money.vehicleValueCurrency }
+    { role: "requestedAmount", amount: money.requestedAmount ?? requestedMention?.normalizedAmount, currency: money.requestedAmountCurrency ?? requestedMention?.currency ?? sharedCurrency },
+    { role: "vehicleValue", amount: money.vehicleValue ?? vehicleMention?.normalizedAmount, currency: money.vehicleValueCurrency ?? vehicleMention?.currency ?? sharedCurrency }
   ];
   const facts: Partial<ApplicationFacts> = {};
   const conversions: { role: "requestedAmount" | "vehicleValue"; amount: number; currency: ForeignMoneyCurrencyCode; somValue: number; effectiveDate: string }[] = [];
@@ -95,7 +100,7 @@ export async function resolveForeignCurrencyFacts(text: string | undefined, curr
   return { facts, conversions, clientText };
 }
 
-function isForeignCurrency(value: string): value is ForeignMoneyCurrencyCode {
+function isForeignCurrency(value: string | null | undefined): value is ForeignMoneyCurrencyCode {
   return value === "USD" || value === "EUR" || value === "KZT" || value === "RUB";
 }
 

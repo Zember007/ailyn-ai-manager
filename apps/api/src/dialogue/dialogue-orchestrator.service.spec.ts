@@ -48,7 +48,7 @@ describe("single-agent dialogue", () => {
 
   it("converts every explicit foreign-currency amount to som before the one model call", async () => {
     const integrations = { convertToSom: vi.fn().mockImplementation(async ({ amount, currency }: { amount: number; currency: string }) => ({ available: true, value: amount * 87, currency, rate: 87, nominal: 1, source: "NBKR", sourceUrl: "https://example.test", effectiveDate: "2026-09-02" })) } as any;
-    const result = await resolveForeignCurrencyFacts("Мне нужно 6к долларов, авто стоит 20к долларов", {}, integrations);
+    const result = await resolveForeignCurrencyFacts("Мне нужно 6к долларов, авто стоит 20к", {}, integrations);
     expect(result.facts).toMatchObject({ requestedAmount: 522_000, requestedAmountSourceCurrency: "USD", vehicleValue: 1_740_000, vehicleValueSourceCurrency: "USD" });
     expect(result.clientText).toContain("6 000 долларов США — ориентировочно 522 000 сом");
     expect(result.clientText).toContain("20 000 долларов США — ориентировочно 1 740 000 сом");
