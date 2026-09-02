@@ -1,6 +1,8 @@
 import type { ApplicationFacts } from "@ailyn/business-rules";
 
 export type MoneyCurrencyCode = "KGS" | "USD" | "EUR" | "KZT" | "RUB";
+/** Currencies that are eligible for the NBKR foreign-exchange conversion path. */
+export type ForeignMoneyCurrencyCode = Exclude<MoneyCurrencyCode, "KGS">;
 export type MoneyRoleCandidate = "requestedAmount" | "vehicleValue" | "unknown";
 
 export interface MoneyMention {

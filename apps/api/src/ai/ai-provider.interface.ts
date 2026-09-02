@@ -1,5 +1,5 @@
 import type { ApplicationFacts, DecisionResult, DocumentCode } from "@ailyn/business-rules";
-import type { MoneyMention } from "../dialogue/money-normalization.js";
+import type { MoneyCurrencyCode, MoneyMention, MoneyRoleCandidate } from "../dialogue/money-normalization.js";
 
 export interface InboundAttachment {
   id: string;
@@ -37,6 +37,19 @@ export type RouteProposal =
   | { kind: "set_fact"; fact: keyof ApplicationFacts; value: unknown }
   | { kind: "clarify"; fact: keyof ApplicationFacts }
   | { kind: "none" };
+
+/**
+ * RouterAI's structured extraction record. Unlike the runtime MoneyMention,
+ * it may report an unknown currency and never needs text offsets.
+ */
+export interface ModelMoneyMention {
+  sourceText: string;
+  amount: number;
+  normalizedAmount: number;
+  currency: MoneyCurrencyCode | null;
+  roleCandidate: MoneyRoleCandidate;
+  confidence: number;
+}
 
 export interface ExtractionResult {
   language: "ru" | "kg" | "mixed" | "unknown";

@@ -1,6 +1,7 @@
 import { z } from "@ailyn/schemas";
 import type { ApplicationFacts, DecisionResult } from "@ailyn/business-rules";
-import type { MoneyCurrencyCode, MoneyMention, MoneyRoleCandidate } from "./money-normalization.js";
+import type { ModelMoneyMention } from "../ai/ai-provider.interface.js";
+import type { ForeignMoneyCurrencyCode, MoneyMention, MoneyRoleCandidate } from "./money-normalization.js";
 
 export const languageSchema = z.enum(["ru", "kg", "mixed", "unknown"]);
 export const questionSchema = z.object({ text: z.string().min(1), topic: z.string().min(1) });
@@ -9,22 +10,22 @@ export const routeProposalSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("clarify"), fact: z.string().min(1) }),
   z.object({ kind: z.literal("none") })
 ]);
+export const modelMoneyMentionSchema: z.ZodType<ModelMoneyMention> = z.object({
+  sourceText: z.string().min(1),
+  amount: z.number(),
+  normalizedAmount: z.number(),
+  currency: z.enum(["KGS", "USD", "EUR", "KZT", "RUB"]).nullable(),
+  roleCandidate: z.enum(["requestedAmount", "vehicleValue", "unknown"]),
+  confidence: z.number().min(0).max(1)
+});
+
 export const extractionSchema = z.object({
   language: languageSchema,
   turnKind: z.enum(["fact_update", "question", "mixed", "control", "attachment", "unknown"]).optional(),
   intents: z.array(z.string()).default([]),
   questions: z.array(questionSchema).default([]),
   facts: z.array(z.object({ key: z.string(), value: z.unknown(), confidence: z.number().min(0).max(1) })).default([]),
-  moneyMentions: z.array(z.object({
-    sourceText: z.string().min(1),
-    amount: z.number(),
-    normalizedAmount: z.number(),
-    currency: z.enum(["KGS", "USD", "EUR", "KZT", "RUB"]),
-    roleCandidate: z.enum(["requestedAmount", "vehicleValue", "unknown"]),
-    confidence: z.number().min(0).max(1),
-    start: z.number().int().min(0),
-    end: z.number().int().min(0)
-  })).default([]),
+  moneyMentions: z.array(modelMoneyMentionSchema).default([]),
   changedFacts: z.array(z.object({ key: z.string(), newValue: z.unknown() })).default([]),
   route: routeProposalSchema,
   attachments: z.array(z.object({ attachmentId: z.string(), type: z.string(), confidence: z.number().min(0).max(1) })).default([]),
@@ -34,6 +35,7 @@ export const extractionSchema = z.object({
 export const responseGenerationSchema = z.object({ message: z.string().min(1).max(4000) });
 
 export type StructuredExtraction = z.infer<typeof extractionSchema>;
+export type StructuredMoneyMention = z.infer<typeof modelMoneyMentionSchema>;
 
 export interface KnowledgeAnswer {
   key: string;
@@ -79,7 +81,7 @@ export interface SpeechToTextProvider { transcribe(): Promise<DeferredIntegratio
 export interface FxConversionResult {
   available: true;
   value: number;
-  currency: MoneyCurrencyCode;
+  currency: ForeignMoneyCurrencyCode;
   rate: number;
   nominal: number;
   source: "NBKR";
@@ -90,7 +92,7 @@ export interface FxConversionResult {
 export interface FxConversionTrace {
   role: Exclude<MoneyRoleCandidate, "unknown">;
   sourceText: string;
-  currency: MoneyCurrencyCode;
+  currency: ForeignMoneyCurrencyCode;
   amount: number;
   somValue?: number;
   status: "converted" | "blocked";
@@ -101,7 +103,7 @@ export interface FxConversionTrace {
 }
 
 export interface FxRateProvider {
-  convertToSom(input: { amount: number; currency: Exclude<MoneyCurrencyCode, "KGS"> }): Promise<FxConversionResult | DeferredIntegrationResult<number>>;
+  convertToSom(input: { amount: number; currency: ForeignMoneyCurrencyCode }): Promise<FxConversionResult | DeferredIntegrationResult<number>>;
 }
 export interface WorkingCalendarProvider { isWorkingTime(): Promise<DeferredIntegrationResult<boolean>>; }
 export interface ManagerNotificationChannel { deliver(): Promise<DeferredIntegrationResult<void>>; }
