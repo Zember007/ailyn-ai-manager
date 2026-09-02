@@ -23,14 +23,21 @@ export class AgentTurnService {
 
   async run(input: { messages: Stage1Message[]; facts: ApplicationFacts; settings: object; text?: string; attachments: InboundAttachment[]; currencyConversions?: unknown[] }): Promise<{ result?: AgentTurnResult; reply: string; model: string; promptVersion: string; error?: string }> {
     if (!this.client.isConfigured()) return { reply: NEUTRAL_REPLY, model: "unconfigured", promptVersion: PROMPT_VERSION, error: "routerai_not_configured" };
+    const systemPrompt = loadPrompt("agent.system.md");
     const request = {
       model: this.config.routerAiTextModel ?? "routerai-text-model-not-configured", temperature: 0.2, max_tokens: 1600, reasoning: { enabled: false }, response_format: { type: "json_object" as const },
-      messages: [{ role: "system" as const, content: loadPrompt("agent.system.md") }, { role: "user" as const, content: buildMessage(input) }]
+      messages: [{ role: "system" as const, content: systemPrompt }, { role: "user" as const, content: buildMessage(input) }]
     };
     let lastError = "unknown_model_error";
     for (let attempt = 1; attempt <= MAX_MODEL_ATTEMPTS; attempt += 1) {
       try {
-        const response = await this.client.createChatCompletion(request, { timeoutMs: this.config.routerAiTimeoutMs });
+        const retryInstruction = attempt > 1
+          ? "\n\nПОВТОРНАЯ ПОПЫТКА: предыдущий ответ не прошёл техническую проверку формата. Верните новый, полностью валидный JSON строго по заданной схеме. Не повторяйте техническое извинение: ответьте клиенту по существу и сохраните только допустимые поля карточки."
+          : "";
+        const attemptRequest = retryInstruction
+          ? { ...request, messages: [{ role: "system" as const, content: `${systemPrompt}${retryInstruction}` }, request.messages[1]] }
+          : request;
+        const response = await this.client.createChatCompletion(attemptRequest, { timeoutMs: this.config.routerAiTimeoutMs });
         const payload = normalizeAgentPayload(JSON.parse(response.choices?.[0]?.message?.content ?? "{}") as Record<string, unknown>, input.text);
         const parsed = agentTurnResultSchema.safeParse(payload);
         if (!parsed.success) {
@@ -40,7 +47,8 @@ export class AgentTurnService {
             : undefined;
           throw new Error(`Agent response does not match AgentTurnResult (${issues}; stage=${JSON.stringify(state)}; targetEvent=${JSON.stringify(payload.targetEvent)})`);
         }
-        return { result: parsed.data, reply: parsed.data.reply, model: response.model ?? this.config.routerAiTextModel ?? "routerai", promptVersion: PROMPT_VERSION };
+        const result = { ...parsed.data, reply: removeRepeatedGreeting(parsed.data.reply, input.messages) };
+        return { result, reply: result.reply, model: response.model ?? this.config.routerAiTextModel ?? "routerai", promptVersion: PROMPT_VERSION };
       } catch (error) {
         lastError = error instanceof Error ? error.message : String(error);
         if (attempt < MAX_MODEL_ATTEMPTS) this.logger.warn(`Single-agent attempt ${attempt}/${MAX_MODEL_ATTEMPTS} failed; retrying: ${lastError}`);
@@ -49,6 +57,15 @@ export class AgentTurnService {
     this.logger.warn(`Single-agent fallback activated after ${MAX_MODEL_ATTEMPTS} attempts: ${lastError}`);
     return { reply: NEUTRAL_REPLY, model: this.config.routerAiTextModel ?? "routerai", promptVersion: PROMPT_VERSION, error: lastError };
   }
+}
+
+function removeRepeatedGreeting(reply: string, messages: Stage1Message[]): string {
+  if (!messages.some((message) => message.author === "ai")) return reply;
+  const withoutGreeting = reply
+    .replace(/^\s*(?:здравствуйте|добрый\s+(?:день|вечер)|салам(?:атсызбы)?)[!,.]?\s*/iu, "")
+    .replace(/^\s*(?:(?:меня\s+зовут|я)\s+айлин)[^.!?\n]*[.!?]?\s*/iu, "")
+    .trim();
+  return withoutGreeting || reply;
 }
 
 function buildMessage(input: { messages: Stage1Message[]; facts: ApplicationFacts; settings: object; text?: string; attachments: InboundAttachment[]; currencyConversions?: unknown[] }) {

@@ -42,6 +42,7 @@ describe("single-agent dialogue", () => {
     for (const [request] of client.createChatCompletion.mock.calls) {
       expect(request.messages[1].content).toEqual(expect.arrayContaining([expect.objectContaining({ type: "image_url" })]));
     }
+    expect(client.createChatCompletion.mock.calls[1][0].messages[0].content).toContain("ПОВТОРНАЯ ПОПЫТКА");
   });
 
   it("persists an explicit divorce status and a relative visit in normalized fields", async () => {
@@ -57,6 +58,14 @@ describe("single-agent dialogue", () => {
     expect(output.result?.leadCardPatch).toEqual(expect.objectContaining({ visitRequested: true, visitTime: "12:00" }));
     expect(output.result?.leadCardPatch.visitDate).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     expect(JSON.stringify(client.createChatCompletion.mock.calls[0][0].messages)).toContain("interpretedCurrentMessage");
+  });
+
+  it("removes a repeated greeting when Ailyn has already answered in the conversation", async () => {
+    const repeatedGreeting = { ...validResult, reply: "Здравствуйте! Я Айлин, менеджер. Запись предварительная, менеджер её подтвердит." };
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify(repeatedGreeting) } }] }) } as any;
+    const output = await new AgentTurnService(client).run({ messages: [{ author: "ai", body: "Предыдущий ответ", createdAt: "2026-09-02" } as any], facts: {}, settings: {}, text: "завтра в 12", attachments: [] });
+    expect(output.reply).toBe("Запись предварительная, менеджер её подтвердит.");
+    expect(output.result?.reply).toBe(output.reply);
   });
 
   it("converts every explicit foreign-currency amount to som before the one model call", async () => {
