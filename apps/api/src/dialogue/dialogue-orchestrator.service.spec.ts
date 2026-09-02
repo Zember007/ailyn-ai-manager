@@ -15,7 +15,7 @@ describe("single-agent dialogue", () => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ model: "one-model", choices: [{ message: { content: JSON.stringify(validResult) } }] }) } as any;
     const service = new AgentTurnService(client);
     const output = await service.run({ messages: [{ author: "client", body: "Старая реплика", createdAt: "2026-01-01" } as any], facts: { fullName: "Иван" }, settings: { parkingInterestRate: 2.4 }, text: "Toyota 2020", attachments: [{ id: "photo", mimeType: "image/jpeg", contentBase64: "abc" }] });
-    expect(output.result).toEqual(validResult);
+    expect(output.result).toEqual({ ...validResult, leadCardPatch: { ...validResult.leadCardPatch, fullName: "Иван" } });
     expect(client.createChatCompletion).toHaveBeenCalledTimes(1);
     const request = client.createChatCompletion.mock.calls[0][0];
     expect(request.model).toBe(process.env.ROUTERAI_TEXT_MODEL ?? "routerai-text-model-not-configured");
@@ -51,6 +51,16 @@ describe("single-agent dialogue", () => {
     const output = await new AgentTurnService(client).run({ messages: [], facts: {}, settings: {}, text: "Я в разводе, в 5 в четверг", attachments: [] });
     expect(output.result?.leadCardPatch).toEqual(expect.objectContaining({ familyStatus: "divorced", visitRequested: true, visitTime: "17:00" }));
     expect(output.result?.leadCardPatch.visitDate).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+
+  it("preserves a document-chat refusal and lets the latest family-status correction win", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ ...validResult, leadCardPatch: { familyStatus: "divorced" } }) } }] }) } as any;
+    const service = new AgentTurnService(client);
+    const refusal = await service.run({ messages: [], facts: {}, settings: {}, text: "не буду отправлять документы в чате", attachments: [] });
+    const correction = await service.run({ messages: [], facts: { familyStatus: "divorced", declinedDocuments: true }, settings: {}, text: "а нет, в браке", attachments: [] });
+    expect(refusal.result?.leadCardPatch).toEqual(expect.objectContaining({ declinedDocuments: true }));
+    expect(correction.result?.leadCardPatch).toEqual(expect.objectContaining({ familyStatus: "married", declinedDocuments: true }));
+    expect(client.createChatCompletion).toHaveBeenCalledTimes(2);
   });
 
   it("normalizes tomorrow at noon before the model writes its reply", async () => {

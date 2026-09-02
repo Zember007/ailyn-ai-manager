@@ -41,7 +41,7 @@ export class AgentTurnService {
           ? { ...request, messages: [{ role: "system" as const, content: `${systemPrompt}${retryInstruction}` }, request.messages[1]] }
           : request;
         const response = await this.client.createChatCompletion(attemptRequest, { timeoutMs: this.config.routerAiTimeoutMs });
-        const payload = normalizeAgentPayload(JSON.parse(response.choices?.[0]?.message?.content ?? "{}") as Record<string, unknown>, input.text);
+        const payload = normalizeAgentPayload(JSON.parse(response.choices?.[0]?.message?.content ?? "{}") as Record<string, unknown>, input.text, input.facts);
         const parsed = agentTurnResultSchema.safeParse(payload);
         if (!parsed.success) {
           const issues = parsed.error.issues.map((issue) => `${issue.path.join(".") || "root"}: ${issue.message}`).join("; ");
@@ -114,10 +114,13 @@ function loadPrompt(name: string) {
 
 /** Translate model-friendly labels into the persisted Stage 1 enum before Zod
  * validates the final boundary. Unknown values stay unchanged and are rejected. */
-function normalizeAgentPayload(payload: Record<string, unknown>, inputText?: string): Record<string, unknown> {
+const permittedLeadCardKeys = new Set(Object.keys(agentTurnResultSchema.shape.leadCardPatch.shape));
+
+function normalizeAgentPayload(payload: Record<string, unknown>, inputText?: string, currentFacts: ApplicationFacts = {}): Record<string, unknown> {
   const leadCardPatch = payload.leadCardPatch;
   if (leadCardPatch && typeof leadCardPatch === "object" && !Array.isArray(leadCardPatch)) {
-    const patch = { ...(leadCardPatch as Record<string, unknown>) };
+    const carriedFacts = Object.fromEntries(Object.entries(currentFacts).filter(([key, value]) => permittedLeadCardKeys.has(key) && value !== undefined));
+    const patch = { ...carriedFacts, ...(leadCardPatch as Record<string, unknown>) };
     for (const [alias, key] of Object.entries(leadCardAliases)) {
       if (patch[key] === undefined && patch[alias] !== undefined) patch[key] = patch[alias];
       delete patch[alias];
@@ -214,8 +217,9 @@ function explicitLeadFacts(text: string | undefined, currentPatch: Record<string
   const normalized = text.toLocaleLowerCase("ru-RU");
   const facts: Record<string, unknown> = {};
   if (/(?:в\s+разводе|развед[её]н(?:а)?|разв[её]дена)/u.test(normalized)) facts.familyStatus = "divorced";
-  else if (/(?:в\s+браке|женат|замужем)/u.test(normalized)) facts.familyStatus = "married";
   else if (/(?:не\s+женат|не\s+замужем|не\s+состою\s+в\s+браке)/u.test(normalized)) facts.familyStatus = "single";
+  else if (/(?:в\s+браке|женат|замужем)/u.test(normalized)) facts.familyStatus = "married";
+  if (/(?:не\s+буду|не\s+хочу|не\s+могу|отказываюсь)[^.!?]{0,50}(?:в\s+чат|чат(?:е|ик)|отправ|фото|документ)/u.test(normalized)) facts.declinedDocuments = true;
 
   const visit = parseVisit(normalized);
   if (visit) {
@@ -223,7 +227,9 @@ function explicitLeadFacts(text: string | undefined, currentPatch: Record<string
     facts.visitDate = visit.date;
     if (visit.time) facts.visitTime = visit.time;
   }
-  return Object.fromEntries(Object.entries(facts).filter(([key]) => currentPatch[key] === undefined || currentPatch[key] === "unknown"));
+  return Object.fromEntries(Object.entries(facts).filter(([key]) =>
+    key === "familyStatus" || key === "declinedDocuments" || currentPatch[key] === undefined || currentPatch[key] === "unknown"
+  ));
 }
 
 function parseVisit(text: string): { date: string; time?: string } | undefined {
