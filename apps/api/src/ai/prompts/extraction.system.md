@@ -21,7 +21,7 @@ Use this exact shape. Always include every top-level field; use empty arrays or 
 
 Set `turnKind` to exactly one of `fact_update`, `question`, `mixed`, `control`, `attachment`, or `unknown`. This classification is mandatory: use `question` for an information request, `mixed` when a question and a usable fact coexist, and `control` for pause, complaint, on-the-way, or arrival.
 
-Each `facts` item must use exactly `key`, `value`, and numeric `confidence`; never use `field` or `amount` in a fact. Each `changedFacts` item must use exactly `key` and `newValue`. Each `moneyMentions` item must have `sourceText`, numeric `amount`, numeric `normalizedAmount`, currency (`KGS`, `USD`, `EUR`, `KZT`, or `RUB`), roleCandidate (`requestedAmount`, `vehicleValue`, or `unknown`), numeric confidence from 0 to 1, and integer `start` and `end` character positions.
+Each `facts` item must use exactly `key`, `value`, and numeric `confidence`; never use `field` or `amount` in a fact. Each `changedFacts` item must use exactly `key` and `newValue`. Each `moneyMentions` item must have `sourceText`, numeric `amount`, numeric `normalizedAmount`, currency (`KGS`, `USD`, `EUR`, `KZT`, `RUB`, or `null` when unknown), roleCandidate (`requestedAmount`, `vehicleValue`, or `unknown`), and numeric confidence from 0 to 1. Never guess `KGS` solely because the dialogue is about Kyrgyzstan; use `null` unless the source text or clear shared-currency context supports a currency.
 
 `route` is a conversational proposal only. Return exactly one of:
 - `{ "kind": "set_fact", "fact": "ApplicationFacts key", "value": "candidate value" }`

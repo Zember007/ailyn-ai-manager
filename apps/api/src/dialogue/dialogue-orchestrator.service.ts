@@ -12,7 +12,7 @@ import { BackendLogsService } from "../logs/backend-logs.service.js";
 import { KnowledgeBaseResolverService } from "./knowledge-base-resolver.service.js";
 import { DeferredIntegrationsService } from "./deferred-integrations.service.js";
 import type { FxConversionTrace } from "./pipeline.contracts.js";
-import type { MoneyMention } from "./money-normalization.js";
+import { detectMoneyMentions, type MoneyMention } from "./money-normalization.js";
 
 type RecoveryHint = {
   unresolvedFacts: string[];
@@ -194,7 +194,7 @@ export class DialogueOrchestratorService {
         delete incomingFacts.residenceRegion;
         delete incomingFacts.residenceCategory;
       }
-      discardUnknownCurrencyMoneyFacts(incomingFacts, extraction.moneyMentions);
+      discardUnknownCurrencyMoneyFacts(incomingFacts, extraction.moneyMentions, extractionText);
       const fxResolution = await resolveForeignCurrencyFacts({
         mentions: extraction.moneyMentions,
         currentFacts: application.facts,
@@ -818,13 +818,27 @@ function moneyMentionKey(mention: MoneyMention): string {
 
 export function discardUnknownCurrencyMoneyFacts(
   facts: Partial<ApplicationFacts>,
-  mentions: MoneyMention[] | undefined
+  mentions: MoneyMention[] | undefined,
+  text?: string
 ): void {
+  const unknownRoles = new Set<"requestedAmount" | "vehicleValue">();
   for (const mention of mentions ?? []) {
     if (mention.currency !== null || mention.roleCandidate === "unknown") {
       continue;
     }
-    delete facts[mention.roleCandidate];
+    unknownRoles.add(mention.roleCandidate);
+  }
+  for (const detected of detectMoneyMentions(text ?? "")) {
+    if (detected.currency !== null || detected.roleCandidate === "unknown") continue;
+    const hasCompatibleMention = (mentions ?? []).some((mention) =>
+      mention.roleCandidate === detected.roleCandidate &&
+      mention.normalizedAmount === detected.normalizedAmount &&
+      mention.currency !== null
+    );
+    if (!hasCompatibleMention) unknownRoles.add(detected.roleCandidate);
+  }
+  for (const role of unknownRoles) {
+    delete facts[role];
   }
 }
 

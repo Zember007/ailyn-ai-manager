@@ -360,6 +360,42 @@ describe("RouterAiProvider", () => {
     expect(result.facts).not.toContainEqual(expect.objectContaining({ key: "requestedAmount" }));
   });
 
+  it("downgrades an unmarked model KGS amount and blocks a fact-only numeric bypass", async () => {
+    const client = {
+      isConfigured: vi.fn().mockReturnValue(true),
+      createChatCompletion: vi.fn()
+        .mockResolvedValueOnce({
+          choices: [{ message: { content: JSON.stringify({
+            language: "ru",
+            facts: [{ key: "requestedAmount", value: 500_000, confidence: 0.95 }],
+            moneyMentions: [{
+              sourceText: "500к",
+              amount: 500_000,
+              normalizedAmount: 500_000,
+              currency: "KGS",
+              roleCandidate: "requestedAmount",
+              confidence: 0.95
+            }]
+          }) } }]
+        })
+        .mockResolvedValueOnce({
+          choices: [{ message: { content: JSON.stringify({
+            language: "ru",
+            facts: [{ key: "requestedAmount", value: 500_000, confidence: 0.95 }]
+          }) } }]
+        })
+    } as any;
+    const provider = new RouterAiProvider(client);
+
+    const modelKgs = await provider.extract({ text: "нужно 500к", attachments: [], facts: {} } as any);
+    const factOnly = await provider.extract({ text: "нужно 500к", attachments: [], facts: {} } as any);
+
+    expect(modelKgs.moneyMentions).toContainEqual(expect.objectContaining({ sourceText: "500к", currency: null }));
+    expect(modelKgs.facts).not.toContainEqual(expect.objectContaining({ key: "requestedAmount" }));
+    expect(factOnly.moneyMentions).toContainEqual(expect.objectContaining({ sourceText: "500к", currency: null }));
+    expect(factOnly.facts).not.toContainEqual(expect.objectContaining({ key: "requestedAmount" }));
+  });
+
   it("keeps unmarked fallback money unknown but persists an explicit som amount", async () => {
     const provider = new RouterAiProvider({ isConfigured: vi.fn().mockReturnValue(false) } as any);
 
@@ -695,9 +731,11 @@ describe("RouterAiProvider", () => {
     expect(result.facts).toEqual(expect.arrayContaining([
       expect.objectContaining({ key: "vehicleMake", value: "Toyota" }),
       expect.objectContaining({ key: "vehicleModel", value: "Camry" }),
-      expect.objectContaining({ key: "vehicleYear", value: 2018 }),
-      expect.objectContaining({ key: "vehicleValue", value: 1_500_000 }),
-      expect.objectContaining({ key: "requestedAmount", value: 500_000 })
+      expect.objectContaining({ key: "vehicleYear", value: 2018 })
+    ]));
+    expect(result.facts).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: "vehicleValue" }),
+      expect.objectContaining({ key: "requestedAmount" })
     ]));
   });
 

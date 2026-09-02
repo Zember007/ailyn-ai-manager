@@ -164,6 +164,14 @@ describe("DialogueOrchestratorService", () => {
     expect(deferredIntegrations.convertToSom).not.toHaveBeenCalled();
   });
 
+  it("does not persist an unmentioned numeric money fact from the current message", () => {
+    const incomingFacts = { requestedAmount: 500_000 };
+
+    discardUnknownCurrencyMoneyFacts(incomingFacts, [], "нужно 500к");
+
+    expect(incomingFacts).toEqual({});
+  });
+
   it("does not mutate an existing amount for a hypothetical currency question", async () => {
     const extraction = {
       language: "ru" as const,

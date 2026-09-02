@@ -575,6 +575,7 @@ function normalizeExtractionResult(payload: unknown, input?: ExtractionInput): E
 
   normalized.moneyMentions = harmonizeMoneyMentionCurrencies(normalized.moneyMentions, input.text);
   normalized.facts = backfillMoneyFacts(normalized.facts, normalized.moneyMentions);
+  normalized.facts = discardUnconfirmedMoneyFacts(normalized.facts, normalized.moneyMentions, input.text);
   return normalized;
 }
 
@@ -855,7 +856,9 @@ function reconcileMoneyMentionsWithText(
       normalizedAmount: parsed.normalizedAmount,
       // A parser's implicit KGS default is not evidence that the model's
       // unknown currency is som. Explicit source markers can safely resolve it.
-      currency: hasExplicitCurrencyMarker(parsed.sourceText) ? parsed.currency : mention.currency,
+      currency: hasExplicitCurrencyMarker(parsed.sourceText)
+        ? parsed.currency
+        : mention.currency === "KGS" ? null : mention.currency,
       confidence: Math.max(mention.confidence, parsed.confidence),
       start: parsed.start,
       end: parsed.end
@@ -914,6 +917,27 @@ function harmonizeMoneyMentionCurrencies(
 
 function hasExplicitCurrencyMarker(sourceText: string): boolean {
   return /(?:\$|€|₸|₽|\busd\b|\beur\b|\bkzt\b|\brub\b|\bkgs\b|доллар|евро|тенге|сом|руб)/iu.test(sourceText);
+}
+
+function discardUnconfirmedMoneyFacts(
+  facts: ExtractionResult["facts"],
+  mentions: ExtractionResult["moneyMentions"],
+  text: string | undefined
+): ExtractionResult["facts"] {
+  if (!text) return facts;
+  const unknownRoles = new Set<"requestedAmount" | "vehicleValue">();
+  for (const detected of detectMoneyMentions(text)) {
+    if (detected.currency !== null || detected.roleCandidate === "unknown") continue;
+    const hasCompatibleMention = mentions.some((mention) =>
+      mention.roleCandidate === detected.roleCandidate &&
+      mention.normalizedAmount === detected.normalizedAmount &&
+      mention.currency !== null
+    );
+    if (!hasCompatibleMention) unknownRoles.add(detected.roleCandidate);
+  }
+  return facts.filter((fact) =>
+    !((fact.key === "requestedAmount" || fact.key === "vehicleValue") && unknownRoles.has(fact.key))
+  );
 }
 
 function normalizeFacts(value: unknown): ExtractionResult["facts"] {
