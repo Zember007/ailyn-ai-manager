@@ -9,11 +9,13 @@ export interface MoneyMention {
   sourceText: string;
   amount: number;
   normalizedAmount: number;
-  currency: MoneyCurrencyCode;
+  /** Null means RouterAI identified an amount but could not identify its currency. */
+  currency: MoneyCurrencyCode | null;
   roleCandidate: MoneyRoleCandidate;
   confidence: number;
-  start: number;
-  end: number;
+  /** Runtime reconciliation computes positions when the source text is available. */
+  start?: number;
+  end?: number;
 }
 
 export interface ResolvedMoneyFacts {
@@ -54,10 +56,10 @@ export function resolveMoneyFacts(input: {
   return {
     mentions,
     requestedAmount: requested?.normalizedAmount,
-    requestedAmountCurrency: requested?.currency,
+    requestedAmountCurrency: requested?.currency ?? undefined,
     requestedAmountConfidence: requested?.confidence ?? 0,
     vehicleValue: vehicle?.normalizedAmount,
-    vehicleValueCurrency: vehicle?.currency,
+    vehicleValueCurrency: vehicle?.currency ?? undefined,
     vehicleValueConfidence: vehicle?.confidence ?? 0
   };
 }
@@ -128,7 +130,7 @@ function chooseMoneyMention(
   const available = mentions.filter((mention) => !excluded.includes(mention));
   const explicit = available
     .filter((mention) => mention.roleCandidate === role)
-    .sort((left, right) => right.confidence - left.confidence || left.start - right.start)[0];
+    .sort((left, right) => right.confidence - left.confidence || moneyMentionStart(left) - moneyMentionStart(right))[0];
   if (explicit) {
     return explicit;
   }
@@ -143,11 +145,15 @@ function chooseMoneyMention(
   const unresolvedRequested = currentFacts.requestedAmount === undefined || context.allowRequestedRevision;
   const unresolvedVehicle = currentFacts.vehicleValue === undefined || context.allowVehicleRevision;
   if (available.length >= 2 && unresolvedRequested && unresolvedVehicle) {
-    const sorted = [...available].sort((left, right) => right.normalizedAmount - left.normalizedAmount || left.start - right.start);
+    const sorted = [...available].sort((left, right) => right.normalizedAmount - left.normalizedAmount || moneyMentionStart(left) - moneyMentionStart(right));
     return role === "vehicleValue" ? sorted[0] : sorted[sorted.length - 1];
   }
 
-  return available.sort((left, right) => right.confidence - left.confidence || left.start - right.start)[0];
+  return available.sort((left, right) => right.confidence - left.confidence || moneyMentionStart(left) - moneyMentionStart(right))[0];
+}
+
+function moneyMentionStart(mention: MoneyMention): number {
+  return mention.start ?? Number.MAX_SAFE_INTEGER;
 }
 
 function normalizeCurrency(value: string | undefined): MoneyCurrencyCode | undefined {

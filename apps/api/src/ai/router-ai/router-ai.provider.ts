@@ -9,6 +9,7 @@ import type {
   ExtractionInput,
   ExtractionResult,
   GeneratedResponse,
+  ModelMoneyMention,
   ResponseGenerationInput,
   RouteProposal,
   VisionInput,
@@ -560,7 +561,7 @@ function normalizeExtractionResult(payload: unknown, input?: ExtractionInput): E
     intents: normalizeStringArray(source.intents),
     questions: normalizeQuestions(source.questions),
     facts: normalizeFacts(source.facts),
-    moneyMentions: normalizeMoneyMentions(source.moneyMentions),
+    moneyMentions: [],
     changedFacts: normalizeChangedFacts(source.changedFacts),
     route: normalizeRouteProposal(source.route),
     attachments: normalizeAttachments(source.attachments),
@@ -568,11 +569,10 @@ function normalizeExtractionResult(payload: unknown, input?: ExtractionInput): E
     clarificationNeeded: source.clarificationNeeded === true
   };
 
-  if (!input) {
-    return normalized;
-  }
+  const modelMoneyMentions = normalizeMoneyMentions(source.moneyMentions);
+  normalized.moneyMentions = reconcileMoneyMentionsWithText(modelMoneyMentions, input?.text);
+  if (!input) return normalized;
 
-  normalized.moneyMentions = reconcileMoneyMentionsWithText(normalized.moneyMentions, input.text);
   normalized.moneyMentions = harmonizeMoneyMentionCurrencies(normalized.moneyMentions, input.text);
   normalized.facts = backfillMoneyFacts(normalized.facts, normalized.moneyMentions);
   return normalized;
@@ -765,7 +765,7 @@ function normalizeQuestions(value: unknown): ExtractionResult["questions"] {
   });
 }
 
-function normalizeMoneyMentions(value: unknown): ExtractionResult["moneyMentions"] {
+function normalizeMoneyMentions(value: unknown): ModelMoneyMention[] {
   if (!Array.isArray(value)) {
     return [];
   }
@@ -778,11 +778,9 @@ function normalizeMoneyMentions(value: unknown): ExtractionResult["moneyMentions
       typeof item.sourceText !== "string" ||
       typeof item.amount !== "number" ||
       typeof item.normalizedAmount !== "number" ||
-      (item.currency !== "KGS" && item.currency !== "USD" && item.currency !== "EUR" && item.currency !== "KZT" && item.currency !== "RUB") ||
+      (item.currency !== null && item.currency !== "KGS" && item.currency !== "USD" && item.currency !== "EUR" && item.currency !== "KZT" && item.currency !== "RUB") ||
       (item.roleCandidate !== "requestedAmount" && item.roleCandidate !== "vehicleValue" && item.roleCandidate !== "unknown") ||
-      typeof item.confidence !== "number" ||
-      typeof item.start !== "number" ||
-      typeof item.end !== "number"
+      typeof item.confidence !== "number"
     ) {
       return [];
     }
@@ -793,9 +791,7 @@ function normalizeMoneyMentions(value: unknown): ExtractionResult["moneyMentions
       normalizedAmount: item.normalizedAmount,
       currency: item.currency,
       roleCandidate: item.roleCandidate,
-      confidence: item.confidence,
-      start: item.start,
-      end: item.end
+      confidence: item.confidence
     }];
   });
 }
@@ -810,7 +806,7 @@ function backfillMoneyFacts(
   }
 
   for (const mention of moneyMentions) {
-    if (mention.currency !== "KGS") {
+    if (mention.currency !== null && mention.currency !== "KGS") {
       // The structured model may have emitted a numeric KGS fact alongside a
       // foreign-currency mention. Keep the amount exclusively in the FX path;
       // otherwise a raw value such as `10 к долларов` can be stored as 10 som.
@@ -831,19 +827,22 @@ function backfillMoneyFacts(
 }
 
 function reconcileMoneyMentionsWithText(
-  mentions: ExtractionResult["moneyMentions"],
+  mentions: ModelMoneyMention[],
   text: string | undefined
 ): ExtractionResult["moneyMentions"] {
-  if (!text || mentions.length === 0) return mentions;
+  if (mentions.length === 0) return [];
+  if (!text) return mentions;
   const parsedFromText = detectMoneyMentions(text);
-  if (parsedFromText.length === 0) return mentions;
 
   return mentions.map((mention) => {
     const source = mention.sourceText.trim().toLocaleLowerCase("ru-RU");
     const parsed = parsedFromText.find((candidate) =>
       candidate.sourceText.trim().toLocaleLowerCase("ru-RU") === source
     );
-    if (!parsed) return mention;
+    if (!parsed) {
+      const range = findSourceTextRange(text, mention.sourceText);
+      return range === undefined ? mention : { ...mention, ...range };
+    }
     return {
       ...mention,
       amount: parsed.normalizedAmount,
@@ -856,6 +855,12 @@ function reconcileMoneyMentionsWithText(
   });
 }
 
+function findSourceTextRange(text: string, sourceText: string): { start: number; end: number } | undefined {
+  const normalizedSourceText = sourceText.trim().toLocaleLowerCase("ru-RU");
+  const start = text.toLocaleLowerCase("ru-RU").indexOf(normalizedSourceText);
+  return start < 0 ? undefined : { start, end: start + normalizedSourceText.length };
+}
+
 function harmonizeMoneyMentionCurrencies(
   mentions: ExtractionResult["moneyMentions"],
   text: string | undefined
@@ -864,7 +869,7 @@ function harmonizeMoneyMentionCurrencies(
     return mentions;
   }
 
-  const foreignMention = mentions.find((mention) => mention.currency !== "KGS" && hasExplicitCurrencyMarker(mention.sourceText));
+  const foreignMention = mentions.find((mention) => mention.currency !== null && mention.currency !== "KGS" && hasExplicitCurrencyMarker(mention.sourceText));
   if (!foreignMention) {
     return mentions;
   }
@@ -881,6 +886,9 @@ function harmonizeMoneyMentionCurrencies(
     return mentions;
   }
 
+  if (foreignMention.start === undefined || foreignMention.end === undefined || inferredMention.start === undefined || inferredMention.end === undefined) {
+    return mentions;
+  }
   const between = text.slice(
     Math.min(foreignMention.end, inferredMention.end),
     Math.max(foreignMention.start, inferredMention.start)

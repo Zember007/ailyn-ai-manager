@@ -812,7 +812,7 @@ function isExplicitMoneyCorrection(
 }
 
 function moneyMentionKey(mention: MoneyMention): string {
-  return `${mention.start}:${mention.end}:${mention.roleCandidate}:${mention.normalizedAmount}:${mention.currency}`;
+  return `${mention.start ?? -1}:${mention.end ?? -1}:${mention.roleCandidate}:${mention.normalizedAmount}:${mention.currency}`;
 }
 
 export async function resolveForeignCurrencyFacts(input: {
@@ -835,6 +835,9 @@ export async function resolveForeignCurrencyFacts(input: {
     const mention = rawMention.currency === "KGS" && inheritedCurrency && inheritedCurrency !== "KGS" && !hasExplicitMoneyCurrency(rawMention.sourceText)
       ? { ...rawMention, currency: inheritedCurrency }
       : rawMention;
+    if (mention.currency === null) {
+      continue;
+    }
     if (mention.currency === "KGS") {
       (facts as Record<string, unknown>)[sourceCurrencyKey] = "KGS";
       continue;
