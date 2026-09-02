@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { AgentTurnService } from "./agent-turn.service.js";
-import { DialogueOrchestratorService } from "./dialogue-orchestrator.service.js";
+import { DialogueOrchestratorService, resolveForeignCurrencyFacts } from "./dialogue-orchestrator.service.js";
 
 const validResult = {
   reply: "Подскажите, пожалуйста, модель и год выпуска автомобиля.", language: "ru", intent: "new_loan", leadCardPatch: { vehicleMake: "Toyota", vehicleYear: 2020 }, cardSummary: "Toyota 2020, ожидаются остальные данные.",
@@ -29,6 +29,30 @@ describe("single-agent dialogue", () => {
     const output = await new AgentTurnService(client).run({ messages: [], facts: {}, settings: {}, text: "test", attachments: [] });
     expect(output.result).toBeUndefined();
     expect(output.reply).toContain("не удалось обработать");
+  });
+
+  it("persists an explicit divorce status and a relative visit in normalized fields", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ ...validResult, leadCardPatch: {} }) } }] }) } as any;
+    const output = await new AgentTurnService(client).run({ messages: [], facts: {}, settings: {}, text: "Я в разводе, в 5 в четверг", attachments: [] });
+    expect(output.result?.leadCardPatch).toEqual(expect.objectContaining({ familyStatus: "divorced", visitRequested: true, visitTime: "17:00" }));
+    expect(output.result?.leadCardPatch.visitDate).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+
+  it("normalizes tomorrow at noon before the model writes its reply", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ ...validResult, leadCardPatch: {} }) } }] }) } as any;
+    const output = await new AgentTurnService(client).run({ messages: [], facts: {}, settings: {}, text: "завтра, в 12", attachments: [] });
+    expect(output.result?.leadCardPatch).toEqual(expect.objectContaining({ visitRequested: true, visitTime: "12:00" }));
+    expect(output.result?.leadCardPatch.visitDate).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(JSON.stringify(client.createChatCompletion.mock.calls[0][0].messages)).toContain("interpretedCurrentMessage");
+  });
+
+  it("converts every explicit foreign-currency amount to som before the one model call", async () => {
+    const integrations = { convertToSom: vi.fn().mockImplementation(async ({ amount, currency }: { amount: number; currency: string }) => ({ available: true, value: amount * 87, currency, rate: 87, nominal: 1, source: "NBKR", sourceUrl: "https://example.test", effectiveDate: "2026-09-02" })) } as any;
+    const result = await resolveForeignCurrencyFacts("Мне нужно 6к долларов, авто стоит 20к долларов", {}, integrations);
+    expect(result.facts).toMatchObject({ requestedAmount: 522_000, requestedAmountSourceCurrency: "USD", vehicleValue: 1_740_000, vehicleValueSourceCurrency: "USD" });
+    expect(result.clientText).toContain("6 000 долларов США — ориентировочно 522 000 сом");
+    expect(result.clientText).toContain("20 000 долларов США — ориентировочно 1 740 000 сом");
+    expect(integrations.convertToSom).toHaveBeenCalledTimes(2);
   });
 
   it("persists a validated patch and preserves the public result shape", async () => {
