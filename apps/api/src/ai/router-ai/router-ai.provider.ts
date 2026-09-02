@@ -843,12 +843,15 @@ function reconcileMoneyMentionsWithText(
 
   return mentions.map((mention) => {
     const source = mention.sourceText.trim().toLocaleLowerCase("ru-RU");
-    const parsed = parsedFromText.find((candidate) =>
+    const exactParsed = parsedFromText.find((candidate) =>
       candidate.sourceText.trim().toLocaleLowerCase("ru-RU") === source
     );
+    const equivalentParsed = parsedFromText.filter((candidate) => candidate.normalizedAmount === mention.normalizedAmount);
+    const parsed = exactParsed ?? (equivalentParsed.length === 1 ? equivalentParsed[0] : undefined);
     if (!parsed) {
       const range = findSourceTextRange(text, mention.sourceText);
-      return range === undefined ? mention : { ...mention, ...range };
+      const currency = mention.currency === "KGS" ? null : mention.currency;
+      return range === undefined ? { ...mention, currency } : { ...mention, currency, ...range };
     }
     return {
       ...mention,

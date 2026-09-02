@@ -396,6 +396,50 @@ describe("RouterAiProvider", () => {
     expect(factOnly.facts).not.toContainEqual(expect.objectContaining({ key: "requestedAmount" }));
   });
 
+  it("requires local currency evidence when model money source formatting mismatches or is absent", async () => {
+    const client = {
+      isConfigured: vi.fn().mockReturnValue(true),
+      createChatCompletion: vi.fn()
+        .mockResolvedValueOnce({
+          choices: [{ message: { content: JSON.stringify({
+            language: "ru",
+            facts: [{ key: "requestedAmount", value: 500_000, confidence: 0.95 }],
+            moneyMentions: [{
+              sourceText: "500,000",
+              amount: 500_000,
+              normalizedAmount: 500_000,
+              currency: "KGS",
+              roleCandidate: "requestedAmount",
+              confidence: 0.95
+            }]
+          }) } }]
+        })
+        .mockResolvedValueOnce({
+          choices: [{ message: { content: JSON.stringify({
+            language: "ru",
+            facts: [{ key: "requestedAmount", value: 999_000, confidence: 0.95 }],
+            moneyMentions: [{
+              sourceText: "999к",
+              amount: 999_000,
+              normalizedAmount: 999_000,
+              currency: "KGS",
+              roleCandidate: "requestedAmount",
+              confidence: 0.95
+            }]
+          }) } }]
+        })
+    } as any;
+    const provider = new RouterAiProvider(client);
+
+    const formatMismatch = await provider.extract({ text: "нужно 500 000", attachments: [], facts: {} } as any);
+    const absentSource = await provider.extract({ text: "нужно 500 000", attachments: [], facts: {} } as any);
+
+    expect(formatMismatch.moneyMentions).toContainEqual(expect.objectContaining({ sourceText: "500,000", currency: null, start: 6, end: 13 }));
+    expect(formatMismatch.facts).not.toContainEqual(expect.objectContaining({ key: "requestedAmount" }));
+    expect(absentSource.moneyMentions).toContainEqual(expect.objectContaining({ sourceText: "999к", currency: null }));
+    expect(absentSource.facts).not.toContainEqual(expect.objectContaining({ key: "requestedAmount" }));
+  });
+
   it("keeps unmarked fallback money unknown but persists an explicit som amount", async () => {
     const provider = new RouterAiProvider({ isConfigured: vi.fn().mockReturnValue(false) } as any);
 
@@ -748,24 +792,24 @@ describe("RouterAiProvider", () => {
           language: "ru",
           moneyMentions: [
             {
-              sourceText: "стоит 1500000",
+              sourceText: "1 500 000 сом",
               amount: 1_500_000,
               normalizedAmount: 1_500_000,
               currency: "KGS",
               roleCandidate: "vehicleValue",
               confidence: 0.94,
               start: 12,
-              end: 24
+              end: 25
             },
             {
-              sourceText: "нужно 500000",
+              sourceText: "500 000 сом",
               amount: 500_000,
               normalizedAmount: 500_000,
               currency: "KGS",
               roleCandidate: "requestedAmount",
               confidence: 0.94,
-              start: 25,
-              end: 37
+              start: 33,
+              end: 44
             }
           ]
         }) } }]
@@ -774,7 +818,7 @@ describe("RouterAiProvider", () => {
 
     const provider = new RouterAiProvider(client);
     const result = await provider.extract({
-      text: "Камри 2022 стоит 1500000, нужно 500000",
+      text: "Камри 2022 стоит 1 500 000 сом, нужно 500 000 сом",
       attachments: [],
       facts: {}
     });
