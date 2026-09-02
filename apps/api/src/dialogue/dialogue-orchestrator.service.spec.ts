@@ -123,6 +123,43 @@ describe("DialogueOrchestratorService", () => {
     expect(deferredIntegrations.convertToSom).toHaveBeenCalledWith({ amount: 6_000, currency: "USD" });
   });
 
+  it("does not send a model-unknown currency through FX resolution", async () => {
+    const extraction = {
+      language: "ru" as const,
+      turnKind: "fact_update" as const,
+      intents: [],
+      questions: [],
+      facts: [],
+      moneyMentions: [{
+        sourceText: "500к",
+        amount: 500_000,
+        normalizedAmount: 500_000,
+        currency: null,
+        roleCandidate: "requestedAmount" as const,
+        confidence: 0.95,
+        start: 7,
+        end: 11
+      }],
+      changedFacts: [],
+      route: { kind: "none" as const },
+      attachments: [],
+      promptInjectionDetected: false,
+      clarificationNeeded: false
+    };
+    const deferredIntegrations = { convertToSom: vi.fn() } as any;
+
+    const result = await resolveForeignCurrencyFacts({
+      mentions: extraction.moneyMentions,
+      currentFacts: {},
+      incomingFacts: {},
+      writableMoneyMentionKeys: getWritableMoneyMentionKeys(extraction, {}),
+      deferredIntegrations
+    });
+
+    expect(result.facts).toEqual({});
+    expect(deferredIntegrations.convertToSom).not.toHaveBeenCalled();
+  });
+
   it("does not mutate an existing amount for a hypothetical currency question", async () => {
     const extraction = {
       language: "ru" as const,

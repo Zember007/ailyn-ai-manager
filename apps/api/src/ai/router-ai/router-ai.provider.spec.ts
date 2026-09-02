@@ -305,6 +305,36 @@ describe("RouterAiProvider", () => {
     }));
   });
 
+  it("keeps an implicit som parser default unknown when the model currency is null", async () => {
+    const client = {
+      isConfigured: vi.fn().mockReturnValue(true),
+      createChatCompletion: vi.fn().mockResolvedValue({
+        choices: [{ message: { content: JSON.stringify({
+          language: "ru",
+          moneyMentions: [{
+            sourceText: "500к",
+            amount: 500_000,
+            normalizedAmount: 500_000,
+            currency: null,
+            roleCandidate: "requestedAmount",
+            confidence: 0.95
+          }]
+        }) } }]
+      })
+    } as any;
+    const text = "нужно 500к";
+
+    const result = await new RouterAiProvider(client).extract({ text, attachments: [], facts: {} } as any);
+
+    expect(result.moneyMentions).toContainEqual(expect.objectContaining({
+      sourceText: "500к",
+      currency: null,
+      start: text.indexOf("500к"),
+      end: text.indexOf("500к") + "500к".length
+    }));
+    expect(result.facts).not.toContainEqual(expect.objectContaining({ key: "requestedAmount" }));
+  });
+
   it("does not mistake a vehicle year inside the first message for vehicle value", async () => {
     process.env.DATABASE_URL ??= "postgresql://test:test@localhost:5432/ailyn";
     process.env.REDIS_URL ??= "redis://localhost:6379";

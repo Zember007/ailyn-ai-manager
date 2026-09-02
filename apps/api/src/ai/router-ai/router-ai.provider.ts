@@ -806,11 +806,11 @@ function backfillMoneyFacts(
   }
 
   for (const mention of moneyMentions) {
-    if (mention.currency !== null && mention.currency !== "KGS") {
+    if (mention.currency !== "KGS") {
       // The structured model may have emitted a numeric KGS fact alongside a
       // foreign-currency mention. Keep the amount exclusively in the FX path;
       // otherwise a raw value such as `10 к долларов` can be stored as 10 som.
-      if (mention.roleCandidate === "vehicleValue" || mention.roleCandidate === "requestedAmount") {
+      if (mention.currency !== null && (mention.roleCandidate === "vehicleValue" || mention.roleCandidate === "requestedAmount")) {
         byKey.delete(mention.roleCandidate);
       }
       continue;
@@ -847,7 +847,9 @@ function reconcileMoneyMentionsWithText(
       ...mention,
       amount: parsed.normalizedAmount,
       normalizedAmount: parsed.normalizedAmount,
-      currency: parsed.currency,
+      // A parser's implicit KGS default is not evidence that the model's
+      // unknown currency is som. Explicit source markers can safely resolve it.
+      currency: hasExplicitCurrencyMarker(parsed.sourceText) ? parsed.currency : mention.currency,
       confidence: Math.max(mention.confidence, parsed.confidence),
       start: parsed.start,
       end: parsed.end
@@ -876,7 +878,7 @@ function harmonizeMoneyMentionCurrencies(
 
   const inferredMention = mentions.find((mention) =>
     mention !== foreignMention &&
-    mention.currency === "KGS" &&
+    (mention.currency === "KGS" || mention.currency === null) &&
     !hasExplicitCurrencyMarker(mention.sourceText) &&
     mention.roleCandidate !== "unknown" &&
     foreignMention.roleCandidate !== "unknown" &&
