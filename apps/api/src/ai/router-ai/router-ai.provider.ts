@@ -840,19 +840,28 @@ function reconcileMoneyMentionsWithText(
   if (mentions.length === 0) return [];
   if (!text) return mentions;
   const parsedFromText = detectMoneyMentions(text);
+  const consumedParsedIndexes = new Set<number>();
+  const consumedRanges = new Set<string>();
 
   return mentions.map((mention) => {
     const source = mention.sourceText.trim().toLocaleLowerCase("ru-RU");
-    const exactParsed = parsedFromText.find((candidate) =>
-      candidate.sourceText.trim().toLocaleLowerCase("ru-RU") === source
+    const exactIndex = parsedFromText.findIndex((candidate, index) =>
+      !consumedParsedIndexes.has(index) && candidate.sourceText.trim().toLocaleLowerCase("ru-RU") === source
     );
-    const equivalentParsed = parsedFromText.filter((candidate) => candidate.normalizedAmount === mention.normalizedAmount);
-    const parsed = exactParsed ?? (equivalentParsed.length === 1 ? equivalentParsed[0] : undefined);
-    if (!parsed) {
-      const range = findSourceTextRange(text, mention.sourceText);
+    const equivalentIndexes = parsedFromText.flatMap((candidate, index) =>
+      !consumedParsedIndexes.has(index) && candidate.normalizedAmount === mention.normalizedAmount ? [index] : []
+    );
+    const parsedIndex = exactIndex >= 0 ? exactIndex : equivalentIndexes.length === 1 ? equivalentIndexes[0] : undefined;
+    const parsed = parsedIndex === undefined ? undefined : parsedFromText[parsedIndex];
+    if (parsedIndex === undefined || !parsed) {
+      const range = findSourceTextRange(text, mention.sourceText, consumedRanges);
       const currency = mention.currency === "KGS" ? null : mention.currency;
-      return range === undefined ? { ...mention, currency } : { ...mention, currency, ...range };
+      return range === undefined
+        ? { ...mention, currency }
+        : { ...mention, sourceText: text.slice(range.start, range.end), currency, ...range };
     }
+    consumedParsedIndexes.add(parsedIndex);
+    consumedRanges.add(`${parsed.start}:${parsed.end}`);
     return {
       ...mention,
       sourceText: parsed.sourceText,
@@ -870,10 +879,21 @@ function reconcileMoneyMentionsWithText(
   });
 }
 
-function findSourceTextRange(text: string, sourceText: string): { start: number; end: number } | undefined {
+function findSourceTextRange(text: string, sourceText: string, consumedRanges: Set<string>): { start: number; end: number } | undefined {
   const normalizedSourceText = sourceText.trim().toLocaleLowerCase("ru-RU");
-  const start = text.toLocaleLowerCase("ru-RU").indexOf(normalizedSourceText);
-  return start < 0 ? undefined : { start, end: start + normalizedSourceText.length };
+  if (!normalizedSourceText) return undefined;
+  const normalizedText = text.toLocaleLowerCase("ru-RU");
+  let start = normalizedText.indexOf(normalizedSourceText);
+  while (start >= 0) {
+    const end = start + normalizedSourceText.length;
+    const rangeKey = `${start}:${end}`;
+    if (!consumedRanges.has(rangeKey)) {
+      consumedRanges.add(rangeKey);
+      return { start, end };
+    }
+    start = normalizedText.indexOf(normalizedSourceText, start + normalizedSourceText.length);
+  }
+  return undefined;
 }
 
 function harmonizeMoneyMentionCurrencies(

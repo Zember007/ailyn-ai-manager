@@ -405,7 +405,7 @@ describe("RouterAiProvider", () => {
             language: "ru",
             facts: [{ key: "requestedAmount", value: 500_000, confidence: 0.95 }],
             moneyMentions: [{
-              sourceText: "500,000",
+              sourceText: " 500,000 ",
               amount: 500_000,
               normalizedAmount: 500_000,
               currency: "KGS",
@@ -438,6 +438,30 @@ describe("RouterAiProvider", () => {
     expect(formatMismatch.facts).not.toContainEqual(expect.objectContaining({ key: "requestedAmount" }));
     expect(absentSource.moneyMentions).toContainEqual(expect.objectContaining({ sourceText: "999к", currency: null }));
     expect(absentSource.facts).not.toContainEqual(expect.objectContaining({ key: "requestedAmount" }));
+  });
+
+  it("uses exact, distinct client spans for repeated model money source text", async () => {
+    const client = {
+      isConfigured: vi.fn().mockReturnValue(true),
+      createChatCompletion: vi.fn().mockResolvedValue({
+        choices: [{ message: { content: JSON.stringify({
+          language: "ru",
+          moneyMentions: [
+            { sourceText: " 10 тыс долларов ", amount: 10_000, normalizedAmount: 10_000, currency: "USD", roleCandidate: "vehicleValue", confidence: 0.95 },
+            { sourceText: "10 тыс долларов", amount: 10_000, normalizedAmount: 10_000, currency: "USD", roleCandidate: "requestedAmount", confidence: 0.95 }
+          ]
+        }) } }]
+      })
+    } as any;
+    const text = "🚗 10 тыс долларов; ещё 10 тыс долларов";
+
+    const result = await new RouterAiProvider(client).extract({ text, attachments: [], facts: {} } as any);
+    const [first, second] = result.moneyMentions;
+
+    expect(first).toEqual(expect.objectContaining({ sourceText: "10 тыс долларов", start: text.indexOf("10 тыс долларов"), end: text.indexOf("10 тыс долларов") + "10 тыс долларов".length }));
+    expect(second).toEqual(expect.objectContaining({ sourceText: "10 тыс долларов", start: text.lastIndexOf("10 тыс долларов"), end: text.lastIndexOf("10 тыс долларов") + "10 тыс долларов".length }));
+    expect(first?.sourceText).toBe(text.slice(first?.start, first?.end));
+    expect(second?.sourceText).toBe(text.slice(second?.start, second?.end));
   });
 
   it("keeps unmarked fallback money unknown but persists an explicit som amount", async () => {
