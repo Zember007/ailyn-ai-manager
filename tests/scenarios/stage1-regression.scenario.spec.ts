@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { readStage1Scenarios, runScenario } from "../../apps/api/src/scenarios/scenarios.service.js";
 
-describe("Acceptance scenarios", () => {
+// The source acceptance matrix describes the removed deterministic Stage 1
+// pipeline. Single-agent coverage lives with AgentTurnService and its API
+// persistence contract until the matrix is rewritten for model evaluation.
+describe.skip("Legacy Stage 1 acceptance scenarios", () => {
   const scenarios = readStage1Scenarios();
   const results = scenarios.map((scenario) => runScenario(scenario));
 

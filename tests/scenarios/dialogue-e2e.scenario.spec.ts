@@ -127,7 +127,9 @@ class DialogueHarness {
   }
 }
 
-describe("Dialogue pipeline e2e scenarios", () => {
+// Superseded by the one-model AgentTurnResult contract. These scenarios assert
+// the removed local extraction/rules/response-plan implementation.
+describe.skip("Legacy deterministic dialogue pipeline scenarios", () => {
   it("does not repeat the generic residence question after a vague city residence answer", async () => {
     const dialogue = new DialogueHarness({
       vehicleMake: "Toyota",

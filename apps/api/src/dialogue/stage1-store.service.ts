@@ -365,6 +365,15 @@ export class Stage1StoreService {
     });
   }
 
+  async saveAgentState(application: Stage1Application, state: { stage: ApplicationStage; status: DecisionResult["status"]; nextAction: string; cardSummary: string; intent: string }): Promise<void> {
+    const current = await this.prisma.application.findUnique({ where: { id: application.id }, select: { metadata: true } });
+    await this.prisma.application.update({
+      where: { id: application.id },
+      data: { state: state.stage as ApplicationState, metadata: toJson({ ...asRecord(current?.metadata), status: state.status, agentState: state }) }
+    });
+    await this.recordAudit("agent.state.updated", "Application", application.id, { status: state.status, stage: state.stage, nextAction: state.nextAction, intent: state.intent });
+  }
+
   async createManagerNotification(application: Stage1Application, kind: "initial" | "delta", payload: Record<string, unknown>): Promise<boolean> {
     const idempotencyKey = kind === "initial"
       ? `manager-${application.id}-initial`
