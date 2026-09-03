@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { AgentTurnService } from "./agent-turn.service.js";
 import { DialogueOrchestratorService, composeReply, resolveForeignCurrencyFacts } from "./dialogue-orchestrator.service.js";
-import { generatedDocumentationChunks } from "./documentation-chunks.generated.js";
 
 const validResult = {
   reply: "Подскажите, пожалуйста, модель и год выпуска автомобиля.", language: "ru", intent: "new_loan", leadCardPatch: { vehicleMake: "Toyota", vehicleYear: 2020 }, cardSummary: "Toyota 2020, ожидаются остальные данные.",
@@ -10,6 +9,64 @@ const validResult = {
 };
 
 describe("single-agent dialogue", () => {
+  it("normalizes both monetary roles through the model contract", async () => {
+    process.env.DATABASE_URL ??= "postgresql://test:test@localhost:5432/ailyn";
+    process.env.REDIS_URL ??= "redis://localhost:6379";
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ values: [
+      { field: "vehicleValue", amount: 21_000, currency: "USD", confidence: 0.99 },
+      { field: "requestedAmount", amount: 10_000, currency: "USD", confidence: 0.99 }
+    ] }) } }] }) } as any;
+    const result = await new AgentTurnService(client).normalizeMoney({ text: "камри 2023 стоит 21 к долларов надо 10", facts: {}, messages: [] });
+    expect(result).toEqual([
+      { field: "vehicleValue", amount: 21_000, currency: "USD", confidence: 0.99 },
+      { field: "requestedAmount", amount: 10_000, currency: "USD", confidence: 0.99 }
+    ]);
+    expect(client.createChatCompletion).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the requested amount when the model binds yes to a parking-program offer", async () => {
+    process.env.DATABASE_URL ??= "postgresql://test:test@localhost:5432/ailyn";
+    process.env.REDIS_URL ??= "redis://localhost:6379";
+    const facts = {
+      vehicleMake: "Toyota", vehicleYear: 2022, vehicleValue: 1_749_000,
+      requestedAmount: 874_488, requestedProgram: "without_storage",
+      residenceRegion: "Другой регион Кыргызстана", residenceCategory: "OTHER_KG"
+    } as any;
+    const modelResult = {
+      ...validResult,
+      reply: "По программе со стоянкой предварительно доступно до 900 000 сом. Пожалуйста, отправьте фото ID и СТС с обеих сторон.",
+      leadCardPatch: { requestedProgram: "parking", requestedAmount: 874_488 },
+      preliminaryLimit: 900_000,
+      dialogueState: { stage: "COLLECTING_DOCUMENTS", status: "need_more_data", nextAction: "collect_documents" }
+    };
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify(modelResult) } }] }) } as any;
+
+    const output = await new AgentTurnService(client).run({ messages: [{ author: "ai", body: "Можно рассмотреть программу со стоянкой. Подходит ли Вам этот вариант?", createdAt: "now" } as any], facts, settings: {}, text: "да", attachments: [] });
+
+    expect(output.result?.leadCardPatch).toEqual(expect.objectContaining({ requestedProgram: "parking", requestedAmount: 874_488 }));
+    expect(output.reply).toContain("программе со стоянкой");
+  });
+
+  it("persists a yes answer to the single guarantor-availability question", async () => {
+    process.env.DATABASE_URL ??= "postgresql://test:test@localhost:5432/ailyn";
+    process.env.REDIS_URL ??= "redis://localhost:6379";
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult,
+      reply: "Спасибо. Продолжим оформление.",
+      leadCardPatch: { guarantorAvailable: true },
+      dialogueState: { stage: "COLLECTING_DOCUMENTS", status: "need_more_data", nextAction: "collect_documents" }
+    }) } }] }) } as any;
+
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "Подскажите, пожалуйста, есть ли у Вас поручитель? Он должен быть от 25 лет, с пропиской в Бишкеке или Чуйской области, присутствовать лично и иметь ID.", createdAt: "now" } as any],
+      facts: { requestedProgram: "without_storage", residenceCategory: "OTHER_KG" } as any,
+      settings: {}, text: "да", attachments: []
+    });
+
+    expect(output.result?.leadCardPatch.guarantorAvailable).toBe(true);
+    expect(output.reply).not.toContain("есть ли у Вас поручитель");
+  });
+
   it("uses one multimodal model call with full history and knowledge", async () => {
     process.env.DATABASE_URL ??= "postgresql://test:test@localhost:5432/ailyn";
     process.env.REDIS_URL ??= "redis://localhost:6379";
@@ -23,13 +80,11 @@ describe("single-agent dialogue", () => {
     expect(request.model).toBe(process.env.ROUTERAI_TEXT_MODEL ?? "routerai-text-model-not-configured");
     expect(request.response_format).toEqual({ type: "json_object" });
     expect(JSON.stringify(request.messages)).toContain("Старая реплика");
-    expect(JSON.stringify(request.messages)).toContain("docx_0001");
-    expect(JSON.stringify(request.messages)).toContain("Б. Молодой Гвардии, 22, Бишкек");
-    expect(JSON.stringify(request.messages)).toContain("+996 502 108 108");
     const context = JSON.parse((request.messages[1].content as Array<{ type: string; text?: string }>)[0].text ?? "{}");
     expect(context.leadCard).toEqual(facts);
     expect(context.history).toEqual([{ author: "client", text: "Старая реплика", createdAt: "2026-01-01" }]);
-    expect(context.knowledge).toEqual(generatedDocumentationChunks);
+    expect(context.knowledge.length).toBeLessThan(15);
+    expect(context.relevantStages).toContain("application");
     expect(request.messages[1].content).toEqual(expect.arrayContaining([expect.objectContaining({ type: "image_url" })]));
   });
 

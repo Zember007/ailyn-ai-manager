@@ -4,12 +4,14 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadAppConfig } from "@ailyn/config";
 import type { ApplicationFacts } from "@ailyn/business-rules";
+import type { NormalizedMoneyValue } from "../ai/ai-provider.interface.js";
 import { RouterAiClient } from "../ai/router-ai/router-ai.client.js";
 import type { InboundAttachment } from "../channels/channel.interface.js";
 import { BackendLogsService } from "../logs/backend-logs.service.js";
-import { attachmentFactsFromResult, effectiveFactsForTurn, programComparison, reconcileAgentTurn, type ProgramComparison } from "./agent-turn-reconciliation.js";
-import { generatedDocumentationChunks } from "./documentation-chunks.generated.js";
+import { attachmentFactsFromResult, effectiveFactsForTurn } from "./agent-turn-reconciliation.js";
+import { selectRelevantDocumentation } from "./documentation-retrieval.js";
 import { agentTurnResultSchema, type AgentTurnResult } from "./agent-turn.contracts.js";
+import { moneyNormalizationSchema } from "./pipeline.contracts.js";
 import type { Stage1Message } from "./stage1-store.service.js";
 
 const PROMPT_VERSION = "single-agent-v3";
@@ -30,6 +32,28 @@ export class AgentTurnService {
   private readonly logger = new Logger(AgentTurnService.name);
 
   constructor(private readonly client: RouterAiClient, private readonly logs?: BackendLogsService) {}
+
+  async normalizeMoney(input: { text?: string; facts: ApplicationFacts; messages: Stage1Message[] }): Promise<NormalizedMoneyValue[]> {
+    if (!this.client.isConfigured() || !input.text?.trim()) return [];
+    try {
+      const response = await this.client.createChatCompletion({
+        model: this.config.routerAiTextModel ?? "routerai-text-model-not-configured",
+        temperature: 0,
+        max_tokens: 300,
+        reasoning: { enabled: false },
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: loadPrompt("money-normalization.system.md") },
+          { role: "user", content: JSON.stringify({ currentMessage: input.text, leadCard: input.facts, history: input.messages.map(({ author, body }) => ({ author, text: body })) }) }
+        ]
+      }, { timeoutMs: this.config.routerAiTimeoutMs });
+      const parsed = moneyNormalizationSchema.safeParse(JSON.parse(response.choices?.[0]?.message?.content ?? "{}"));
+      return parsed.success ? parsed.data.values : [];
+    } catch (error) {
+      this.logger.warn(`Money normalization unavailable: ${formatError(error)}`);
+      return [];
+    }
+  }
 
   async run(input: AgentTurnInput): Promise<{ result?: AgentTurnResult; reply: string; model: string; promptVersion: string; error?: string }> {
     if (!this.client.isConfigured()) {
@@ -153,26 +177,15 @@ function isFetchFailure(error: unknown): boolean {
 }
 
 function localAttachmentRecovery(input: AgentTurnInput): AgentTurnResult {
-  const reconciliation = reconcileAgentTurn({
-    effectiveFacts: input.facts,
-    proposedState: { stage: "COLLECTING_DOCUMENTS", status: "need_more_data", nextAction: "collect_documents" },
-    proposedTargetEvent: null,
-    proposedPreliminaryLimit: null,
-    settings: input.settings
-  });
-  const reply = reconciliation.pendingRequirement?.fact === "residenceRegion"
-    ? "Фотографии получили.\n\nПодскажите, пожалуйста, Ваша прописка: Бишкек, Чуйская область или другой регион Кыргызстана?"
-    : reconciliation.pendingRequirement?.fact === "familyStatus"
-      ? "Фотографии получили.\n\nПодскажите, пожалуйста, состоите ли Вы в браке?"
-      : "Фотографии получили. Продолжаем оформление; если какой-то снимок окажется неразборчивым, я уточню нужную сторону.";
+  const reply = "Фотографии получили. Продолжаем оформление; если какой-то снимок окажется неразборчивым, я уточню нужную сторону.";
   return {
     reply,
     language: input.facts.language ?? "ru",
     intent: "attachments_received_pending_recognition",
     leadCardPatch: input.facts,
     cardSummary: "Вложения получены, автоматическое распознавание временно недоступно.",
-    ...(reconciliation.preliminaryLimit === null ? {} : { preliminaryLimit: reconciliation.preliminaryLimit }),
-    dialogueState: reconciliation.state,
+    preliminaryLimit: null,
+    dialogueState: { stage: "COLLECTING_DOCUMENTS", status: "need_more_data", nextAction: "collect_documents" },
     targetEvent: null,
     managerUpdate: { kind: "none", changedFields: [] },
     attachments: input.attachments.map((attachment) => ({ attachmentId: attachment.id, type: "unknown", status: "received" }))
@@ -180,7 +193,6 @@ function localAttachmentRecovery(input: AgentTurnInput): AgentTurnResult {
 }
 
 function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): AgentTurnResult & { reply: string } {
-  const { preliminaryLimit: _proposedPreliminaryLimit, ...payloadWithoutProposedLimit } = parsed;
   const effectiveFacts = effectiveFactsForTurn({
     previous: input.facts,
     modelPatch: parsed.leadCardPatch,
@@ -188,49 +200,12 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     currencyFacts: {},
     attachmentFacts: attachmentFactsFromResult(input.facts, parsed.attachments)
   });
-  const reconciliation = reconcileAgentTurn({
-    effectiveFacts,
-    proposedState: parsed.dialogueState,
-    proposedTargetEvent: parsed.targetEvent,
-    proposedPreliminaryLimit: parsed.preliminaryLimit,
-    settings: input.settings
-  });
-  const semanticErrors = validateAgentTurnSemantics({ result: parsed, effectiveFacts, inputAttachments: input.attachments, errors: reconciliation.semanticErrors });
-  // Stage, preliminary limit and target event are all deterministically
-  // reconciled below. A stale model proposal must not turn into a fallback
-  // after the safe state has already been calculated from effective facts.
-  const criticalErrors = semanticErrors.filter((issue) => !issue.startsWith("invalid_stage_transition:") && issue !== "preliminary_limit_conflict" && !issue.startsWith("invalid_target_event:"));
-  if (criticalErrors.length > 0) throw new Error(`Agent response semantic validation failed (${criticalErrors.join("; ")})`);
-  const stageSafeReply = missingRequirementReply({
-    modelReply: parsed.reply,
-    requirement: reconciliation.pendingRequirement,
-    facts: effectiveFacts
-  });
-  const financialReply = reconcileFinancialReply({
-    modelReply: stageSafeReply,
-    comparison: reconciliation.programComparison,
-    stage: reconciliation.state.stage,
-    needsDeterministicLimitRewrite: semanticErrors.includes("preliminary_limit_conflict")
-  });
-  const acknowledgedReply = financialReply;
-  const alternativeProgram = reconciliation.programComparison?.requestedAmountExceedsSelectedLimit && reconciliation.programComparison.alternative?.coversRequestedAmount
-    ? reconciliation.programComparison.alternative.program
-    : undefined;
-  const finalPreliminaryLimit = alternativeProgram ? reconciliation.programComparison?.alternative?.limit : reconciliation.preliminaryLimit;
-  const persistedFacts = {
-    ...effectiveFacts,
-    ...(alternativeProgram ? { requestedProgram: alternativeProgram } : {})
-  };
   return {
-    ...payloadWithoutProposedLimit,
-    // Persist the reconciled, cumulative inventory rather than the model's
-    // partial patch. This makes uploads independent of their order and stops
-    // a later ID upload from replacing previously accepted STS sides.
-    leadCardPatch: persistedFacts,
-    dialogueState: reconciliation.state,
-    targetEvent: reconciliation.targetEvent,
-    ...(finalPreliminaryLimit == null ? {} : { preliminaryLimit: finalPreliminaryLimit }),
-    reply: separateQuestions(removeRepeatedGreeting(acknowledgedReply, input.messages))
+    ...parsed,
+    // Keep the cumulative card inventory, while all stage and reply decisions
+    // remain owned by the organizing model.
+    leadCardPatch: effectiveFacts,
+    reply: separateQuestions(removeRepeatedGreeting(parsed.reply, input.messages))
   };
 }
 
@@ -282,98 +257,11 @@ function separateQuestions(reply: string): string {
   return reply.replace(/([.!?])\s+(?=[А-ЯЁA-Z][^.!?\n]{0,160}\?)/gu, "$1\n\n").trim();
 }
 
-function reconcileFinancialReply(input: { modelReply: string; comparison?: ProgramComparison; stage: AgentTurnResult["dialogueState"]["stage"]; needsDeterministicLimitRewrite: boolean }): string {
-  const comparison = input.comparison;
-  if (!comparison) return input.modelReply;
-  const selectedProgram = programLabel(comparison.selectedProgram);
-  const selectedLimit = formatSom(comparison.selectedLimit);
-  const requestedAmount = comparison.requestedAmount === undefined ? undefined : formatSom(comparison.requestedAmount);
-
-  if (comparison.requestedAmountExceedsSelectedLimit) {
-    const alternative = comparison.alternative;
-    if (alternative?.coversRequestedAmount) {
-      return [
-        `По программе ${selectedProgram} предварительно доступно до ${selectedLimit} сом.`,
-        `Для нужной суммы подойдёт программа ${programLabel(alternative.program)} — автомобиль остаётся на охраняемой парковке. Предварительно по ней доступно до ${formatSom(alternative.limit)} сом.`,
-        "Окончательная сумма определяется после осмотра автомобиля и проверки документов менеджером.",
-        "Пожалуйста, отправьте фото:\n• ID / паспорта — с двух сторон;\n• свидетельства о регистрации ТС — с двух сторон."
-      ].join("\n\n");
-    }
-    if (alternative?.program === "parking") {
-      return [
-        `По программе ${selectedProgram} предварительно доступно до ${selectedLimit} сом.`,
-        `Запрошенная сумма — ${requestedAmount} сом, она превышает этот лимит.`,
-        `По программе со стоянкой автомобиль остаётся на охраняемой парковке. Предварительно доступно до ${formatSom(alternative.limit)} сом.`,
-        `Запрошенная сумма превышает и этот лимит. Подскажите, пожалуйста, сможете рассмотреть сумму в пределах ${formatSom(alternative.limit)} сом?`
-      ].join("\n\n");
-    }
-    return [
-      `По программе ${selectedProgram} предварительно доступно до ${selectedLimit} сом.`,
-      `Запрошенная сумма — ${requestedAmount} сом, она превышает этот лимит.`,
-      "Подскажите, пожалуйста, сможете рассмотреть сумму в пределах предварительного лимита?"
-    ].join("\n\n");
-  }
-
-  if (!input.needsDeterministicLimitRewrite) return input.modelReply;
-  const blocks = [`По программе ${selectedProgram} для Ваших данных предварительно доступно до ${selectedLimit} сом.`];
-  if (requestedAmount) blocks.push(`Запрошенная сумма — ${requestedAmount} сом, она укладывается в этот предварительный лимит.`);
-  blocks.push("Окончательное решение будет после осмотра автомобиля и проверки документов.");
-  if (input.stage === "COLLECTING_DOCUMENTS") {
-    blocks.push("Пожалуйста, отправьте фото:\n• ID — лицевая и обратная стороны;\n• СТС — лицевая и обратная стороны.");
-  }
-  return blocks.join("\n\n");
-}
-
-function missingRequirementReply(input: { modelReply: string; requirement?: { fact: string }; facts: ApplicationFacts }): string {
-  const fact = input.requirement?.fact;
-  if (!fact) return input.modelReply;
-  if (fact === "residenceRegion") {
-    return "Подскажите, пожалуйста, Ваша прописка:\n• Бишкек;\n• Чуйская область;\n• другой регион Кыргызстана.";
-  }
-  if (fact === "familyStatus") {
-    return "Подскажите, пожалуйста, состоите ли Вы в браке?";
-  }
-  if (fact === "spouseConsentReady") {
-    return "Сможете предоставить нотариально заверенное согласие супруга или супруги?";
-  }
-  if (fact === "guarantorAvailable") {
-    return "Подскажите, пожалуйста, есть ли у Вас поручитель?";
-  }
-  if (fact === "id_front" || fact === "id_back" || fact === "vehicle_registration_front" || fact === "vehicle_registration_back") {
-    const missing = [
-      input.facts.documents?.id_front !== "received" ? "ID — лицевая сторона" : undefined,
-      input.facts.documents?.id_back !== "received" ? "ID — обратная сторона" : undefined,
-      input.facts.documents?.vehicle_registration_front !== "received" ? "СТС — лицевая сторона" : undefined,
-      input.facts.documents?.vehicle_registration_back !== "received" ? "СТС — обратная сторона" : undefined
-    ].filter((value): value is string => Boolean(value));
-    return `Пожалуйста, отправьте фото:\n${missing.map((value) => `• ${value};`).join("\n")}`;
-  }
-  if (replyAddressesRequirement(input.modelReply, fact)) return input.modelReply;
-  return input.modelReply;
-}
-
-function replyAddressesRequirement(reply: string, fact: string): boolean {
-  const value = reply.toLocaleLowerCase("ru-RU");
-  if (fact === "residenceRegion") return /подскажите.{0,50}(?:пропис|бишкек|чуй|регион)|(?:бишкек|чуй|другой регион).{0,100}\?/u.test(value);
-  if (fact === "familyStatus") return /(?:состоите.{0,30}браке|семейн.{0,30}положен|женат|замужем|в разводе)/u.test(value);
-  if (fact === "spouseConsentReady") return /(?:нотариальн|согласие).{0,80}(?:сможете|готов|предостав)|(?:сможете|готов|предостав).{0,80}(?:нотариальн|согласие)/u.test(value);
-  if (fact === "guarantorAvailable") return /поручител/u.test(value);
-  if (fact.startsWith("id_") || fact.startsWith("vehicle_registration_")) return /(?:паспорт|\bid\b|стс|свидетельств)/u.test(value);
-  return true;
-}
-
-function programLabel(program: "without_storage" | "parking"): string {
-  return program === "without_storage" ? "без изъятия" : "со стоянкой";
-}
-
-function formatSom(value: number): string {
-  return new Intl.NumberFormat("ru-RU").format(value);
-}
-
 function buildMessage(input: { messages: Stage1Message[]; facts: ApplicationFacts; settings: object; text?: string; attachments: InboundAttachment[]; currencyConversions?: unknown[] }, includeImages = true) {
   const settings = input.settings as Record<string, unknown>;
   const timezone = typeof settings.timezone === "string" ? settings.timezone : "Asia/Bishkek";
-  const context = { now: currentDateTime(timezone), timezone, history: input.messages.map(({ author, body, createdAt }) => ({ author, text: body, createdAt })), leadCard: input.facts, settings: input.settings, currentMessage: input.text ?? "", deterministicProgramComparison: programComparison(input.facts, input.settings), currencyConversions: input.currencyConversions ?? [], knowledge: generatedDocumentationChunks };
+  const retrieval = selectRelevantDocumentation({ facts: input.facts, currentMessage: input.text, messages: input.messages });
+  const context = { now: currentDateTime(timezone), timezone, history: input.messages.map(({ author, body, createdAt }) => ({ author, text: body, createdAt })), leadCard: input.facts, settings: input.settings, currentMessage: input.text ?? "", currencyConversions: input.currencyConversions ?? [], relevantStages: retrieval.stages, knowledge: retrieval.knowledge };
   const parts: Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string; detail: "high" } }> = [{ type: "text", text: JSON.stringify(context) }];
   for (const attachment of input.attachments) {
     parts.push({ type: "text", text: JSON.stringify({ attachment: { id: attachment.id, fileName: attachment.fileName, mimeType: attachment.mimeType, textContent: attachment.textContent, metadata: attachment.metadata } }) });
@@ -518,22 +406,6 @@ const booleanLeadCardKeys = new Set([
   "residenceNeedsClarification", "ownerChanged", "plateChanged", "ownerIsLegalEntity", "borrowerIsLegalEntity", "vehicleInCredit", "vehiclePledged", "vehicleArrested", "registrationRestricted", "refinancingRequested", "buyoutRequested", "accidentNotDrivable", "foreignTravelQuestion", "existingContractQuestion", "existingContractPaymentMessage", "borrowerIsOwner", "ownerCanVisit", "vehicleBoughtDuringMarriage", "spouseConsentReady", "spouseAway", "guarantorAvailable", "visitRequested", "clientPaused", "clientClosed", "declinedDocuments", "declinedCarPhoto", "vehiclePurchasedDuringMarriage", "divorceCertificateReady", "visitConfirmationPending", "handedToManager", "onTheWay", "arrivedAtOffice"
 ]);
 
-function validateAgentTurnSemantics(input: { result: AgentTurnResult; effectiveFacts: ApplicationFacts; inputAttachments: InboundAttachment[]; errors: string[] }): string[] {
-  const errors = [...input.errors];
-  for (const attachment of input.result.attachments) {
-    if (!input.inputAttachments.some((item) => item.id === attachment.attachmentId)) errors.push(`attachment_state_conflict:${attachment.attachmentId}`);
-  }
-  const requested = documentRequestPatterns(input.result.reply);
-  for (const document of requested) if (input.effectiveFacts.documents?.[document] === "received") errors.push(`reply_reasks_received_document:${document}`);
-  return [...new Set(errors)];
-}
-
-function documentRequestPatterns(reply: string): Array<"id_front" | "id_back" | "vehicle_registration_front" | "vehicle_registration_back"> {
-  const normalized = reply.toLocaleLowerCase("ru-RU");
-  const requested: Array<"id_front" | "id_back" | "vehicle_registration_front" | "vehicle_registration_back"> = [];
-  if (/(?:лицев[а-я]*\s+сторон[а-я]*\s+(?:id|паспорт)|(?:id|паспорт).{0,30}лицев)/u.test(normalized)) requested.push("id_front");
-  if (/(?:обратн[а-я]*\s+сторон[а-я]*\s+(?:id|паспорт)|(?:id|паспорт).{0,30}обратн)/u.test(normalized)) requested.push("id_back");
-  if (/(?:лицев[а-я]*\s+сторон[а-я]*\s+(?:стс|свидетельств)|(?:стс|свидетельств).{0,30}лицев)/u.test(normalized)) requested.push("vehicle_registration_front");
-  if (/(?:обратн[а-я]*\s+сторон[а-я]*\s+(?:стс|свидетельств)|(?:стс|свидетельств).{0,30}обратн)/u.test(normalized)) requested.push("vehicle_registration_back");
-  return requested;
+function formatError(error: unknown): string {
+  return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
 }

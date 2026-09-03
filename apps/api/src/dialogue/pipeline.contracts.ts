@@ -33,6 +33,15 @@ export const extractionSchema = z.object({
   clarificationNeeded: z.boolean().default(false)
 });
 export const responseGenerationSchema = z.object({ message: z.string().min(1).max(4000) });
+export const moneyNormalizationSchema = z.object({
+  values: z.array(z.object({
+    field: z.enum(["vehicleValue", "requestedAmount"]),
+    amount: z.number().positive(),
+    currency: z.enum(["KGS", "USD", "EUR", "KZT", "RUB"]),
+    confidence: z.number().min(0).max(1)
+  })).max(2).default([])
+});
+export type StructuredNormalizedMoney = z.infer<typeof moneyNormalizationSchema>;
 
 export type StructuredExtraction = z.infer<typeof extractionSchema>;
 export type StructuredMoneyMention = z.infer<typeof modelMoneyMentionSchema>;

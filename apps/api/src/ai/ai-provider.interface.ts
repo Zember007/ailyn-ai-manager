@@ -1,6 +1,13 @@
 import type { ApplicationFacts, DecisionResult, DocumentCode } from "@ailyn/business-rules";
 import type { MoneyCurrencyCode, MoneyMention, MoneyRoleCandidate } from "../dialogue/money-normalization.js";
 
+export type NormalizedMoneyValue = {
+  field: "vehicleValue" | "requestedAmount";
+  amount: number;
+  currency: MoneyCurrencyCode;
+  confidence: number;
+};
+
 export interface InboundAttachment {
   id: string;
   mimeType?: string;

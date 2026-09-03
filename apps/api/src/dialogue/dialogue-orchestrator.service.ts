@@ -1,7 +1,8 @@
 import { Injectable } from "@nestjs/common";
 import type { ApplicationFacts } from "@ailyn/business-rules";
+import type { NormalizedMoneyValue } from "../ai/ai-provider.interface.js";
 import { AgentTurnService } from "./agent-turn.service.js";
-import { attachmentFactsFromResult, effectiveFactsForTurn, reconcileAgentTurn } from "./agent-turn-reconciliation.js";
+import { attachmentFactsFromResult, effectiveFactsForTurn } from "./agent-turn-reconciliation.js";
 import type { InboundMessage } from "../channels/channel.interface.js";
 import { SettingsService } from "../settings/settings.service.js";
 import { BackendLogsService } from "../logs/backend-logs.service.js";
@@ -19,9 +20,12 @@ export class DialogueOrchestratorService {
   async receive(message: InboundMessage): Promise<DialogueResult> {
     const { conversation, application: initialApplication } = await this.store.getOrCreateConversation({ externalContactId: message.externalContactId, externalConversationId: message.externalConversationId, channel: message.channel });
     const inbound = await this.store.addMessage(conversation, { author: "client", body: message.text?.trim() ?? "", attachmentIds: [], attachments: [], metadata: { externalMessageId: message.externalMessageId, channel: message.channel } });
-    const currency = await resolveForeignCurrencyFacts(message.text, initialApplication.facts, this.integrations);
-    const settings = await this.settings.getValues();
     const turnMessages = [...conversation.messages, inbound];
+    const normalizedMoney = this.agent.normalizeMoney
+      ? await this.agent.normalizeMoney({ text: message.text, facts: initialApplication.facts, messages: turnMessages })
+      : [];
+    const currency = await resolveNormalizedMoneyFacts(normalizedMoney, this.integrations);
+    const settings = await this.settings.getValues();
     const inputFacts = { ...initialApplication.facts, ...currency.facts };
     const turn = await this.agent.run({ conversationId: conversation.id, messages: turnMessages, facts: inputFacts, settings, text: message.text, attachments: message.attachments, currencyConversions: currency.conversions });
     let application = initialApplication;
@@ -34,19 +38,18 @@ export class DialogueOrchestratorService {
       };
       const attachmentFacts = attachmentFactsFromResult(initialApplication.facts, turn.result.attachments);
       const effectiveFacts = effectiveFactsForTurn({ previous: initialApplication.facts, modelPatch, explicitFacts: {}, currencyFacts: currency.facts, attachmentFacts });
-      const reconciliation = reconcileAgentTurn({ effectiveFacts, proposedState: turn.result.dialogueState, proposedTargetEvent: turn.result.targetEvent, proposedPreliminaryLimit: turn.result.preliminaryLimit, settings });
       changedFactKeys = await this.store.updateFacts(application, effectiveFacts);
       await this.store.saveAgentState(application, {
-        ...reconciliation.state,
+        ...turn.result.dialogueState,
         cardSummary: turn.result.cardSummary,
         intent: turn.result.intent,
-        preliminaryLimit: reconciliation.preliminaryLimit
+        preliminaryLimit: turn.result.preliminaryLimit
       });
       application = (await this.store.getApplication(application.id)) ?? application;
-      const initial = Boolean(reconciliation.targetEvent) && !application.facts.handedToManager;
+      const initial = Boolean(turn.result.targetEvent) && !application.facts.handedToManager;
       const delta = application.facts.handedToManager && changedFactKeys.some((key) => managerDeltaFactKeys.has(key));
       if (initial) {
-        if (await this.store.createManagerNotification(application, "initial", { event: reconciliation.targetEvent, summary: turn.result.cardSummary, facts: application.facts })) managerEvent = "initial";
+        if (await this.store.createManagerNotification(application, "initial", { event: turn.result.targetEvent, summary: turn.result.cardSummary, facts: application.facts })) managerEvent = "initial";
         await this.store.updateFacts(application, { handedToManager: true });
       } else if (delta) {
         const fields = changedFactKeys.filter((key) => managerDeltaFactKeys.has(key));
@@ -122,6 +125,28 @@ export async function resolveForeignCurrencyFacts(text: string | undefined, curr
     ? `По официальному курсу НБКР: ${conversions.map((item) => `${formatForeignMoney(item.amount, item.currency)} — ориентировочно ${formatMoney(item.somValue)} сом`).join("; ")}.`
     : undefined;
   return { facts, conversions, clientText };
+}
+
+export async function resolveNormalizedMoneyFacts(values: NormalizedMoneyValue[], integrations?: DeferredIntegrationsService): Promise<{ facts: Partial<ApplicationFacts>; conversions: { role: "requestedAmount" | "vehicleValue"; amount: number; currency: ForeignMoneyCurrencyCode; somValue: number; effectiveDate: string }[]; clientText?: string }> {
+  if (values.length === 0) return { facts: {}, conversions: [] };
+  const facts: Partial<ApplicationFacts> = {};
+  const conversions: { role: "requestedAmount" | "vehicleValue"; amount: number; currency: ForeignMoneyCurrencyCode; somValue: number; effectiveDate: string }[] = [];
+  const seen = new Set<string>();
+  for (const value of values) {
+    if (seen.has(value.field)) continue;
+    seen.add(value.field);
+    if (value.currency === "KGS") {
+      facts[value.field] = Math.round(value.amount);
+      continue;
+    }
+    if (!integrations) continue;
+    const conversion = await integrations.convertToSom({ amount: value.amount, currency: value.currency });
+    if (!conversion.available) continue;
+    facts[value.field] = conversion.value;
+    facts[value.field === "requestedAmount" ? "requestedAmountSourceCurrency" : "vehicleValueSourceCurrency"] = value.currency;
+    conversions.push({ role: value.field, amount: value.amount, currency: value.currency, somValue: conversion.value, effectiveDate: conversion.effectiveDate });
+  }
+  return { facts, conversions };
 }
 
 function isForeignCurrency(value: string | null | undefined): value is ForeignMoneyCurrencyCode {

@@ -99,12 +99,20 @@ describe("money normalization", () => {
       text: "Камри 2022 стоит 20 тыс долларов, надо 10",
       currentFacts: {}
     });
+    const compactCyrillic = resolveMoneyFacts({
+      text: "камри 2023 стоит 21 к долларов надо 10",
+      currentFacts: {}
+    });
     const ambiguous = resolveMoneyFacts({ text: "надо 10", currentFacts: {} });
 
     expect(result.vehicleValue).toBe(20_000);
     expect(result.vehicleValueCurrency).toBe("USD");
     expect(result.requestedAmount).toBe(10_000);
     expect(result.requestedAmountCurrency).toBe("USD");
+    expect(compactCyrillic.vehicleValue).toBe(21_000);
+    expect(compactCyrillic.vehicleValueCurrency).toBe("USD");
+    expect(compactCyrillic.requestedAmount).toBe(10_000);
+    expect(compactCyrillic.requestedAmountCurrency).toBe("USD");
     expect(ambiguous.requestedAmount).toBeUndefined();
   });
 

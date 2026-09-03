@@ -119,7 +119,7 @@ export function detectMoneyMentions(text: string): MoneyMention[] {
     const prior = mentions.filter((mention) => (mention.start ?? -1) >= clauseStart && (mention.end ?? 0) <= start && mention.currency);
     const currencies = new Set(prior.map((mention) => mention.currency));
     const inherited = prior.at(-1);
-    if (!inherited || currencies.size !== 1 || !/(?:тыс|тыщ|\d\s*[кk]\b)/iu.test(inherited.sourceText)) continue;
+    if (!inherited || currencies.size !== 1 || !/(?:тыс|тыщ|\d\s*[кk](?=\s|$))/iu.test(inherited.sourceText)) continue;
     const amount = Number(rawNumber) * 1_000;
     mentions.push({
       sourceText: rawNumber,

@@ -29,9 +29,9 @@ for (const paragraph of paragraphs) {
   // Word often puts a new numbered subsection into the same paragraph as
   // the preceding answer. Split it before chunking so 5.15 and 5.16 cannot
   // become one mixed knowledge fragment.
-  const parts = paragraph.split(/(?=\b(?:3|4|5|20|21)\.\d+(?:\.\d+)?\s)/u).map((part) => part.trim()).filter(Boolean);
+  const parts = paragraph.split(/(?=\b(?:3|4|5|13|20|21)\.\d+(?:\.\d+)?\s)/u).map((part) => part.trim()).filter(Boolean);
   for (const part of parts) {
-    const heading = part.match(/^(?:3|4|5|20|21)\.\d+(?:\.\d+)?/u)?.[0];
+    const heading = part.match(/^(?:3|4|5|13|20|21)\.\d+(?:\.\d+)?/u)?.[0];
     if (heading) {
       if (buffer.length > 0) {
         chunks.push({ text: buffer.join(" "), section });
