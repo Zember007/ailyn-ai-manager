@@ -8,15 +8,27 @@ import { RouterAiClient } from "../ai/router-ai/router-ai.client.js";
 import type { InboundAttachment } from "../channels/channel.interface.js";
 import { BackendLogsService } from "../logs/backend-logs.service.js";
 import { resolveMoneyFacts } from "./money-normalization.js";
-import { attachmentFactsFromResult, effectiveFactsForTurn, reconcileAgentTurn } from "./agent-turn-reconciliation.js";
+import { attachmentFactsFromResult, buildRuntimeGuardContext, contextualGuardFacts, effectiveFactsForTurn, reconcileAgentTurn } from "./agent-turn-reconciliation.js";
 import { generatedDocumentationChunks } from "./documentation-chunks.generated.js";
 import { agentTurnResultSchema, type AgentTurnResult } from "./agent-turn.contracts.js";
 import type { Stage1Message } from "./stage1-store.service.js";
 
-const PROMPT_VERSION = "single-agent-v3";
+const PROMPT_VERSION = "single-agent-v4-program-assessment";
 const NEUTRAL_REPLY = "Извините, сейчас не удалось обработать сообщение. Пожалуйста, напишите ещё раз или обратитесь к сотрудникам компании.";
 const MAX_MODEL_ATTEMPTS = 3;
 const MAX_LOG_VALUE_LENGTH = 4000;
+const RUNTIME_GUARD_PROMPT = `ДЕТЕРМИНИРОВАННЫЙ КОНТЕКСТ И ПОРЯДОК ПРОВЕРОК
+Поле runtimeGuardContext во входном контексте рассчитано TypeScript-кодом и имеет приоритет для вычисляемых лимитов, совместимости программы и обязательных незавершённых фактов. Не пересчитывайте personalLimit самостоятельно и не заменяйте его genericCap.
+- genericCap — общий верхний предел продукта. Это НЕ ответ на вопрос «сколько дадут мне».
+- personalLimit — предварительный персональный максимум по известным данным. Если он не null, именно его используйте в preliminaryLimit и в персональном ответе клиенту.
+- requestFits показывает, помещается ли requestedAmount в программу.
+- Если программа уже выбрана, но runtimeGuardContext.programAssessment.selected.status=does_not_fit, не продолжайте ветку поручителя/документов как будто программа подходит. Сначала объясните несовместимость и предложите допустимый вариант.
+- До нейтрального предложения программ сверяйте requestedAmount с maximumPossibleLimit. Если сумма уже гарантированно не помещается в программу даже при неизвестной прописке, не представляйте эту программу как равноправно подходящую без предупреждения.
+- missingRequirement — ближайший обязательный незавершённый факт для самостоятельного следующего шага агента. Не перескакивайте через него. При этом любые факты или документы, которые клиент сам прислал раньше очереди, всегда обработайте и сохраните.
+- Перед самостоятельным запросом документов обязательно должны быть известны программа и прописка, а выбранная программа не должна иметь status=does_not_fit.
+- Перед согласованием визита семейное положение и зависимые обязательные вопросы должны быть разрешены.
+- Если клиент коротко отвечает «нет» после предложения прислать необязательные фото автомобиля, это отказ от этих фото: сохраните declinedCarPhoto=true, не просите их снова и переходите к следующему обязательному незавершённому факту.
+Эти правила уточняют и при конфликте заменяют более раннюю формулировку о механическом выборе программы до проверки суммы.`;
 const NORMALIZER_PROMPT = `Вы — технический JSON-нормализатор ответа менеджера.
 Верните только один валидный JSON строго по переданной схеме AgentTurnResult.
 Исправляйте только формат, типы, допустимые имена полей и лишние поля; не меняйте смысл reply и не придумывайте факты.
@@ -37,11 +49,8 @@ export class AgentTurnService {
       await this.logFallback(input, "routerai_not_configured", []);
       return { reply: NEUTRAL_REPLY, model: "unconfigured", promptVersion: PROMPT_VERSION, error: "routerai_not_configured" };
     }
-    const systemPrompt = loadPrompt("agent.system.md");
+    const systemPrompt = `${loadPrompt("agent.system.md")}\n\n${RUNTIME_GUARD_PROMPT}`;
     const request = {
-      // The configured production model (openai/gpt-5.4-mini) can return an
-      // empty object for json_schema. JSON mode plus the strict Zod boundary
-      // is compatible and lets normal short replies succeed on the first call.
       model: this.config.routerAiTextModel ?? "routerai-text-model-not-configured", temperature: 0.2, max_tokens: 1600, reasoning: { enabled: false }, response_format: { type: "json_object" as const },
       messages: [{ role: "system" as const, content: systemPrompt }, { role: "user" as const, content: buildMessage(input) }]
     };
@@ -52,7 +61,7 @@ export class AgentTurnService {
       let agentResponse: string | undefined;
       try {
         const retryInstruction = attempt > 1
-          ? "\n\nПОВТОРНАЯ ПОПЫТКА: предыдущий ответ не прошёл техническую проверку формата. Верните новый, полностью валидный JSON строго по заданной схеме. Не повторяйте техническое извинение: ответьте клиенту по существу и сохраните только допустимые поля карточки."
+          ? `\n\nПОВТОРНАЯ ПОПЫТКА: предыдущий ответ не прошёл проверку. Причина: ${truncateLogValue(lastError)}. Верните новый полный AgentTurnResult. Для preliminary_limit_conflict используйте expected из причины и personalLimit из runtimeGuardContext, а не genericCap. Для stage_missing_required_fact спросите указанный missing fact вместо перехода дальше. Не повторяйте техническое извинение.`
           : "";
         const attemptRequest = retryInstruction
           ? { ...request, messages: [{ role: "system" as const, content: `${systemPrompt}${retryInstruction}` }, request.messages[1]] }
@@ -93,6 +102,8 @@ export class AgentTurnService {
   private async normalizeFailedResponse(input: AgentTurnInput, rawResponse: string, reason: string): Promise<{ result: AgentTurnResult; model: string } | undefined> {
     const model = this.config.routerAiNormalizerModel ?? this.config.routerAiEvalModel ?? "openai/gpt-4o-mini";
     try {
+      const interpreted = interpretCurrentTurn({ text: input.text, facts: input.facts, messages: input.messages });
+      const preModelFacts = { ...input.facts, ...interpreted.facts, ...contextualGuardFacts({ text: input.text, messages: input.messages }) };
       const response = await this.client.createChatCompletion({
         model,
         temperature: 0,
@@ -100,10 +111,11 @@ export class AgentTurnService {
         reasoning: { enabled: false },
         response_format: { type: "json_object" },
         messages: [
-          { role: "system", content: NORMALIZER_PROMPT },
+          { role: "system", content: `${NORMALIZER_PROMPT}\n${RUNTIME_GUARD_PROMPT}` },
           { role: "user", content: JSON.stringify({
             schema: "AgentTurnResult from the main agent prompt",
             error: truncateLogValue(reason),
+            runtimeGuardContext: buildRuntimeGuardContext(preModelFacts, input.settings),
             rawAgentResponse: rawResponse.slice(0, 16000),
             currentMessage: input.text ?? "",
             currentFacts: input.facts,
@@ -140,10 +152,11 @@ export class AgentTurnService {
 function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): AgentTurnResult & { reply: string } {
   const { preliminaryLimit: _proposedPreliminaryLimit, ...payloadWithoutProposedLimit } = parsed;
   const interpreted = interpretCurrentTurn({ text: input.text, facts: input.facts, messages: input.messages });
+  const explicitFacts = { ...interpreted.facts, ...contextualGuardFacts({ text: input.text, messages: input.messages }) };
   const effectiveFacts = effectiveFactsForTurn({
     previous: input.facts,
     modelPatch: parsed.leadCardPatch,
-    explicitFacts: interpreted.facts,
+    explicitFacts,
     currencyFacts: {},
     attachmentFacts: attachmentFactsFromResult(input.facts, parsed.attachments)
   });
@@ -154,11 +167,11 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     proposedPreliminaryLimit: parsed.preliminaryLimit,
     settings: input.settings
   });
-  const semanticErrors = validateAgentTurnSemantics({ result: parsed, effectiveFacts, explicitFacts: interpreted.facts, inputAttachments: input.attachments, errors: reconciliation.semanticErrors });
-  const criticalErrors = semanticErrors.filter((issue) => !issue.startsWith("invalid_stage_transition:"));
-  if (criticalErrors.length > 0) throw new Error(`Agent response semantic validation failed (${criticalErrors.join("; ")})`);
+  const semanticErrors = validateAgentTurnSemantics({ result: parsed, effectiveFacts, explicitFacts, inputAttachments: input.attachments, errors: reconciliation.semanticErrors });
+  if (semanticErrors.length > 0) throw new Error(`Agent response semantic validation failed (${semanticErrors.join("; ")})`);
   return {
     ...payloadWithoutProposedLimit,
+    leadCardPatch: { ...parsed.leadCardPatch, ...explicitFacts },
     dialogueState: reconciliation.state,
     targetEvent: reconciliation.targetEvent,
     ...(reconciliation.preliminaryLimit === null ? {} : { preliminaryLimit: reconciliation.preliminaryLimit }),
@@ -182,18 +195,13 @@ function parseAgentJson(value: string | undefined): Record<string, unknown> {
     const parsed: unknown = JSON.parse(text);
     return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
   } catch (error) {
-    // Some gateways occasionally prepend a short explanation around an
-    // otherwise valid JSON object. Recover that object before retrying so a
-    // formatting-only defect does not become a user-visible system fallback.
     const start = text.indexOf("{");
     const end = text.lastIndexOf("}");
     if (start >= 0 && end > start) {
       try {
         const parsed: unknown = JSON.parse(text.slice(start, end + 1));
         if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed as Record<string, unknown>;
-      } catch {
-        // Preserve the original parse error in the retry/fallback diagnostics.
-      }
+      } catch {}
     }
     throw error;
   }
@@ -209,8 +217,6 @@ function removeRepeatedGreeting(reply: string, messages: Stage1Message[]): strin
 }
 
 function separateQuestions(reply: string): string {
-  // Keep the model's wording, but make a standalone question visually
-  // distinct when it follows an explanation in the same paragraph.
   return reply.replace(/([.!?])\s+(?=[А-ЯЁA-Z][^.!?\n]{0,160}\?)/gu, "$1\n\n").trim();
 }
 
@@ -218,7 +224,21 @@ function buildMessage(input: { messages: Stage1Message[]; facts: ApplicationFact
   const settings = input.settings as Record<string, unknown>;
   const timezone = typeof settings.timezone === "string" ? settings.timezone : "Asia/Bishkek";
   const interpretedCurrentMessage = interpretCurrentTurn({ text: input.text, facts: input.facts, messages: input.messages });
-  const context = { now: currentDateTime(timezone), timezone, history: input.messages.map(({ author, body, createdAt }) => ({ author, text: body, createdAt })), leadCard: input.facts, settings: input.settings, currentMessage: input.text ?? "", interpretedCurrentMessage, currencyConversions: input.currencyConversions ?? [], knowledge: selectKnowledge([input.text ?? "", JSON.stringify(input.facts), ...input.messages.slice(-8).map((message) => message.body)].join(" ")) };
+  const explicitGuardFacts = contextualGuardFacts({ text: input.text, messages: input.messages });
+  const preModelFacts = { ...input.facts, ...interpretedCurrentMessage.facts, ...explicitGuardFacts };
+  const runtimeGuardContext = buildRuntimeGuardContext(preModelFacts, input.settings);
+  const context = {
+    now: currentDateTime(timezone),
+    timezone,
+    history: input.messages.map(({ author, body, createdAt }) => ({ author, text: body, createdAt })),
+    leadCard: input.facts,
+    settings: input.settings,
+    currentMessage: input.text ?? "",
+    interpretedCurrentMessage: { ...interpretedCurrentMessage, facts: { ...interpretedCurrentMessage.facts, ...explicitGuardFacts } },
+    runtimeGuardContext,
+    currencyConversions: input.currencyConversions ?? [],
+    knowledge: selectKnowledge([input.text ?? "", JSON.stringify(preModelFacts), ...input.messages.slice(-8).map((message) => message.body)].join(" "))
+  };
   const parts: Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string; detail: "high" } }> = [{ type: "text", text: JSON.stringify(context) }];
   for (const attachment of input.attachments) {
     parts.push({ type: "text", text: JSON.stringify({ attachment: { id: attachment.id, fileName: attachment.fileName, mimeType: attachment.mimeType, textContent: attachment.textContent, metadata: attachment.metadata } }) });
@@ -229,13 +249,7 @@ function buildMessage(input: { messages: Stage1Message[]; facts: ApplicationFact
 
 function currentDateTime(timezone: string) {
   const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: timezone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23"
+    timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23"
   }).formatToParts(new Date());
   const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((item) => item.type === type)?.value ?? "00";
   return `${part("year")}-${part("month")}-${part("day")}T${part("hour")}:${part("minute")}:00`;
@@ -257,25 +271,15 @@ function selectKnowledge(query: string) {
   });
   const selected = new Map<string, { key: string; text: string }>();
   const stage = inferKnowledgeStage(query);
-  // Include the complete packet for the active branch. This prevents 5.15
-  // from being represented by only its first fragment and keeps the spouse
-  // answer branches together.
   if (stage) {
     for (const item of scored.filter((candidate) => (candidate.chunk.stages as readonly string[]).includes(stage)).slice(0, 16)) selected.set(item.chunk.key, item.chunk);
   }
-  // The first chunks form the compact, always-present behavior core.
   for (const item of scored.slice(0, 8)) selected.set(item.chunk.key, item.chunk);
-  // Contact details are always retained even when the current message is not
-  // about a visit.
   for (const item of scored.filter((candidate) => candidate.score >= 100)) selected.set(item.chunk.key, item.chunk);
   const ranked = scored.filter((item) => item.score > 0).sort((left, right) => right.score - left.score || left.index - right.index).slice(0, 24);
   for (const item of ranked) {
     selected.set(item.chunk.key, item.chunk);
-    // Adjacent chunks usually contain the continuation of the same DOCX
-    // subsection and prevent cutting a rule in the middle.
-    for (const neighbor of [scored[item.index - 1], scored[item.index + 1]]) {
-      if (neighbor) selected.set(neighbor.chunk.key, neighbor.chunk);
-    }
+    for (const neighbor of [scored[item.index - 1], scored[item.index + 1]]) if (neighbor) selected.set(neighbor.chunk.key, neighbor.chunk);
   }
   return [...selected.values()].slice(0, 56);
 }
@@ -299,15 +303,8 @@ function expandKnowledgeTerms(query: string): Set<string> {
   const normalized = normalizeKnowledgeToken(query);
   const terms = new Set(normalized.split(/\s+/u).filter((term) => term.length >= 3));
   const aliases: Record<string, string[]> = {
-    прописк: ["регион", "место", "прожив"],
-    регион: ["пропис"],
-    документ: ["паспорт", "ид", "стс", "техпаспорт"],
-    паспорт: ["ид", "документ"],
-    визит: ["дата", "время", "офис", "приех"],
-    фото: ["фотограф", "изображен"],
-    семейн: ["брака", "супруг", "нотариал"],
-    сумма: ["займ", "лимит", "стоимость"],
-    стоимость: ["цена", "оценка", "автомобил"]
+    прописк: ["регион", "место", "прожив"], регион: ["пропис"], документ: ["паспорт", "ид", "стс", "техпаспорт"], паспорт: ["ид", "документ"],
+    визит: ["дата", "время", "офис", "приех"], фото: ["фотограф", "изображен"], семейн: ["брака", "супруг", "нотариал"], сумма: ["займ", "лимит", "стоимость"], стоимость: ["цена", "оценка", "автомобил"]
   };
   for (const term of [...terms]) for (const alias of Object.entries(aliases).find(([key]) => term.startsWith(key))?.[1] ?? []) terms.add(alias);
   return terms;
@@ -315,21 +312,13 @@ function expandKnowledgeTerms(query: string): Set<string> {
 
 function loadPrompt(name: string) {
   const directory = dirname(fileURLToPath(import.meta.url));
-  const promptDirectories = [
-    resolve(directory, "../ai/prompts"),
-    resolve(process.cwd(), "src/ai/prompts"),
-    resolve(process.cwd(), "dist/apps/api/src/ai/prompts"),
-    resolve(process.cwd(), "apps/api/src/ai/prompts"),
-    resolve(process.cwd(), "apps/api/dist/apps/api/src/ai/prompts")
-  ];
+  const promptDirectories = [resolve(directory, "../ai/prompts"), resolve(process.cwd(), "src/ai/prompts"), resolve(process.cwd(), "dist/apps/api/src/ai/prompts"), resolve(process.cwd(), "apps/api/src/ai/prompts"), resolve(process.cwd(), "apps/api/dist/apps/api/src/ai/prompts")];
   const candidates = promptDirectories.map((promptDirectory) => resolve(promptDirectory, name));
   const path = candidates.find(existsSync);
   if (!path) throw new Error(`Prompt file not found: ${name}. Checked: ${promptDirectories.join(", ")}`);
   return readFileSync(path, "utf8");
 }
 
-/** Translate model-friendly labels into the persisted Stage 1 enum before Zod
- * validates the final boundary. Unknown values stay unchanged and are rejected. */
 const permittedLeadCardKeys = new Set(Object.keys(agentTurnResultSchema.shape.leadCardPatch.shape));
 
 function normalizeAgentPayload(payload: Record<string, unknown>, inputText?: string, currentFacts: ApplicationFacts = {}, messages: Stage1Message[] = []): Record<string, unknown> {
@@ -337,13 +326,7 @@ function normalizeAgentPayload(payload: Record<string, unknown>, inputText?: str
   if (leadCardPatch && typeof leadCardPatch === "object" && !Array.isArray(leadCardPatch)) {
     const carriedFacts = Object.fromEntries(Object.entries(currentFacts).filter(([key, value]) => permittedLeadCardKeys.has(key) && value !== undefined));
     const rawPatch = leadCardPatch as Record<string, unknown>;
-    // The model sometimes mirrors derived/top-level fields (for example
-    // preliminaryLimit) inside leadCardPatch. They are not application facts,
-    // so drop them instead of rejecting an otherwise usable turn.
-    const patch = {
-      ...carriedFacts,
-      ...Object.fromEntries(Object.entries(rawPatch).filter(([key]) => permittedLeadCardKeys.has(key) || key in leadCardAliases))
-    };
+    const patch = { ...carriedFacts, ...Object.fromEntries(Object.entries(rawPatch).filter(([key]) => permittedLeadCardKeys.has(key) || key in leadCardAliases)) };
     for (const [alias, key] of Object.entries(leadCardAliases)) {
       if (patch[key] === undefined && patch[alias] !== undefined) patch[key] = patch[alias];
       delete patch[alias];
@@ -355,9 +338,7 @@ function normalizeAgentPayload(payload: Record<string, unknown>, inputText?: str
       }
     }
     for (const key of booleanLeadCardKeys) {
-      if (typeof patch[key] === "string" && ["true", "false"].includes(patch[key].trim().toLowerCase())) {
-        patch[key] = patch[key].trim().toLowerCase() === "true";
-      }
+      if (typeof patch[key] === "string" && ["true", "false"].includes(patch[key].trim().toLowerCase())) patch[key] = patch[key].trim().toLowerCase() === "true";
     }
     if (typeof patch.familyStatus === "string") {
       const normalizedStatus = familyStatusAliases[patch.familyStatus.trim().toLocaleLowerCase("ru-RU")];
@@ -367,13 +348,12 @@ function normalizeAgentPayload(payload: Record<string, unknown>, inputText?: str
       const normalizedRegion = residenceRegionAliases[patch.residenceRegion.trim().toUpperCase()];
       if (normalizedRegion) patch.residenceRegion = normalizedRegion;
     }
-    if (typeof patch.residenceCategory === "string" && ["UNKNOWN", "NONE", "NULL", ""].includes(patch.residenceCategory.trim().toUpperCase())) {
-      delete patch.residenceCategory;
-    } else if (typeof patch.residenceCategory === "string") {
+    if (typeof patch.residenceCategory === "string" && ["UNKNOWN", "NONE", "NULL", ""].includes(patch.residenceCategory.trim().toUpperCase())) delete patch.residenceCategory;
+    else if (typeof patch.residenceCategory === "string") {
       const normalizedCategory = residenceCategoryAliases[patch.residenceCategory.trim().toLocaleUpperCase("ru-RU")];
       if (normalizedCategory) patch.residenceCategory = normalizedCategory;
     }
-    Object.assign(patch, interpretCurrentTurn({ text: inputText, facts: currentFacts, messages }).facts);
+    Object.assign(patch, interpretCurrentTurn({ text: inputText, facts: currentFacts, messages }).facts, contextualGuardFacts({ text: inputText, messages }));
     payload.leadCardPatch = patch;
   }
   const state = payload.dialogueState;
@@ -384,68 +364,35 @@ function normalizeAgentPayload(payload: Record<string, unknown>, inputText?: str
       if (normalized) payload.dialogueState = { ...(state as Record<string, unknown>), stage: normalized };
     }
   }
-  if (typeof payload.targetEvent === "string" && ["", "none", "null", "no"].includes(payload.targetEvent.trim().toLowerCase())) {
-    payload.targetEvent = null;
-  }
+  if (typeof payload.targetEvent === "string" && ["", "none", "null", "no"].includes(payload.targetEvent.trim().toLowerCase())) payload.targetEvent = null;
   return payload;
 }
 
 const stageAliases: Record<string, string> = {
-  new: "NEW", initial: "NEW", collecting_vehicle: "COLLECTING_VEHICLE", collect_vehicle: "COLLECTING_VEHICLE",
-  collecting_value: "COLLECTING_VALUE", collect_value: "COLLECTING_VALUE", collecting_amount: "COLLECTING_AMOUNT", collect_amount: "COLLECTING_AMOUNT",
-  collecting_residence: "COLLECTING_RESIDENCE", collect_residence: "COLLECTING_RESIDENCE", eligibility_check: "ELIGIBILITY_CHECK",
-  collecting_documents: "COLLECTING_DOCUMENTS", collect_documents: "COLLECTING_DOCUMENTS", collecting_family_status: "COLLECTING_FAMILY_STATUS",
-  checking_guarantor: "CHECKING_GUARANTOR", check_guarantor: "CHECKING_GUARANTOR", scheduling_visit: "SCHEDULING_VISIT",
-  target_reached_documents: "TARGET_REACHED_DOCUMENTS", target_reached_visit: "TARGET_REACHED_VISIT", refused: "REFUSED", paused: "PAUSED",
-  existing_contract_redirect: "EXISTING_CONTRACT_REDIRECT"
+  new: "NEW", initial: "NEW", collecting_vehicle: "COLLECTING_VEHICLE", collect_vehicle: "COLLECTING_VEHICLE", collecting_value: "COLLECTING_VALUE", collect_value: "COLLECTING_VALUE", collecting_amount: "COLLECTING_AMOUNT", collect_amount: "COLLECTING_AMOUNT", collecting_residence: "COLLECTING_RESIDENCE", collect_residence: "COLLECTING_RESIDENCE", eligibility_check: "ELIGIBILITY_CHECK", collecting_documents: "COLLECTING_DOCUMENTS", collect_documents: "COLLECTING_DOCUMENTS", collecting_family_status: "COLLECTING_FAMILY_STATUS", checking_guarantor: "CHECKING_GUARANTOR", check_guarantor: "CHECKING_GUARANTOR", scheduling_visit: "SCHEDULING_VISIT", target_reached_documents: "TARGET_REACHED_DOCUMENTS", target_reached_visit: "TARGET_REACHED_VISIT", refused: "REFUSED", paused: "PAUSED", existing_contract_redirect: "EXISTING_CONTRACT_REDIRECT"
 };
 
 const leadCardAliases: Record<string, string> = {
-  carBrand: "vehicleMake", carMake: "vehicleMake", carModel: "vehicleModel", carYear: "vehicleYear", carValue: "vehicleValue",
-  loanAmount: "requestedAmount", neededAmount: "requestedAmount", requestedLoanAmount: "requestedAmount",
-  clientName: "fullName", customerName: "fullName", clientPhone: "phone", customerPhone: "phone",
-  residence: "residenceRegion", program: "requestedProgram", visitDatetime: "visitDate",
-  maritalStatus: "familyStatus", marriageStatus: "familyStatus", family_status: "familyStatus",
-  appointmentDate: "visitDate", appointmentTime: "visitTime", scheduledDate: "visitDate", scheduledTime: "visitTime",
-  visit_date: "visitDate", visit_time: "visitTime"
+  carBrand: "vehicleMake", carMake: "vehicleMake", carModel: "vehicleModel", carYear: "vehicleYear", carValue: "vehicleValue", loanAmount: "requestedAmount", neededAmount: "requestedAmount", requestedLoanAmount: "requestedAmount", clientName: "fullName", customerName: "fullName", clientPhone: "phone", customerPhone: "phone", residence: "residenceRegion", program: "requestedProgram", visitDatetime: "visitDate", maritalStatus: "familyStatus", marriageStatus: "familyStatus", family_status: "familyStatus", appointmentDate: "visitDate", appointmentTime: "visitTime", scheduledDate: "visitDate", scheduledTime: "visitTime", visit_date: "visitDate", visit_time: "visitTime"
 };
 
-const residenceRegionAliases: Record<string, string> = {
-  BISHKEK: "Бишкек",
-  CHUY: "Чуйская область",
-  OTHER_KG: "Другой регион Кыргызстана",
-  FOREIGN: "Другая страна"
-};
-
-const residenceCategoryAliases: Record<string, string> = {
-  BISHKEK: "BISHKEK", "БИШКЕК": "BISHKEK",
-  CHUY: "CHUY", CHUI: "CHUY", "ЧУЙ": "CHUY", "ЧУЙСКАЯ ОБЛАСТЬ": "CHUY",
-  OTHER_KG: "OTHER_KG", "ДРУГОЙ РЕГИОН КЫРГЫЗСТАНА": "OTHER_KG",
-  FOREIGN: "FOREIGN", "ДРУГАЯ СТРАНА": "FOREIGN"
-};
-
-const familyStatusAliases: Record<string, string> = {
-  married: "married", "в браке": "married", женат: "married", замужем: "married",
-  single: "single", "не женат": "single", "не замужем": "single", "не в браке": "single",
-  divorced: "divorced", divorce: "divorced", "в разводе": "divorced", разведен: "divorced", разведён: "divorced", разведена: "divorced"
-};
-
+const residenceRegionAliases: Record<string, string> = { BISHKEK: "Бишкек", CHUY: "Чуйская область", OTHER_KG: "Другой регион Кыргызстана", FOREIGN: "Другая страна" };
+const residenceCategoryAliases: Record<string, string> = { BISHKEK: "BISHKEK", "БИШКЕК": "BISHKEK", CHUY: "CHUY", CHUI: "CHUY", "ЧУЙ": "CHUY", "ЧУЙСКАЯ ОБЛАСТЬ": "CHUY", OTHER_KG: "OTHER_KG", "ДРУГОЙ РЕГИОН КЫРГЫЗСТАНА": "OTHER_KG", FOREIGN: "FOREIGN", "ДРУГАЯ СТРАНА": "FOREIGN" };
+const familyStatusAliases: Record<string, string> = { married: "married", "в браке": "married", женат: "married", замужем: "married", single: "single", "не женат": "single", "не замужем": "single", "не в браке": "single", divorced: "divorced", divorce: "divorced", "в разводе": "divorced", разведен: "divorced", разведён: "divorced", разведена: "divorced" };
 const numericLeadCardKeys = new Set(["vehicleYear", "reportedInvalidVehicleYear", "vehicleValue", "requestedAmount"]);
-const booleanLeadCardKeys = new Set([
-  "residenceNeedsClarification", "ownerChanged", "plateChanged", "ownerIsLegalEntity", "borrowerIsLegalEntity", "vehicleInCredit", "vehiclePledged", "vehicleArrested", "registrationRestricted", "refinancingRequested", "buyoutRequested", "accidentNotDrivable", "foreignTravelQuestion", "existingContractQuestion", "existingContractPaymentMessage", "borrowerIsOwner", "ownerCanVisit", "vehicleBoughtDuringMarriage", "spouseConsentReady", "spouseAway", "guarantorAvailable", "visitRequested", "clientPaused", "clientClosed", "declinedDocuments", "declinedCarPhoto", "vehiclePurchasedDuringMarriage", "divorceCertificateReady", "visitConfirmationPending", "handedToManager", "onTheWay", "arrivedAtOffice"
-]);
+const booleanLeadCardKeys = new Set(["residenceNeedsClarification", "ownerChanged", "plateChanged", "ownerIsLegalEntity", "borrowerIsLegalEntity", "vehicleInCredit", "vehiclePledged", "vehicleArrested", "registrationRestricted", "refinancingRequested", "buyoutRequested", "accidentNotDrivable", "foreignTravelQuestion", "existingContractQuestion", "existingContractPaymentMessage", "borrowerIsOwner", "ownerCanVisit", "vehicleBoughtDuringMarriage", "spouseConsentReady", "spouseAway", "guarantorAvailable", "visitRequested", "clientPaused", "clientClosed", "declinedDocuments", "declinedCarPhoto", "vehiclePurchasedDuringMarriage", "divorceCertificateReady", "visitConfirmationPending", "handedToManager", "onTheWay", "arrivedAtOffice"]);
 
 export function interpretCurrentTurn(input: { text?: string; facts: ApplicationFacts; messages: Stage1Message[] }): { facts: Partial<ApplicationFacts>; money: ReturnType<typeof resolveMoneyFacts> } {
   const text = input.text;
   if (!text) return { facts: {}, money: resolveMoneyFacts({ text: "", currentFacts: input.facts }) };
   const normalized = text.toLocaleLowerCase("ru-RU");
-  const facts: Partial<ApplicationFacts> = {};
+  const facts: Partial<ApplicationFacts> = { ...contextualGuardFacts({ text, messages: input.messages }) };
   if (/(?:в\s+разводе|развед[её]н(?:а)?|разв[её]дена)/u.test(normalized)) facts.familyStatus = "divorced";
   else if (/(?:не\s+женат|не\s+замужем|не\s+состою\s+в\s+браке)/u.test(normalized)) facts.familyStatus = "single";
   else if (/(?:в\s+браке|женат|замужем)/u.test(normalized)) facts.familyStatus = "married";
   if (/(?:авто(?:мобиль)?|машин).{0,30}(?:куплен|приобретен|приобретён).{0,30}в\s+браке|купил.{0,20}в\s+браке/u.test(normalized)) facts.vehicleBoughtDuringMarriage = true;
   if (/(?:купил|куплен|приобретен|приобретён).{0,30}после\s+развод|после\s+развод.{0,30}(?:купил|приобр)/u.test(normalized)) facts.vehicleBoughtDuringMarriage = false;
-  if (/(?:не\s+буду|не\s+хочу|не\s+могу|отказываюсь)[^.!?]{0,50}(?:в\s+чат|чат(?:е|ик)|отправ|фото|документ)/u.test(normalized)) facts.declinedDocuments = true;
+  if (/(?:не\s+буду|не\s+хочу|не\s+могу|отказываюсь)[^.!?]{0,50}(?:в\s+чат|чат(?:е|ик)|отправ|фото|документ)/u.test(normalized) && !facts.declinedCarPhoto) facts.declinedDocuments = true;
   const hypotheticalProgram = /(?:а\s+если|сколько|какой\s+процент|какая\s+ставка)/u.test(normalized);
   if (!hypotheticalProgram && /(?:давайте|буду|хочу|нужно|тогда)[^.!?]{0,30}(?:на\s+)?(?:стоянк|парковк)/u.test(normalized)) facts.requestedProgram = "parking";
   else if (!hypotheticalProgram && /(?:без\s+изъяти|оставить\s+(?:авто|машин))/u.test(normalized)) facts.requestedProgram = "without_storage";
@@ -484,13 +431,9 @@ function lastUnresolvedQuestion(messages: Stage1Message[]): "guarantor" | "spous
 
 function validateAgentTurnSemantics(input: { result: AgentTurnResult; effectiveFacts: ApplicationFacts; explicitFacts: Partial<ApplicationFacts>; inputAttachments: InboundAttachment[]; errors: string[] }): string[] {
   const errors = [...input.errors];
-  for (const attachment of input.result.attachments) {
-    if (!input.inputAttachments.some((item) => item.id === attachment.attachmentId)) errors.push(`attachment_state_conflict:${attachment.attachmentId}`);
-  }
+  for (const attachment of input.result.attachments) if (!input.inputAttachments.some((item) => item.id === attachment.attachmentId)) errors.push(`attachment_state_conflict:${attachment.attachmentId}`);
   for (const [key, value] of Object.entries(input.explicitFacts)) {
-    if (value !== undefined && JSON.stringify(input.result.leadCardPatch[key as keyof ApplicationFacts]) !== JSON.stringify(value)) {
-      errors.push(`explicit_fact_lost:${key}`);
-    }
+    if (value !== undefined && JSON.stringify(input.result.leadCardPatch[key as keyof ApplicationFacts]) !== JSON.stringify(value)) errors.push(`explicit_fact_lost:${key}`);
   }
   if (input.explicitFacts.requestedProgram === "parking" && /без\s+изъяти/u.test(input.result.reply.toLocaleLowerCase("ru-RU"))) errors.push("program_conflict");
   if (input.explicitFacts.requestedProgram === "without_storage" && /(?:на\s+)?стоянк|парковк/u.test(input.result.reply.toLocaleLowerCase("ru-RU"))) errors.push("program_conflict");
@@ -519,14 +462,12 @@ function parseVisit(text: string): { date: string; time?: string } | undefined {
   const explicitDate = text.match(/\b(\d{4})-(\d{2})-(\d{2})\b/u) ?? text.match(/(?:^|\s)(\d{1,2})[./](\d{1,2})(?:[./](\d{2,4}))?(?:$|\s|,)/u);
   if (explicitDate) {
     const year = explicitDate[3] ? Number(explicitDate[1].length === 4 ? explicitDate[1] : explicitDate[3].length === 2 ? `20${explicitDate[3]}` : explicitDate[3]) : now.year;
-    const month = Number(explicitDate[1].length === 4 ? explicitDate[2] : explicitDate[2]);
+    const month = Number(explicitDate[2]);
     const day = Number(explicitDate[1].length === 4 ? explicitDate[3] : explicitDate[1]);
     date = validIsoDate(year, month, day);
-  } else if (text.includes("завтра")) {
-    date = addDays(now, 1);
-  } else if (text.includes("сегодня")) {
-    date = isoDate(now.year, now.month, now.day);
-  } else if (weekday !== undefined) {
+  } else if (text.includes("завтра")) date = addDays(now, 1);
+  else if (text.includes("сегодня")) date = isoDate(now.year, now.month, now.day);
+  else if (weekday !== undefined) {
     let delta = (Number(weekday) - new Date(Date.UTC(now.year, now.month - 1, now.day)).getUTCDay() + 7) % 7;
     if (delta === 0 && parsedTime && (parsedTime.hour < now.hour || (parsedTime.hour === now.hour && parsedTime.minute <= now.minute))) delta = 7;
     date = addDays(now, delta);
