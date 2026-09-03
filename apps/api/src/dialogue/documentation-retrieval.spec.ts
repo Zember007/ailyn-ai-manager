@@ -2,13 +2,22 @@ import { describe, expect, it } from "vitest";
 import { selectRelevantDocumentation } from "./documentation-retrieval.js";
 
 describe("selectRelevantDocumentation", () => {
-  it("always supplies the approved Chapter 5 answer base", () => {
+  it("always supplies only the compact approved-answer core", () => {
     const result = selectRelevantDocumentation({ facts: {}, currentMessage: "здравствуйте", messages: [] });
 
-    expect(result.commonKnowledge.length).toBeGreaterThan(100);
-    expect(result.commonKnowledge.some((chunk) => chunk.section === "5.2")).toBe(true);
-    expect(result.commonKnowledge.some((chunk) => chunk.section === "5.23.1")).toBe(true);
+    expect(result.commonKnowledge.length).toBeGreaterThan(0);
+    expect(result.commonKnowledge.length).toBeLessThan(10);
+    expect(result.commonKnowledge.some((chunk) => chunk.section === "5.1")).toBe(true);
     expect(result.commonKnowledge.some((chunk) => chunk.section === "5.25")).toBe(true);
+    expect(result.stageInstructions).toEqual([]);
+  });
+
+  it("does not preload future family or guarantor branches into an application turn", () => {
+    const result = selectRelevantDocumentation({ facts: {}, currentMessage: "камри 2009 стоит 2 млн сом", messages: [] });
+
+    expect(result.stages).toEqual(["application"]);
+    expect(result.knowledge.some((chunk) => chunk.primaryStage === "family_status" || chunk.primaryStage === "guarantor")).toBe(false);
+    expect(result.stageInstructions).toEqual([]);
   });
 
   it("retrieves currency guidance when the client provides foreign-currency prices", () => {
@@ -20,14 +29,20 @@ describe("selectRelevantDocumentation", () => {
 
   it("retrieves family and guarantor guidance for a non-Bishkek without-storage application", () => {
     const result = selectRelevantDocumentation({
-      facts: { requestedProgram: "without_storage", residenceCategory: "OTHER_KG" } as any,
-      currentMessage: "да, поручитель есть",
+      facts: {
+        vehicleMake: "Toyota", vehicleYear: 2022, vehicleValue: 1_000_000, requestedAmount: 300_000,
+        requestedProgram: "without_storage", residenceRegion: "Нарын", residenceCategory: "OTHER_KG",
+        documents: { id_front: "received", id_back: "received", vehicle_registration_front: "received", vehicle_registration_back: "received" },
+        declinedCarPhoto: true
+      } as any,
+      currentMessage: "я в браке, поручитель есть",
       messages: []
     });
 
     expect(result.stages).toEqual(expect.arrayContaining(["family_status", "guarantor"]));
     expect(result.knowledge.some((chunk) => chunk.section === "5.15")).toBe(true);
     expect(result.knowledge.some((chunk) => chunk.section === "5.16")).toBe(true);
+    expect(result.stageInstructions).toHaveLength(2);
   });
 
   it("brings back application guidance when a client changes an earlier price", () => {
@@ -43,12 +58,17 @@ describe("selectRelevantDocumentation", () => {
 
   it("retrieves vehicle-photo guidance immediately after all required documents arrive", () => {
     const result = selectRelevantDocumentation({
-      facts: { documents: { id_front: "received", id_back: "received", vehicle_registration_front: "received", vehicle_registration_back: "received" } } as any,
+      facts: {
+        vehicleMake: "Toyota", vehicleYear: 2022, vehicleValue: 1_000_000, requestedAmount: 300_000,
+        requestedProgram: "parking", residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY",
+        documents: { id_front: "received", id_back: "received", vehicle_registration_front: "received", vehicle_registration_back: "received" }
+      } as any,
       currentMessage: "отправляю документы",
       messages: []
     });
 
     expect(result.stages).toContain("vehicle_photos");
     expect(result.knowledge.some((chunk) => chunk.primaryStage === "vehicle_photos")).toBe(true);
+    expect(result.stageInstructions.some((instruction) => instruction.includes("ЭТАП ФОТОГРАФИЙ АВТОМОБИЛЯ"))).toBe(true);
   });
 });

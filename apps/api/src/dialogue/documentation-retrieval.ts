@@ -1,14 +1,21 @@
 import type { ApplicationFacts } from "@ailyn/business-rules";
 import { generatedDocumentationChunks } from "./documentation-chunks.generated.js";
+import { agentStageInstructions } from "./agent-stage-instructions.js";
 import type { Stage1Message } from "./stage1-store.service.js";
 
 type DocumentationChunk = (typeof generatedDocumentationChunks)[number];
 type DocumentationStage = DocumentationChunk["primaryStage"];
+const stageInstructionsByStage: Partial<Record<DocumentationStage, string>> = agentStageInstructions;
 
 const requiredDocumentKeys = ["id_front", "id_back", "vehicle_registration_front", "vehicle_registration_back"] as const;
-// Chapter 5 is the approved answer base. It is deliberately supplied on every
-// turn so an exact company answer never depends on lexical retrieval.
-const commonKnowledge = generatedDocumentationChunks.filter((chunk) => /^5\./u.test(chunk.section));
+// This is the only part of the DOCX that is useful on every turn: the global
+// rule for approved answers. Product rules (family, guarantor, documents,
+// visits, etc.) are deliberately *not* here. They arrive only with the stage
+// where they can affect the reply, otherwise they compete for the model's
+// attention and cause it to apply an unrelated branch.
+const commonKnowledge = generatedDocumentationChunks.filter((chunk) =>
+  ["docx_0289", "docx_0290", "docx_0334", "docx_0335"].includes(chunk.key)
+);
 const stageKeywords: Record<DocumentationStage, RegExp> = {
   application: /автомобил|машин|марка|модель|год|стоимост|цен|сумм|займ|доллар|евро|тенге|рубл|валют|курс|изменил|изменить|дороже|дешевле/u,
   residence: /пропис|регион|бишкек|чуй|токмок|насел[её]нн/u,
@@ -28,15 +35,15 @@ export function selectRelevantDocumentation(input: {
   currentMessage?: string;
   messages: Stage1Message[];
   maxChunks?: number;
-}): { stages: DocumentationStage[]; commonKnowledge: DocumentationChunk[]; knowledge: DocumentationChunk[] } {
+}): { stages: DocumentationStage[]; commonKnowledge: DocumentationChunk[]; knowledge: DocumentationChunk[]; stageInstructions: string[] } {
   const current = `${input.currentMessage ?? ""} ${input.messages.slice(-3).map((message) => message.body).join(" ")}`.toLocaleLowerCase("ru-RU");
   const stages = relevantStages(input.facts, current);
   const tokens = new Set(current.match(/[\p{L}\p{N}]{3,}/gu) ?? []);
   const ranked = generatedDocumentationChunks
     .map((chunk, index) => ({ chunk, index, score: scoreChunk(chunk, index, stages, tokens, current) }))
-    .filter((item) => item.score > 0)
+    .filter((item) => item.score > 0 && chunkBelongsToStages(item.chunk, stages))
     .sort((left, right) => right.score - left.score || left.index - right.index);
-  const limit = input.maxChunks ?? 14;
+  const limit = input.maxChunks ?? 8;
   const selected: DocumentationChunk[] = [];
   for (const stage of stages) {
     const canonicalSection = stage === "family_status" ? /^5\.15\b/u : stage === "guarantor" ? /^5\.16\b/u : undefined;
@@ -52,22 +59,39 @@ export function selectRelevantDocumentation(input: {
     if (selected.length >= limit) break;
     if (!selected.includes(item.chunk)) selected.push(item.chunk);
   }
-  return { stages, commonKnowledge: [...commonKnowledge], knowledge: selected.slice(0, limit) };
+  return {
+    stages,
+    commonKnowledge: [...commonKnowledge],
+    knowledge: selected.slice(0, limit),
+    stageInstructions: stages.map((stage) => stageInstructionsByStage[stage]).filter((instruction): instruction is string => Boolean(instruction))
+  };
 }
 
 function relevantStages(facts: ApplicationFacts, current: string): DocumentationStage[] {
-  const stages = new Set<DocumentationStage>(["application"]);
+  const stages = new Set<DocumentationStage>();
+
+  // The first incomplete stage defines the current working context. Do not
+  // pre-load future branches merely because their fields are still empty.
+  stages.add(firstIncompleteStage(facts));
   for (const [stage, pattern] of Object.entries(stageKeywords) as Array<[DocumentationStage, RegExp]>) {
     if (pattern.test(current)) stages.add(stage);
   }
-  if (!facts.residenceRegion) stages.add("residence");
-  const documentsComplete = requiredDocumentKeys.every((key) => facts.documents?.[key] === "received");
-  if (!documentsComplete) stages.add("documents");
-  if (documentsComplete && facts.documents?.car_photo !== "received" && !facts.declinedCarPhoto) stages.add("vehicle_photos");
-  if (!facts.familyStatus || facts.familyStatus === "unknown") stages.add("family_status");
-  if (facts.requestedProgram === "without_storage" && facts.residenceCategory === "OTHER_KG" && facts.guarantorAvailable === undefined) stages.add("guarantor");
-  if (facts.visitDate || facts.visitTime || /визит|приех|дата|время/u.test(current)) stages.add("visit");
   return [...stages];
+}
+
+function firstIncompleteStage(facts: ApplicationFacts): DocumentationStage {
+  if ((!facts.vehicleMake && !facts.vehicleModel) || !facts.vehicleYear || !facts.vehicleValue || !facts.requestedAmount || !facts.requestedProgram) return "application";
+  if (!facts.residenceRegion || !facts.residenceCategory) return "residence";
+  if (facts.requestedProgram === "without_storage" && facts.residenceCategory === "OTHER_KG" && facts.guarantorAvailable === undefined) return "guarantor";
+  const documentsComplete = requiredDocumentKeys.every((key) => facts.documents?.[key] === "received");
+  if (!documentsComplete && !facts.declinedDocuments) return "documents";
+  if (facts.documents?.car_photo !== "received" && !facts.declinedCarPhoto) return "vehicle_photos";
+  if (!facts.familyStatus || facts.familyStatus === "unknown") return "family_status";
+  return "visit";
+}
+
+function chunkBelongsToStages(chunk: DocumentationChunk, stages: DocumentationStage[]): boolean {
+  return stages.includes(chunk.primaryStage) || chunk.stages.some((stage) => stages.includes(stage));
 }
 
 function scoreChunk(chunk: DocumentationChunk, index: number, stages: DocumentationStage[], tokens: Set<string>, current: string): number {

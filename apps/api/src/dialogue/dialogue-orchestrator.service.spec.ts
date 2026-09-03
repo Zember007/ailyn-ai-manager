@@ -84,8 +84,9 @@ describe("single-agent dialogue", () => {
     expect(context.leadCard).toEqual(facts);
     expect(context.history).toEqual([{ author: "client", text: "Старая реплика", createdAt: "2026-01-01" }]);
     expect(context.knowledge.length).toBeLessThan(15);
-    expect(context.commonKnowledge.length).toBeGreaterThan(100);
-    expect(context.commonKnowledge.some((chunk: { section: string }) => chunk.section === "5.2")).toBe(true);
+    expect(context.commonKnowledge.length).toBeGreaterThan(0);
+    expect(context.commonKnowledge.length).toBeLessThan(10);
+    expect(context.commonKnowledge.some((chunk: { section: string }) => chunk.section === "5.1")).toBe(true);
     expect(context.relevantStages).toContain("application");
     expect(request.messages[1].content).toEqual(expect.arrayContaining([expect.objectContaining({ type: "image_url" })]));
   });
