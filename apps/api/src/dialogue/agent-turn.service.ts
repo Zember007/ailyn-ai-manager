@@ -168,7 +168,8 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     settings: input.settings
   });
   const semanticErrors = validateAgentTurnSemantics({ result: parsed, effectiveFacts, explicitFacts, inputAttachments: input.attachments, errors: reconciliation.semanticErrors });
-  if (semanticErrors.length > 0) throw new Error(`Agent response semantic validation failed (${semanticErrors.join("; ")})`);
+  const criticalErrors = semanticErrors.filter((issue) => !issue.startsWith("stage_missing_required_fact:") || replyAttemptsToSkipMissingFact(issue, parsed.reply));
+  if (criticalErrors.length > 0) throw new Error(`Agent response semantic validation failed (${criticalErrors.join("; ")})`);
   return {
     ...payloadWithoutProposedLimit,
     leadCardPatch: { ...parsed.leadCardPatch, ...explicitFacts },
@@ -177,6 +178,24 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     ...(reconciliation.preliminaryLimit === null ? {} : { preliminaryLimit: reconciliation.preliminaryLimit }),
     reply: separateQuestions(removeRepeatedGreeting(parsed.reply, input.messages))
   };
+}
+
+function replyAttemptsToSkipMissingFact(issue: string, reply: string): boolean {
+  const fact = issue.split(":")[1] ?? "";
+  const text = reply.toLocaleLowerCase("ru-RU");
+  const asksDocuments = /(?:пришл|отправ|нужн)[^.!?]{0,100}(?:id|паспорт|стс|документ)|(?:id|паспорт|стс|документ)[^.!?]{0,100}(?:пришл|отправ)/u.test(text);
+  const asksVisit = /(?:когда|дата|время|во\s+сколько|приех|визит|запис)/u.test(text);
+  const asksGuarantor = /поручител/u.test(text) && /(?:есть|имеется|сможете|нужен|нужна)/u.test(text);
+  const confirmsVisit = /(?:записал|записала|предварительно\s+запис|менеджер\s+подтверд|молодой\s+гвардии|2gis|maps\.app)/u.test(text);
+
+  if (fact === "residenceRegion") return asksDocuments || asksGuarantor || asksVisit || confirmsVisit;
+  if (fact === "requestedProgramCompatibility") return asksGuarantor || asksDocuments || asksVisit || confirmsVisit;
+  if (fact === "familyStatus" || fact === "spouseConsentReady") return asksVisit || confirmsVisit;
+  if (fact === "guarantorAvailable") return asksDocuments || asksVisit || confirmsVisit;
+  if (fact === "requestedProgram") return asksDocuments || asksGuarantor || asksVisit || confirmsVisit;
+  if (fact === "requestedAmount" || fact === "vehicleValue" || fact === "vehicleMake" || fact === "vehicleYear") return asksDocuments || asksGuarantor || asksVisit || confirmsVisit;
+  if (/^(?:id_front|id_back|vehicle_registration_front|vehicle_registration_back)$/u.test(fact)) return asksVisit || confirmsVisit;
+  return true;
 }
 
 function truncateLogValue(value: unknown): string {
@@ -437,6 +456,7 @@ function validateAgentTurnSemantics(input: { result: AgentTurnResult; effectiveF
   }
   if (input.explicitFacts.requestedProgram === "parking" && /без\s+изъяти/u.test(input.result.reply.toLocaleLowerCase("ru-RU"))) errors.push("program_conflict");
   if (input.explicitFacts.requestedProgram === "without_storage" && /(?:на\s+)?стоянк|парковк/u.test(input.result.reply.toLocaleLowerCase("ru-RU"))) errors.push("program_conflict");
+  if (input.explicitFacts.declinedCarPhoto === true && /(?:пришл|отправ)[^.!?]{0,80}(?:фото|фотограф)[^.!?]{0,50}(?:авто|автомоб|машин)/u.test(input.result.reply.toLocaleLowerCase("ru-RU"))) errors.push("reply_reasks_declined_car_photos");
   const requested = documentRequestPatterns(input.result.reply);
   for (const document of requested) if (input.effectiveFacts.documents?.[document] === "received") errors.push(`reply_reasks_received_document:${document}`);
   return [...new Set(errors)];
