@@ -1,7 +1,37 @@
 import { describe, expect, it } from "vitest";
-import { calculateLoanLimits, evaluateApplication } from "./index.js";
+import { calculateLoanLimits, evaluateApplication, resolveKyrgyzstanLocality } from "./index.js";
 
 describe("business rules", () => {
+  it.each([
+    ["Токмок", "BISHKEK_CHUY", "Чуйская область"],
+    ["Кант", "BISHKEK_CHUY", "Чуйская область"],
+    ["Кара-Балта", "BISHKEK_CHUY", "Чуйская область"],
+    ["Шопоков", "BISHKEK_CHUY", "Чуйская область"],
+    ["Кемин", "BISHKEK_CHUY", "Чуйская область"],
+    ["Орловка", "BISHKEK_CHUY", "Чуйская область"],
+    ["Каинды", "BISHKEK_CHUY", "Чуйская область"],
+    ["Ош", "OTHER_KG", "Другой регион Кыргызстана"],
+    ["Каракол", "OTHER_KG", "Другой регион Кыргызстана"],
+    ["Нарын", "OTHER_KG", "Другой регион Кыргызстана"],
+    ["Талас", "OTHER_KG", "Другой регион Кыргызстана"],
+    ["Манас", "OTHER_KG", "Другой регион Кыргызстана"],
+    ["Джалал-Абад", "OTHER_KG", "Другой регион Кыргызстана"],
+    ["Раззаков", "OTHER_KG", "Другой регион Кыргызстана"],
+    ["Исфана", "OTHER_KG", "Другой регион Кыргызстана"],
+    ["в такмоке", "BISHKEK_CHUY", "Чуйская область"],
+    ["tokmok", "BISHKEK_CHUY", "Чуйская область"],
+    ["Сокулук", "BISHKEK_CHUY", "Чуйская область"],
+    ["Беловодское", "BISHKEK_CHUY", "Чуйская область"],
+    ["Лебединовка", "BISHKEK_CHUY", "Чуйская область"]
+  ])("resolves %s from the SOATE locality index", (locality, category, region) => {
+    expect(resolveKyrgyzstanLocality(locality)).toMatchObject({ category, residenceRegion: region });
+  });
+
+  it("uses the Chuy limit for Tokmok and never calculates before residence is resolved", () => {
+    expect(calculateLoanLimits({ vehicleValue: 1_748_976, residenceRegion: "Токмок" })).toEqual({ withoutStorage: 600_000, parking: 874_488 });
+    expect(calculateLoanLimits({ vehicleValue: 1_748_976, residenceRegion: "непонятный посёлок" })).toEqual({});
+  });
+
   it("calculates Bishkek/Chuy without-storage limit as min 40 percent and 600000", () => {
     expect(
       calculateLoanLimits({
@@ -19,8 +49,8 @@ describe("business rules", () => {
   });
 
   it("calculates parking limit as min 50 percent and 2000000", () => {
-    expect(calculateLoanLimits({ vehicleValue: 1_000_000 }).parking).toBe(500_000);
-    expect(calculateLoanLimits({ vehicleValue: 6_000_000 }).parking).toBe(2_000_000);
+    expect(calculateLoanLimits({ vehicleValue: 1_000_000, residenceRegion: "Бишкек" }).parking).toBe(500_000);
+    expect(calculateLoanLimits({ vehicleValue: 6_000_000, residenceRegion: "Бишкек" }).parking).toBe(2_000_000);
   });
 
   it("refuses unsupported critical vehicle and ownership conditions deterministically", () => {
@@ -101,7 +131,7 @@ describe("business rules", () => {
       vehicleValue: 900_000,
       requestedAmount: 300_000,
       requestedProgram: "without_storage",
-      residenceCategory: "BISHKEK",
+      residenceCategory: "BISHKEK_CHUY",
       residenceRegion: "Бишкек"
     });
 
@@ -136,7 +166,7 @@ describe("business rules", () => {
       vehicleValue: 1_200_000,
       requestedAmount: 200_000,
       requestedProgram: "parking",
-      residenceCategory: "BISHKEK",
+      residenceCategory: "BISHKEK_CHUY",
       residenceRegion: "Бишкек",
       documents: {
         id_front: "received",
@@ -159,7 +189,7 @@ describe("business rules", () => {
       vehicleValue: 1_200_000,
       requestedAmount: 200_000,
       requestedProgram: "parking",
-      residenceCategory: "BISHKEK",
+      residenceCategory: "BISHKEK_CHUY",
       residenceRegion: "Бишкек",
       visitRequested: true
     });
@@ -176,7 +206,7 @@ describe("business rules", () => {
       vehicleValue: 1_200_000,
       requestedAmount: 200_000,
       requestedProgram: "parking",
-      residenceCategory: "BISHKEK",
+      residenceCategory: "BISHKEK_CHUY",
       residenceRegion: "Бишкек",
       declinedDocuments: true,
       familyStatus: "married",

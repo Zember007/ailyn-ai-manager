@@ -32,15 +32,40 @@ export function attachmentFactsFromResult(previous: ApplicationFacts, attachment
 }
 
 export function selectedProgramLimit(facts: ApplicationFacts, settings: object): number | null {
-  if (!facts.requestedProgram || !facts.residenceRegion) return null;
+  return programComparison(facts, settings)?.selectedLimit ?? null;
+}
+
+export interface ProgramComparison {
+  selectedProgram: "without_storage" | "parking";
+  selectedLimit: number;
+  requestedAmount?: number;
+  requestedAmountExceedsSelectedLimit: boolean;
+  alternative?: { program: "without_storage" | "parking"; limit: number; coversRequestedAmount: boolean };
+}
+
+export function programComparison(facts: ApplicationFacts, settings: object): ProgramComparison | undefined {
+  if (!facts.requestedProgram || !facts.residenceRegion) return undefined;
   const limits = calculateLoanLimits(facts, { ...defaultBusinessRuleSettings, ...(settings as Partial<BusinessRuleSettings>) });
-  return facts.requestedProgram === "without_storage" ? limits.withoutStorage ?? null : limits.parking ?? null;
+  const selectedLimit = facts.requestedProgram === "without_storage" ? limits.withoutStorage : limits.parking;
+  if (selectedLimit === undefined) return undefined;
+  const alternativeProgram = facts.requestedProgram === "without_storage" ? "parking" : "without_storage";
+  const alternativeLimit = alternativeProgram === "without_storage" ? limits.withoutStorage : limits.parking;
+  const requestedAmountExceedsSelectedLimit = typeof facts.requestedAmount === "number" && facts.requestedAmount > selectedLimit;
+  return {
+    selectedProgram: facts.requestedProgram,
+    selectedLimit,
+    requestedAmount: facts.requestedAmount,
+    requestedAmountExceedsSelectedLimit,
+    ...(alternativeLimit === undefined ? {} : { alternative: { program: alternativeProgram, limit: alternativeLimit, coversRequestedAmount: typeof facts.requestedAmount === "number" && facts.requestedAmount <= alternativeLimit } })
+  };
 }
 
 export interface AgentTurnReconciliation {
   state: AgentTurnResult["dialogueState"];
   targetEvent: "documents" | "visit" | null;
   preliminaryLimit: number | null;
+  programComparison?: ProgramComparison;
+  pendingRequirement?: { stage: ApplicationStage; fact: string; nextAction: string };
   semanticErrors: string[];
   corrections: string[];
 }
@@ -53,7 +78,8 @@ export function reconcileAgentTurn(input: {
   settings: object;
 }): AgentTurnReconciliation {
   const missing = firstMissingRequirement(input.effectiveFacts);
-  const preliminaryLimit = selectedProgramLimit(input.effectiveFacts, input.settings);
+  const programComparisonResult = programComparison(input.effectiveFacts, input.settings);
+  const preliminaryLimit = programComparisonResult?.selectedLimit ?? null;
   const semanticErrors: string[] = [];
   const corrections: string[] = [];
   let state = input.proposedState;
@@ -62,6 +88,15 @@ export function reconcileAgentTurn(input: {
     semanticErrors.push(`invalid_stage_transition:${input.proposedState.stage}:missing:${missing.fact}`);
     corrections.push(`stage_corrected:${input.proposedState.stage}->${missing.stage}`);
     state = { stage: missing.stage, status: "need_more_data", nextAction: missing.nextAction };
+  }
+
+  if (programComparisonResult?.requestedAmountExceedsSelectedLimit) {
+    corrections.push("program_limit_reconciled:offer_alternative_or_reduced_amount");
+    // The specification explicitly continues the application after a suitable
+    // parking alternative is offered, unless the client later refuses it.
+    state = programComparisonResult.alternative?.coversRequestedAmount
+      ? { stage: "COLLECTING_DOCUMENTS", status: "need_more_data", nextAction: "collect_documents" }
+      : { stage: "ELIGIBILITY_CHECK", status: "need_more_data", nextAction: "confirm_reduced_amount" };
   }
 
   if (input.proposedPreliminaryLimit != null && preliminaryLimit != null && input.proposedPreliminaryLimit !== preliminaryLimit) {
@@ -79,7 +114,7 @@ export function reconcileAgentTurn(input: {
     semanticErrors.push(`invalid_target_event:${input.proposedTargetEvent}`);
   }
 
-  return { state, targetEvent, preliminaryLimit, semanticErrors, corrections };
+  return { state, targetEvent, preliminaryLimit, programComparison: programComparisonResult, ...(missing ? { pendingRequirement: missing } : {}), semanticErrors, corrections };
 }
 
 function firstMissingRequirement(facts: ApplicationFacts): { stage: ApplicationStage; fact: string; nextAction: string } | undefined {
@@ -91,7 +126,9 @@ function firstMissingRequirement(facts: ApplicationFacts): { stage: ApplicationS
   const document = requiredDocuments.find((key) => facts.documents?.[key] !== "received");
   if (document) return { stage: "COLLECTING_DOCUMENTS", fact: document, nextAction: "collect_documents" };
   if (!facts.familyStatus || facts.familyStatus === "unknown") return { stage: "COLLECTING_FAMILY_STATUS", fact: "familyStatus", nextAction: "collect_family_status" };
-  if (facts.familyStatus === "married" && facts.spouseConsentReady !== true) return { stage: "COLLECTING_FAMILY_STATUS", fact: "spouseConsentReady", nextAction: "collect_spouse_consent" };
+  // A refusal is a resolved answer, not a missing fact. The client can
+  // arrange the consent with the building's notary during the visit.
+  if (facts.familyStatus === "married" && facts.spouseConsentReady === undefined) return { stage: "COLLECTING_FAMILY_STATUS", fact: "spouseConsentReady", nextAction: "collect_spouse_consent" };
   if (requiresGuarantor(facts) && facts.guarantorAvailable === undefined) return { stage: "CHECKING_GUARANTOR", fact: "guarantorAvailable", nextAction: "check_guarantor" };
   if (!facts.visitDate || !facts.visitTime) return { stage: "SCHEDULING_VISIT", fact: !facts.visitDate ? "visitDate" : "visitTime", nextAction: "schedule_visit" };
   return undefined;

@@ -1,3 +1,6 @@
+import { resolveKyrgyzstanLocality, type LoanResidenceCategory } from "./locality-region.js";
+export { resolveKyrgyzstanLocality } from "./locality-region.js";
+
 export type BusinessRuleStatus =
   | "continue"
   | "refuse"
@@ -26,7 +29,7 @@ export type NextActionCode =
   | "arrived"
   | "target_reached";
 
-export type ResidenceCategory = "BISHKEK" | "CHUY" | "OTHER_KG" | "FOREIGN";
+export type ResidenceCategory = LoanResidenceCategory | "FOREIGN";
 
 export type ApplicationStage =
   | "NEW"
@@ -176,8 +179,6 @@ export const defaultBusinessRuleSettings: BusinessRuleSettings = {
 };
 
 const supportedVehicleTypes = new Set(["car", "passenger_car", "minivan"]);
-const bishkekChuy = new Set(["bishkek", "chuy", "чуй", "чуйская область", "бишкек"]);
-
 export function evaluateApplication(
   facts: ApplicationFacts,
   settings: BusinessRuleSettings = defaultBusinessRuleSettings
@@ -438,14 +439,17 @@ export function calculateLoanLimits(
     return {};
   }
 
+  const residenceCategory = resolvedResidenceCategory(facts);
+  // A locality must be resolved before either programme gets a personal limit.
+  // Parking has the same formula nationwide, but withholding a number here
+  // keeps the pipeline from answering before the residence check completes.
+  if (!residenceCategory || residenceCategory === "FOREIGN") return {};
   const parking = Math.min(Math.floor(facts.vehicleValue * settings.parkingPercent), settings.parkingLimit);
-  const residence = normalize(facts.residenceRegion);
-  const residenceCategory = facts.residenceCategory ?? categorizeResidence(facts.residenceRegion);
-  const withoutStorageRegionalLimit = residenceCategory === "BISHKEK" || residenceCategory === "CHUY"
+  const withoutStorageRegionalLimit = residenceCategory === "BISHKEK_CHUY"
     ? settings.withoutStorageLimitBishkekChuy
     : settings.withoutStorageLimitOtherRegion;
   const withoutStorageAllowed =
-    residence === "" || residenceCategory === "BISHKEK" || residenceCategory === "CHUY" || facts.vehicleValue >= settings.otherRegionMinVehicleValue;
+    residenceCategory === "BISHKEK_CHUY" || facts.vehicleValue >= settings.otherRegionMinVehicleValue;
   const withoutStorage = withoutStorageAllowed
     ? Math.min(Math.floor(facts.vehicleValue * settings.withoutStoragePercent), withoutStorageRegionalLimit)
     : undefined;
@@ -459,8 +463,8 @@ export function determineAvailablePrograms(
   _blockedRules: string[] = []
 ): LoanProgram[] {
   const programs: LoanProgram[] = ["parking"];
-  const residenceCategory = facts.residenceCategory ?? categorizeResidence(facts.residenceRegion);
-  if (!facts.vehicleValue || !residenceCategory || residenceCategory === "BISHKEK" || residenceCategory === "CHUY") {
+  const residenceCategory = resolvedResidenceCategory(facts);
+  if (!facts.vehicleValue || !residenceCategory || residenceCategory === "BISHKEK_CHUY") {
     programs.unshift("without_storage");
     return programs;
   }
@@ -534,10 +538,10 @@ function firstRefusal(
 export function categorizeResidence(value: string | undefined): ResidenceCategory | undefined {
   const residence = normalize(value);
   if (!residence) return undefined;
-  if (residence.includes("бишкек") || residence === "bishkek") return "BISHKEK";
-  if (bishkekChuy.has(residence) || residence.includes("чуй")) return "CHUY";
-  if (["foreign", "иностран", "зарубеж"].some((token) => residence.includes(token))) return "FOREIGN";
-  return "OTHER_KG";
+  if (["foreign", "иностран", "зарубеж", "другая страна"].some((token) => residence.includes(token))) return "FOREIGN";
+  if (residence === "бишкек" || residence === "чуйская область" || residence === "бишкек чуйская область") return "BISHKEK_CHUY";
+  if (residence === "другой регион кыргызстана") return "OTHER_KG";
+  return resolveKyrgyzstanLocality(value)?.category;
 }
 
 function needMore(
@@ -575,7 +579,7 @@ function getMissingDocuments(facts: ApplicationFacts): DocumentCode[] {
 }
 
 function requiresGuarantor(facts: ApplicationFacts, settings: BusinessRuleSettings): boolean {
-  const category = facts.residenceCategory ?? categorizeResidence(facts.residenceRegion);
+  const category = resolvedResidenceCategory(facts);
   return Boolean(
     category === "OTHER_KG" &&
       facts.vehicleValue &&
@@ -586,6 +590,13 @@ function requiresGuarantor(facts: ApplicationFacts, settings: BusinessRuleSettin
 
 function normalize(value: unknown): string {
   return String(value ?? "").trim().toLowerCase();
+}
+
+/** Accept historical persisted values, but never write them for new turns. */
+function resolvedResidenceCategory(facts: ApplicationFacts): ResidenceCategory | undefined {
+  const category = facts.residenceCategory as string | undefined;
+  if (category === "BISHKEK" || category === "CHUY") return "BISHKEK_CHUY";
+  return facts.residenceCategory ?? categorizeResidence(facts.residenceRegion);
 }
 
 function isWorkingDay(value: string, workingDays: number[]): boolean {

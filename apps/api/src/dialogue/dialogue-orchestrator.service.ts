@@ -45,10 +45,6 @@ export class DialogueOrchestratorService {
         preliminaryLimit: reconciliation.preliminaryLimit
       });
       application = (await this.store.getApplication(application.id)) ?? application;
-      for (const attachment of message.attachments) {
-        const recognized = turn.result.attachments.find((item) => item.attachmentId === attachment.id);
-        await this.store.addAttachment({ conversationId: conversation.id, messageId: inbound.id, type: recognized?.type ?? "unknown", status: recognized?.status ?? "received", fileName: attachment.fileName, mimeType: attachment.mimeType, byteSize: typeof attachment.metadata?.byteSize === "number" ? attachment.metadata.byteSize : undefined, storageKey: typeof attachment.metadata?.storageKey === "string" ? attachment.metadata.storageKey : undefined });
-      }
       const initial = Boolean(reconciliation.targetEvent) && !application.facts.handedToManager;
       const delta = application.facts.handedToManager && changedFactKeys.some((key) => managerDeltaFactKeys.has(key));
       if (initial) {
@@ -58,6 +54,13 @@ export class DialogueOrchestratorService {
         const fields = changedFactKeys.filter((key) => managerDeltaFactKeys.has(key));
         if (await this.store.createManagerNotification(application, "delta", { summary: turn.result.cardSummary, changedFactKeys: fields, facts: Object.fromEntries(fields.map((key) => [key, (application.facts as Record<string, unknown>)[key]])) })) managerEvent = "delta";
       }
+    }
+    // Keep the uploaded files even if RouterAI is unavailable. Recognition can
+    // be retried later, but a temporary model outage must not discard client
+    // documents or turn their upload into a system-error response.
+    for (const attachment of message.attachments) {
+      const recognized = turn.result?.attachments.find((item) => item.attachmentId === attachment.id);
+      await this.store.addAttachment({ conversationId: conversation.id, messageId: inbound.id, type: recognized?.type ?? "unknown", status: recognized?.status ?? "received", fileName: attachment.fileName, mimeType: attachment.mimeType, byteSize: typeof attachment.metadata?.byteSize === "number" ? attachment.metadata.byteSize : undefined, storageKey: typeof attachment.metadata?.storageKey === "string" ? attachment.metadata.storageKey : undefined });
     }
     const validation = { passed: Boolean(turn.result), errors: turn.error ? [turn.error] : [] };
     const reply = composeReply(turn.reply, currency.clientText);

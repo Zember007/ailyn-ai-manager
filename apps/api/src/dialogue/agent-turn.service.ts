@@ -3,12 +3,12 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadAppConfig } from "@ailyn/config";
-import type { ApplicationFacts } from "@ailyn/business-rules";
+import { resolveKyrgyzstanLocality, type ApplicationFacts } from "@ailyn/business-rules";
 import { RouterAiClient } from "../ai/router-ai/router-ai.client.js";
 import type { InboundAttachment } from "../channels/channel.interface.js";
 import { BackendLogsService } from "../logs/backend-logs.service.js";
 import { resolveMoneyFacts } from "./money-normalization.js";
-import { attachmentFactsFromResult, effectiveFactsForTurn, reconcileAgentTurn } from "./agent-turn-reconciliation.js";
+import { attachmentFactsFromResult, effectiveFactsForTurn, programComparison, reconcileAgentTurn, type ProgramComparison } from "./agent-turn-reconciliation.js";
 import { generatedDocumentationChunks } from "./documentation-chunks.generated.js";
 import { agentTurnResultSchema, type AgentTurnResult } from "./agent-turn.contracts.js";
 import type { Stage1Message } from "./stage1-store.service.js";
@@ -42,11 +42,11 @@ export class AgentTurnService {
       // The configured production model (openai/gpt-5.4-mini) can return an
       // empty object for json_schema. JSON mode plus the strict Zod boundary
       // is compatible and lets normal short replies succeed on the first call.
-      model: this.config.routerAiTextModel ?? "routerai-text-model-not-configured", temperature: 0.2, max_tokens: 1600, reasoning: { enabled: false }, response_format: { type: "json_object" as const },
-      messages: [{ role: "system" as const, content: systemPrompt }, { role: "user" as const, content: buildMessage(input) }]
+      model: this.config.routerAiTextModel ?? "routerai-text-model-not-configured", temperature: 0.2, max_tokens: 1600, reasoning: { enabled: false }, response_format: { type: "json_object" as const }
     };
     let lastError = "unknown_model_error";
     let lastRawAgentResponse: string | undefined;
+    let retryWithoutImages = false;
     const attempts: Array<{ attempt: number; error: string; agentResponse?: string }> = [];
     for (let attempt = 1; attempt <= MAX_MODEL_ATTEMPTS; attempt += 1) {
       let agentResponse: string | undefined;
@@ -54,9 +54,11 @@ export class AgentTurnService {
         const retryInstruction = attempt > 1
           ? "\n\nПОВТОРНАЯ ПОПЫТКА: предыдущий ответ не прошёл техническую проверку формата. Верните новый, полностью валидный JSON строго по заданной схеме. Не повторяйте техническое извинение: ответьте клиенту по существу и сохраните только допустимые поля карточки."
           : "";
-        const attemptRequest = retryInstruction
-          ? { ...request, messages: [{ role: "system" as const, content: `${systemPrompt}${retryInstruction}` }, request.messages[1]] }
-          : request;
+        const userMessage = { role: "user" as const, content: buildMessage(input, !retryWithoutImages) };
+        const attemptRequest = {
+          ...request,
+          messages: [{ role: "system" as const, content: retryInstruction ? `${systemPrompt}${retryInstruction}` : systemPrompt }, userMessage]
+        };
         const response = await this.client.createChatCompletion(attemptRequest, { timeoutMs: this.config.routerAiTimeoutMs });
         const rawAgentResponse = response.choices?.[0]?.message?.content;
         lastRawAgentResponse = typeof rawAgentResponse === "string" ? rawAgentResponse : undefined;
@@ -75,6 +77,7 @@ export class AgentTurnService {
       } catch (error) {
         lastError = error instanceof Error ? error.message : String(error);
         attempts.push({ attempt, error: truncateLogValue(lastError), ...(agentResponse ? { agentResponse } : {}) });
+        if (isFetchFailure(error) && input.attachments.some((attachment) => Boolean(attachment.contentBase64))) retryWithoutImages = true;
         if (attempt < MAX_MODEL_ATTEMPTS) this.logger.warn(`Single-agent attempt ${attempt}/${MAX_MODEL_ATTEMPTS} failed; retrying: ${lastError}`);
       }
     }
@@ -84,6 +87,15 @@ export class AgentTurnService {
         this.logger.warn(`Cheap JSON normalizer repaired the agent response after ${MAX_MODEL_ATTEMPTS} attempts (model=${repaired.model})`);
         return { result: repaired.result, reply: repaired.result.reply, model: repaired.model, promptVersion: `${PROMPT_VERSION}-normalizer` };
       }
+    }
+    if (input.attachments.length > 0) {
+      const recovered = localAttachmentRecovery(input);
+      this.logger.warn(`Single-agent attachment recovery activated after ${MAX_MODEL_ATTEMPTS} attempts: ${lastError}`);
+      await this.logs?.warn("dialogue.single-agent.attachment-recovery", "Attachments accepted without AI recognition", {
+        conversationId: input.conversationId,
+        metadata: { error: truncateLogValue(lastError), attachmentCount: input.attachments.length, attempts }
+      });
+      return { result: recovered, reply: recovered.reply, model: "local-attachment-recovery", promptVersion: `${PROMPT_VERSION}-attachment-recovery`, error: lastError };
     }
     this.logger.warn(`Single-agent fallback activated after ${MAX_MODEL_ATTEMPTS} attempts: ${lastError}`);
     await this.logFallback(input, lastError, attempts);
@@ -137,6 +149,37 @@ export class AgentTurnService {
   }
 }
 
+function isFetchFailure(error: unknown): boolean {
+  return error instanceof Error && /fetch failed|network|econnreset|enotfound|timeout|aborted/i.test(`${error.name}: ${error.message}`);
+}
+
+function localAttachmentRecovery(input: AgentTurnInput): AgentTurnResult {
+  const reconciliation = reconcileAgentTurn({
+    effectiveFacts: input.facts,
+    proposedState: { stage: "COLLECTING_DOCUMENTS", status: "need_more_data", nextAction: "collect_documents" },
+    proposedTargetEvent: null,
+    proposedPreliminaryLimit: null,
+    settings: input.settings
+  });
+  const reply = reconciliation.pendingRequirement?.fact === "residenceRegion"
+    ? "Фотографии получили.\n\nПодскажите, пожалуйста, Ваша прописка: Бишкек, Чуйская область или другой регион Кыргызстана?"
+    : reconciliation.pendingRequirement?.fact === "familyStatus"
+      ? "Фотографии получили.\n\nПодскажите, пожалуйста, состоите ли Вы в браке?"
+      : "Фотографии получили. Продолжаем оформление; если какой-то снимок окажется неразборчивым, я уточню нужную сторону.";
+  return {
+    reply,
+    language: input.facts.language ?? "ru",
+    intent: "attachments_received_pending_recognition",
+    leadCardPatch: input.facts,
+    cardSummary: "Вложения получены, автоматическое распознавание временно недоступно.",
+    ...(reconciliation.preliminaryLimit === null ? {} : { preliminaryLimit: reconciliation.preliminaryLimit }),
+    dialogueState: reconciliation.state,
+    targetEvent: null,
+    managerUpdate: { kind: "none", changedFields: [] },
+    attachments: input.attachments.map((attachment) => ({ attachmentId: attachment.id, type: "unknown", status: "received" }))
+  };
+}
+
 function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): AgentTurnResult & { reply: string } {
   const { preliminaryLimit: _proposedPreliminaryLimit, ...payloadWithoutProposedLimit } = parsed;
   const interpreted = interpretCurrentTurn({ text: input.text, facts: input.facts, messages: input.messages });
@@ -155,14 +198,38 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     settings: input.settings
   });
   const semanticErrors = validateAgentTurnSemantics({ result: parsed, effectiveFacts, explicitFacts: interpreted.facts, inputAttachments: input.attachments, errors: reconciliation.semanticErrors });
-  const criticalErrors = semanticErrors.filter((issue) => !issue.startsWith("invalid_stage_transition:"));
+  // Stage, preliminary limit and target event are all deterministically
+  // reconciled below. A stale model proposal must not turn into a fallback
+  // after the safe state has already been calculated from effective facts.
+  const criticalErrors = semanticErrors.filter((issue) => !issue.startsWith("invalid_stage_transition:") && issue !== "preliminary_limit_conflict" && !issue.startsWith("invalid_target_event:"));
   if (criticalErrors.length > 0) throw new Error(`Agent response semantic validation failed (${criticalErrors.join("; ")})`);
+  const stageSafeReply = missingRequirementReply({
+    modelReply: parsed.reply,
+    requirement: reconciliation.pendingRequirement,
+    facts: effectiveFacts
+  });
+  const spouseConsentReply = addSpouseConsentVisitOption({
+    modelReply: stageSafeReply,
+    spouseConsentWasDeclined: interpreted.facts.spouseConsentReady === false
+  });
+  const financialReply = reconcileFinancialReply({
+    modelReply: spouseConsentReply,
+    comparison: reconciliation.programComparison,
+    stage: reconciliation.state.stage,
+    needsDeterministicLimitRewrite: semanticErrors.includes("preliminary_limit_conflict")
+  });
+  const visitReply = invalidVisitReply({ modelReply: financialReply, visit: interpreted.visit });
+  const alternativeProgram = reconciliation.programComparison?.requestedAmountExceedsSelectedLimit && reconciliation.programComparison.alternative?.coversRequestedAmount
+    ? reconciliation.programComparison.alternative.program
+    : undefined;
+  const finalPreliminaryLimit = alternativeProgram ? reconciliation.programComparison?.alternative?.limit : reconciliation.preliminaryLimit;
   return {
     ...payloadWithoutProposedLimit,
+    ...(alternativeProgram ? { leadCardPatch: { ...payloadWithoutProposedLimit.leadCardPatch, requestedProgram: alternativeProgram } } : {}),
     dialogueState: reconciliation.state,
     targetEvent: reconciliation.targetEvent,
-    ...(reconciliation.preliminaryLimit === null ? {} : { preliminaryLimit: reconciliation.preliminaryLimit }),
-    reply: separateQuestions(removeRepeatedGreeting(parsed.reply, input.messages))
+    ...(finalPreliminaryLimit == null ? {} : { preliminaryLimit: finalPreliminaryLimit }),
+    reply: separateQuestions(removeRepeatedGreeting(visitReply, input.messages))
   };
 }
 
@@ -214,15 +281,114 @@ function separateQuestions(reply: string): string {
   return reply.replace(/([.!?])\s+(?=[А-ЯЁA-Z][^.!?\n]{0,160}\?)/gu, "$1\n\n").trim();
 }
 
-function buildMessage(input: { messages: Stage1Message[]; facts: ApplicationFacts; settings: object; text?: string; attachments: InboundAttachment[]; currencyConversions?: unknown[] }) {
+function addSpouseConsentVisitOption(input: { modelReply: string; spouseConsentWasDeclined: boolean }): string {
+  if (!input.spouseConsentWasDeclined) return input.modelReply;
+  const normalizedReply = input.modelReply.toLocaleLowerCase("ru-RU");
+  if (/(?:нотариус.{0,80}здани|здани.{0,80}нотариус)/u.test(normalizedReply)) return input.modelReply;
+  return [
+    "В таком случае нотариальное согласие можно оформить у нотариуса в нашем здании во время визита. Ориентировочная стоимость — 1 500 сом.",
+    input.modelReply
+  ].filter(Boolean).join("\n\n");
+}
+
+function invalidVisitReply(input: { modelReply: string; visit?: ParsedVisit }): string {
+  if (input.visit?.issue !== "weekend") return input.modelReply;
+  const nextWorkingDate = nextWorkingDay(input.visit.date);
+  return [
+    `К сожалению, ${formatRussianDate(input.visit.date)} приходится на выходной — в этот день мы не работаем.`,
+    `Ближайший рабочий день — ${formatRussianDate(nextWorkingDate)}. Подскажите, пожалуйста, подойдут дата и время в этот день?`
+  ].join("\n\n");
+}
+
+function reconcileFinancialReply(input: { modelReply: string; comparison?: ProgramComparison; stage: AgentTurnResult["dialogueState"]["stage"]; needsDeterministicLimitRewrite: boolean }): string {
+  const comparison = input.comparison;
+  if (!comparison) return input.modelReply;
+  const selectedProgram = programLabel(comparison.selectedProgram);
+  const selectedLimit = formatSom(comparison.selectedLimit);
+  const requestedAmount = comparison.requestedAmount === undefined ? undefined : formatSom(comparison.requestedAmount);
+
+  if (comparison.requestedAmountExceedsSelectedLimit) {
+    const alternative = comparison.alternative;
+    if (alternative?.coversRequestedAmount) {
+      return [
+        `По программе ${selectedProgram} предварительно доступно до ${selectedLimit} сом.`,
+        `Для нужной суммы подойдёт программа ${programLabel(alternative.program)} — автомобиль остаётся на охраняемой парковке. Предварительно по ней доступно до ${formatSom(alternative.limit)} сом.`,
+        "Окончательная сумма определяется после осмотра автомобиля и проверки документов менеджером.",
+        "Пожалуйста, отправьте фото:\n• ID / паспорта — с двух сторон;\n• свидетельства о регистрации ТС — с двух сторон."
+      ].join("\n\n");
+    }
+    return [
+      `По программе ${selectedProgram} предварительно доступно до ${selectedLimit} сом.`,
+      `Запрошенная сумма — ${requestedAmount} сом, она превышает этот лимит.`,
+      "Подскажите, пожалуйста, сможете рассмотреть сумму в пределах предварительного лимита?"
+    ].join("\n\n");
+  }
+
+  if (!input.needsDeterministicLimitRewrite) return input.modelReply;
+  const blocks = [`По программе ${selectedProgram} для Ваших данных предварительно доступно до ${selectedLimit} сом.`];
+  if (requestedAmount) blocks.push(`Запрошенная сумма — ${requestedAmount} сом, она укладывается в этот предварительный лимит.`);
+  blocks.push("Окончательное решение будет после осмотра автомобиля и проверки документов.");
+  if (input.stage === "COLLECTING_DOCUMENTS") {
+    blocks.push("Пожалуйста, отправьте фото:\n• ID — лицевая и обратная стороны;\n• СТС — лицевая и обратная стороны.");
+  }
+  return blocks.join("\n\n");
+}
+
+function missingRequirementReply(input: { modelReply: string; requirement?: { fact: string }; facts: ApplicationFacts }): string {
+  const fact = input.requirement?.fact;
+  if (!fact || replyAddressesRequirement(input.modelReply, fact)) return input.modelReply;
+  if (fact === "residenceRegion") {
+    return "Подскажите, пожалуйста, Ваша прописка:\n• Бишкек;\n• Чуйская область;\n• другой регион Кыргызстана.";
+  }
+  if (fact === "familyStatus") {
+    return "Подскажите, пожалуйста, состоите ли Вы в браке?";
+  }
+  if (fact === "spouseConsentReady") {
+    return "Сможете предоставить нотариально заверенное согласие супруга или супруги?";
+  }
+  if (fact === "guarantorAvailable") {
+    return "Подскажите, пожалуйста, есть ли у Вас поручитель?";
+  }
+  if (fact === "id_front" || fact === "id_back" || fact === "vehicle_registration_front" || fact === "vehicle_registration_back") {
+    const missing = [
+      input.facts.documents?.id_front !== "received" ? "ID — лицевая сторона" : undefined,
+      input.facts.documents?.id_back !== "received" ? "ID — обратная сторона" : undefined,
+      input.facts.documents?.vehicle_registration_front !== "received" ? "СТС — лицевая сторона" : undefined,
+      input.facts.documents?.vehicle_registration_back !== "received" ? "СТС — обратная сторона" : undefined
+    ].filter((value): value is string => Boolean(value));
+    return `Пожалуйста, отправьте фото:\n${missing.map((value) => `• ${value};`).join("\n")}`;
+  }
+  return input.modelReply;
+}
+
+function replyAddressesRequirement(reply: string, fact: string): boolean {
+  const value = reply.toLocaleLowerCase("ru-RU");
+  if (fact === "residenceRegion") return /подскажите.{0,50}(?:пропис|бишкек|чуй|регион)|(?:бишкек|чуй|другой регион).{0,100}\?/u.test(value);
+  if (fact === "familyStatus") return /(?:состоите.{0,30}браке|семейн.{0,30}положен|женат|замужем|в разводе)/u.test(value);
+  if (fact === "spouseConsentReady") return /(?:нотариальн|согласие).{0,80}(?:сможете|готов|предостав)|(?:сможете|готов|предостав).{0,80}(?:нотариальн|согласие)/u.test(value);
+  if (fact === "guarantorAvailable") return /поручител/u.test(value);
+  if (fact.startsWith("id_") || fact.startsWith("vehicle_registration_")) return /(?:паспорт|\bid\b|стс|свидетельств)/u.test(value);
+  return true;
+}
+
+function programLabel(program: "without_storage" | "parking"): string {
+  return program === "without_storage" ? "без изъятия" : "со стоянкой";
+}
+
+function formatSom(value: number): string {
+  return new Intl.NumberFormat("ru-RU").format(value);
+}
+
+function buildMessage(input: { messages: Stage1Message[]; facts: ApplicationFacts; settings: object; text?: string; attachments: InboundAttachment[]; currencyConversions?: unknown[] }, includeImages = true) {
   const settings = input.settings as Record<string, unknown>;
   const timezone = typeof settings.timezone === "string" ? settings.timezone : "Asia/Bishkek";
   const interpretedCurrentMessage = interpretCurrentTurn({ text: input.text, facts: input.facts, messages: input.messages });
-  const context = { now: currentDateTime(timezone), timezone, history: input.messages.map(({ author, body, createdAt }) => ({ author, text: body, createdAt })), leadCard: input.facts, settings: input.settings, currentMessage: input.text ?? "", interpretedCurrentMessage, currencyConversions: input.currencyConversions ?? [], knowledge: selectKnowledge([input.text ?? "", JSON.stringify(input.facts), ...input.messages.slice(-8).map((message) => message.body)].join(" ")) };
+  const effectiveCurrentFacts = { ...input.facts, ...interpretedCurrentMessage.facts };
+  const context = { now: currentDateTime(timezone), timezone, history: input.messages.map(({ author, body, createdAt }) => ({ author, text: body, createdAt })), leadCard: input.facts, settings: input.settings, currentMessage: input.text ?? "", interpretedCurrentMessage, deterministicProgramComparison: programComparison(effectiveCurrentFacts, input.settings), currencyConversions: input.currencyConversions ?? [], knowledge: selectKnowledge([input.text ?? "", JSON.stringify(input.facts), ...input.messages.slice(-8).map((message) => message.body)].join(" ")) };
   const parts: Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string; detail: "high" } }> = [{ type: "text", text: JSON.stringify(context) }];
   for (const attachment of input.attachments) {
     parts.push({ type: "text", text: JSON.stringify({ attachment: { id: attachment.id, fileName: attachment.fileName, mimeType: attachment.mimeType, textContent: attachment.textContent, metadata: attachment.metadata } }) });
-    if (attachment.contentBase64 && /^image\/(jpeg|png|webp|gif)$/i.test(attachment.mimeType ?? "")) parts.push({ type: "image_url", image_url: { url: `data:${attachment.mimeType};base64,${attachment.contentBase64}`, detail: "high" } });
+    if (includeImages && attachment.contentBase64 && /^image\/(jpeg|png|webp|gif)$/i.test(attachment.mimeType ?? "")) parts.push({ type: "image_url", image_url: { url: `data:${attachment.mimeType};base64,${attachment.contentBase64}`, detail: "high" } });
   }
   return parts;
 }
@@ -373,7 +539,21 @@ function normalizeAgentPayload(payload: Record<string, unknown>, inputText?: str
       const normalizedCategory = residenceCategoryAliases[patch.residenceCategory.trim().toLocaleUpperCase("ru-RU")];
       if (normalizedCategory) patch.residenceCategory = normalizedCategory;
     }
-    Object.assign(patch, interpretCurrentTurn({ text: inputText, facts: currentFacts, messages }).facts);
+    const interpreted = interpretCurrentTurn({ text: inputText, facts: currentFacts, messages });
+    if (isResidenceAnswer(inputText, messages)) {
+      // The model may repeat a category from the prompt, but may not infer one
+      // from a city. Locality resolution below is the sole authority.
+      delete patch.residenceRegion;
+      delete patch.residenceCategory;
+    }
+    if (interpreted.visit?.issue) {
+      // The model must not transform an unavailable client date into a visit.
+      // Existing persisted visit details are deliberately left untouched.
+      delete patch.visitRequested;
+      delete patch.visitDate;
+      delete patch.visitTime;
+    }
+    Object.assign(patch, interpreted.facts);
     payload.leadCardPatch = patch;
   }
   const state = payload.dialogueState;
@@ -413,13 +593,14 @@ const leadCardAliases: Record<string, string> = {
 const residenceRegionAliases: Record<string, string> = {
   BISHKEK: "Бишкек",
   CHUY: "Чуйская область",
+  BISHKEK_CHUY: "Чуйская область",
   OTHER_KG: "Другой регион Кыргызстана",
   FOREIGN: "Другая страна"
 };
 
 const residenceCategoryAliases: Record<string, string> = {
-  BISHKEK: "BISHKEK", "БИШКЕК": "BISHKEK",
-  CHUY: "CHUY", CHUI: "CHUY", "ЧУЙ": "CHUY", "ЧУЙСКАЯ ОБЛАСТЬ": "CHUY",
+  BISHKEK: "BISHKEK_CHUY", "БИШКЕК": "BISHKEK_CHUY",
+  CHUY: "BISHKEK_CHUY", CHUI: "BISHKEK_CHUY", "ЧУЙ": "BISHKEK_CHUY", "ЧУЙСКАЯ ОБЛАСТЬ": "BISHKEK_CHUY", BISHKEK_CHUY: "BISHKEK_CHUY",
   OTHER_KG: "OTHER_KG", "ДРУГОЙ РЕГИОН КЫРГЫЗСТАНА": "OTHER_KG",
   FOREIGN: "FOREIGN", "ДРУГАЯ СТРАНА": "FOREIGN"
 };
@@ -435,7 +616,9 @@ const booleanLeadCardKeys = new Set([
   "residenceNeedsClarification", "ownerChanged", "plateChanged", "ownerIsLegalEntity", "borrowerIsLegalEntity", "vehicleInCredit", "vehiclePledged", "vehicleArrested", "registrationRestricted", "refinancingRequested", "buyoutRequested", "accidentNotDrivable", "foreignTravelQuestion", "existingContractQuestion", "existingContractPaymentMessage", "borrowerIsOwner", "ownerCanVisit", "vehicleBoughtDuringMarriage", "spouseConsentReady", "spouseAway", "guarantorAvailable", "visitRequested", "clientPaused", "clientClosed", "declinedDocuments", "declinedCarPhoto", "vehiclePurchasedDuringMarriage", "divorceCertificateReady", "visitConfirmationPending", "handedToManager", "onTheWay", "arrivedAtOffice"
 ]);
 
-export function interpretCurrentTurn(input: { text?: string; facts: ApplicationFacts; messages: Stage1Message[] }): { facts: Partial<ApplicationFacts>; money: ReturnType<typeof resolveMoneyFacts> } {
+type ParsedVisit = { date: string; time?: string; issue?: "weekend" };
+
+export function interpretCurrentTurn(input: { text?: string; facts: ApplicationFacts; messages: Stage1Message[] }): { facts: Partial<ApplicationFacts>; money: ReturnType<typeof resolveMoneyFacts>; visit?: ParsedVisit } {
   const text = input.text;
   if (!text) return { facts: {}, money: resolveMoneyFacts({ text: "", currentFacts: input.facts }) };
   const normalized = text.toLocaleLowerCase("ru-RU");
@@ -455,8 +638,20 @@ export function interpretCurrentTurn(input: { text?: string; facts: ApplicationF
   if (unresolvedQuestion === "guarantor" && /^(?:нет|нету|не\s*т|не\s+имеется)$/u.test(normalized.trim())) facts.guarantorAvailable = false;
   if (unresolvedQuestion === "spouseConsent" && /^(?:да|есть|оформлено|готов(?:а)?|смогу)$/u.test(normalized.trim())) facts.spouseConsentReady = true;
   if (unresolvedQuestion === "spouseConsent" && /^(?:нет|нету|не\s*т|не\s+могу|пока\s+нет)$/u.test(normalized.trim())) facts.spouseConsentReady = false;
+  if (unresolvedQuestion === "carPhoto" && /^(?:нет|нету|не\s*т|не\s+могу|не\s+буду)$/u.test(normalized.trim())) facts.declinedCarPhoto = true;
   if (/(?:поручител[ья]\s+(?:есть|имеется)|есть\s+поручител[ья])/u.test(normalized)) facts.guarantorAvailable = true;
   if (/(?:поручител[ья]\s+нет|нет\s+поручител[ья]|без\s+поручител[ья])/u.test(normalized)) facts.guarantorAvailable = false;
+
+  const locality = resolveKyrgyzstanLocality(text);
+  if (locality && isResidenceAnswer(text, input.messages)) {
+    facts.residenceText = text.trim();
+    facts.residenceRegion = locality.residenceRegion;
+    facts.residenceCategory = locality.category;
+    facts.residenceNeedsClarification = false;
+  } else if (isResidenceAnswer(text, input.messages)) {
+    facts.residenceText = text.trim();
+    facts.residenceNeedsClarification = true;
+  }
 
   const money = resolveMoneyFacts({ text, currentFacts: input.facts, pendingFacts: unresolvedQuestion === "requestedAmount" ? ["requestedAmount"] : unresolvedQuestion === "vehicleValue" ? ["vehicleValue"] : [] });
   if (money.requestedAmount !== undefined && (!money.requestedAmountCurrency || money.requestedAmountCurrency === "KGS")) facts.requestedAmount = money.requestedAmount;
@@ -464,22 +659,32 @@ export function interpretCurrentTurn(input: { text?: string; facts: ApplicationF
 
   const visit = parseVisit(normalized);
   if (visit) {
-    facts.visitRequested = true;
-    facts.visitDate = visit.date;
-    if (visit.time) facts.visitTime = visit.time;
+    if (!visit.issue) {
+      facts.visitRequested = true;
+      facts.visitDate = visit.date;
+      if (visit.time) facts.visitTime = visit.time;
+    }
   }
-  return { facts, money };
+  return { facts, money, ...(visit ? { visit } : {}) };
 }
 
-function lastUnresolvedQuestion(messages: Stage1Message[]): "guarantor" | "spouseConsent" | "requestedAmount" | "vehicleValue" | undefined {
+function lastUnresolvedQuestion(messages: Stage1Message[]): "guarantor" | "spouseConsent" | "carPhoto" | "requestedAmount" | "vehicleValue" | "residence" | undefined {
   const prior = messages.filter((message) => message.author !== "client" || message.body.trim() === "");
   const lastAi = [...prior].reverse().find((message) => message.author === "ai")?.body.toLocaleLowerCase("ru-RU");
   if (!lastAi) return undefined;
   if (/(?:нотариальн|согласие).{0,80}(?:сможете|готов|предостав)|(?:сможете|готов[аы]?|предостав).{0,80}(?:нотариальн|согласие)/.test(lastAi)) return "spouseConsent";
+  if (/(?:фото|фотограф).{0,80}(?:автомоб|машин)/.test(lastAi) && /(?:отправ|пришл|если\s+есть)/.test(lastAi)) return "carPhoto";
   if (/поручител/.test(lastAi) && /(?:есть|имеется|сможет)/.test(lastAi)) return "guarantor";
   if (/(?:какая|какую|нужн).{0,50}(?:сумм|займ)/.test(lastAi)) return "requestedAmount";
   if (/(?:какая|ориентировочн).{0,50}(?:стоимост|цен)/.test(lastAi)) return "vehicleValue";
+  if (/(?:пропис|бишкек|чуй|регион)/.test(lastAi)) return "residence";
   return undefined;
+}
+
+function isResidenceAnswer(text: string | undefined, messages: Stage1Message[]): boolean {
+  if (!text) return false;
+  const normalized = text.toLocaleLowerCase("ru-RU").trim();
+  return lastUnresolvedQuestion(messages) === "residence" || /(?:^|\s)(?:пропис|жив[еу]|в\s+(?:г\.?\s*)?[\p{L}-]{4,})/u.test(normalized) || /^(?:бишкек|чуйская область|другой регион кыргызстана)$/u.test(normalized);
 }
 
 function validateAgentTurnSemantics(input: { result: AgentTurnResult; effectiveFacts: ApplicationFacts; explicitFacts: Partial<ApplicationFacts>; inputAttachments: InboundAttachment[]; errors: string[] }): string[] {
@@ -509,7 +714,7 @@ function documentRequestPatterns(reply: string): Array<"id_front" | "id_back" | 
   return requested;
 }
 
-function parseVisit(text: string): { date: string; time?: string } | undefined {
+function parseVisit(text: string): ParsedVisit | undefined {
   const now = bishkekNow();
   const weekdays: Record<string, number> = { понедельник: 1, вторник: 2, среду: 3, среда: 3, четверг: 4, пятницу: 5, пятница: 5, субботу: 6, суббота: 6, воскресенье: 0 };
   const weekday = Object.entries(weekdays).find(([word]) => text.includes(word))?.[1];
@@ -522,6 +727,8 @@ function parseVisit(text: string): { date: string; time?: string } | undefined {
     const month = Number(explicitDate[1].length === 4 ? explicitDate[2] : explicitDate[2]);
     const day = Number(explicitDate[1].length === 4 ? explicitDate[3] : explicitDate[1]);
     date = validIsoDate(year, month, day);
+  } else if (text.includes("послезавтра")) {
+    date = addDays(now, 2);
   } else if (text.includes("завтра")) {
     date = addDays(now, 1);
   } else if (text.includes("сегодня")) {
@@ -531,7 +738,7 @@ function parseVisit(text: string): { date: string; time?: string } | undefined {
     if (delta === 0 && parsedTime && (parsedTime.hour < now.hour || (parsedTime.hour === now.hour && parsedTime.minute <= now.minute))) delta = 7;
     date = addDays(now, delta);
   }
-  return date ? { date, time: parsedTime?.value } : undefined;
+  return date ? { date, time: parsedTime?.value, ...(isWeekend(date) ? { issue: "weekend" as const } : {}) } : undefined;
 }
 
 function parseVisitTime(match: RegExpMatchArray | null): { hour: number; minute: number; value: string } | undefined {
@@ -561,4 +768,23 @@ function validIsoDate(year: number, month: number, day: number): string | undefi
 
 function isoDate(year: number, month: number, day: number): string {
   return `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+function isWeekend(iso: string): boolean {
+  const day = new Date(`${iso}T00:00:00.000Z`).getUTCDay();
+  return day === 0 || day === 6;
+}
+
+function nextWorkingDay(iso: string): string {
+  let candidate = iso;
+  do {
+    const [year, month, day] = candidate.split("-").map(Number);
+    candidate = addDays({ year, month, day }, 1);
+  } while (isWeekend(candidate));
+  return candidate;
+}
+
+function formatRussianDate(iso: string): string {
+  const [year, month, day] = iso.split("-").map(Number);
+  return new Intl.DateTimeFormat("ru-RU", { day: "numeric", month: "long", timeZone: "UTC" }).format(new Date(Date.UTC(year, month - 1, day)));
 }
