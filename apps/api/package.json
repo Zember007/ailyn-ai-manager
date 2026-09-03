@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "predev": "pnpm --filter @ailyn/business-rules build",
     "build": "pnpm prisma:generate && pnpm documentation:generate && tsc -p tsconfig.json && node ../../scripts/copy-api-prompts.mjs",
     "dev": "set -a; if [ -f ../../.env ]; then . ../../.env; else . ../../.env.example; fi; set +a; nest start --watch",
     "start": "set -a; if [ -f ../../.env ]; then . ../../.env; else . ../../.env.example; fi; set +a; node dist/apps/api/src/main.js",

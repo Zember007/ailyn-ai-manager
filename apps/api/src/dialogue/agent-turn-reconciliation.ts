@@ -16,7 +16,18 @@ export function effectiveFactsForTurn(input: {
   currencyFacts: Partial<ApplicationFacts>;
   attachmentFacts: Partial<ApplicationFacts>;
 }): ApplicationFacts {
-  return { ...input.previous, ...input.modelPatch, ...input.currencyFacts, ...input.attachmentFacts, ...input.explicitFacts };
+  const merged = { ...input.previous, ...input.modelPatch, ...input.currencyFacts, ...input.attachmentFacts, ...input.explicitFacts };
+  // `documents` is an inventory, not a replaceable snapshot. A model patch
+  // frequently contains only the sides it sees in the current message; keep
+  // all sides accepted earlier in the conversation as well.
+  const documents = {
+    ...(input.previous.documents ?? {}),
+    ...(input.modelPatch.documents ?? {}),
+    ...(input.currencyFacts.documents ?? {}),
+    ...(input.attachmentFacts.documents ?? {}),
+    ...(input.explicitFacts.documents ?? {})
+  };
+  return Object.keys(documents).length > 0 ? { ...merged, documents } : merged;
 }
 
 export function attachmentFactsFromResult(previous: ApplicationFacts, attachments: AgentTurnResult["attachments"]): Partial<ApplicationFacts> {

@@ -197,7 +197,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     proposedPreliminaryLimit: parsed.preliminaryLimit,
     settings: input.settings
   });
-  const semanticErrors = validateAgentTurnSemantics({ result: parsed, effectiveFacts, explicitFacts: interpreted.facts, inputAttachments: input.attachments, errors: reconciliation.semanticErrors });
+  const semanticErrors = validateAgentTurnSemantics({ result: parsed, effectiveFacts, explicitFacts: interpreted.facts, inputAttachments: input.attachments, errors: reconciliation.semanticErrors, alternativeDecision: interpreted.alternativeDecision });
   // Stage, preliminary limit and target event are all deterministically
   // reconciled below. A stale model proposal must not turn into a fallback
   // after the safe state has already been calculated from effective facts.
@@ -218,18 +218,36 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     stage: reconciliation.state.stage,
     needsDeterministicLimitRewrite: semanticErrors.includes("preliminary_limit_conflict")
   });
-  const visitReply = invalidVisitReply({ modelReply: financialReply, visit: interpreted.visit });
+  const decisionReply = interpreted.alternativeDecision === "accepted"
+    ? acceptedAlternativeReply(reconciliation.programComparison?.selectedLimit)
+    : interpreted.alternativeDecision === "declined"
+      ? declinedAlternativeReply(input.facts.requestedAmount, reconciliation.programComparison?.alternative?.limit)
+      : financialReply;
+  const visitReply = invalidVisitReply({ modelReply: decisionReply, visit: interpreted.visit });
+  const acknowledgedReply = addTurnAcknowledgement({
+    reply: visitReply,
+    documentsAlreadySent: interpreted.documentsAlreadySent,
+    carPhotoDeclined: interpreted.carPhotoDeclined,
+    facts: effectiveFacts
+  });
   const alternativeProgram = reconciliation.programComparison?.requestedAmountExceedsSelectedLimit && reconciliation.programComparison.alternative?.coversRequestedAmount
     ? reconciliation.programComparison.alternative.program
     : undefined;
   const finalPreliminaryLimit = alternativeProgram ? reconciliation.programComparison?.alternative?.limit : reconciliation.preliminaryLimit;
+  const persistedFacts = {
+    ...effectiveFacts,
+    ...(alternativeProgram ? { requestedProgram: alternativeProgram } : {})
+  };
   return {
     ...payloadWithoutProposedLimit,
-    ...(alternativeProgram ? { leadCardPatch: { ...payloadWithoutProposedLimit.leadCardPatch, requestedProgram: alternativeProgram } } : {}),
+    // Persist the reconciled, cumulative inventory rather than the model's
+    // partial patch. This makes uploads independent of their order and stops
+    // a later ID upload from replacing previously accepted STS sides.
+    leadCardPatch: persistedFacts,
     dialogueState: reconciliation.state,
     targetEvent: reconciliation.targetEvent,
     ...(finalPreliminaryLimit == null ? {} : { preliminaryLimit: finalPreliminaryLimit }),
-    reply: separateQuestions(removeRepeatedGreeting(visitReply, input.messages))
+    reply: separateQuestions(removeRepeatedGreeting(acknowledgedReply, input.messages))
   };
 }
 
@@ -317,6 +335,14 @@ function reconcileFinancialReply(input: { modelReply: string; comparison?: Progr
         "Пожалуйста, отправьте фото:\n• ID / паспорта — с двух сторон;\n• свидетельства о регистрации ТС — с двух сторон."
       ].join("\n\n");
     }
+    if (alternative?.program === "parking") {
+      return [
+        `По программе ${selectedProgram} предварительно доступно до ${selectedLimit} сом.`,
+        `Запрошенная сумма — ${requestedAmount} сом, она превышает этот лимит.`,
+        `По программе со стоянкой автомобиль остаётся на охраняемой парковке. Предварительно доступно до ${formatSom(alternative.limit)} сом.`,
+        `Запрошенная сумма превышает и этот лимит. Подскажите, пожалуйста, сможете рассмотреть сумму в пределах ${formatSom(alternative.limit)} сом?`
+      ].join("\n\n");
+    }
     return [
       `По программе ${selectedProgram} предварительно доступно до ${selectedLimit} сом.`,
       `Запрошенная сумма — ${requestedAmount} сом, она превышает этот лимит.`,
@@ -334,9 +360,34 @@ function reconcileFinancialReply(input: { modelReply: string; comparison?: Progr
   return blocks.join("\n\n");
 }
 
+function acceptedAlternativeReply(limit: number | undefined): string {
+  if (limit === undefined) return "Хорошо, продолжаем оформление по согласованной программе.";
+  return [
+    `Хорошо, оформляем по программе со стоянкой. Предварительно доступно до ${formatSom(limit)} сом.`,
+    "Окончательная сумма определяется после осмотра автомобиля и проверки документов менеджером.",
+    "Пожалуйста, отправьте фото:\n• ID / паспорта — с двух сторон;\n• свидетельства о регистрации ТС — с двух сторон."
+  ].join("\n\n");
+}
+
+function declinedAlternativeReply(requestedAmount: number | undefined, alternativeLimit: number | undefined): string {
+  const requested = requestedAmount === undefined ? "запрошенную сумму" : `${formatSom(requestedAmount)} сом`;
+  const lower = alternativeLimit === undefined ? "меньший лимит" : `меньший лимит — до ${formatSom(alternativeLimit)} сом по программе со стоянкой`;
+  return `К сожалению, мы не можем выдать ${requested}. Если Вы согласитесь на ${lower}, мы сможем продолжить оформление.`;
+}
+
+function addTurnAcknowledgement(input: { reply: string; documentsAlreadySent?: boolean; carPhotoDeclined?: boolean; facts: ApplicationFacts }): string {
+  if (input.documentsAlreadySent) {
+    const documents = input.facts.documents ?? {};
+    const complete = documents.id_front === "received" && documents.id_back === "received" && documents.vehicle_registration_front === "received" && documents.vehicle_registration_back === "received";
+    return `${complete ? "Извините, вижу, документы уже получены." : "Извините, вижу уже полученные документы; запрошу только недостающие стороны."}\n\n${input.reply}`;
+  }
+  if (input.carPhotoDeclined) return `Ничего страшного, продолжаем оформление.\n\n${input.reply}`;
+  return input.reply;
+}
+
 function missingRequirementReply(input: { modelReply: string; requirement?: { fact: string }; facts: ApplicationFacts }): string {
   const fact = input.requirement?.fact;
-  if (!fact || replyAddressesRequirement(input.modelReply, fact)) return input.modelReply;
+  if (!fact) return input.modelReply;
   if (fact === "residenceRegion") {
     return "Подскажите, пожалуйста, Ваша прописка:\n• Бишкек;\n• Чуйская область;\n• другой регион Кыргызстана.";
   }
@@ -358,6 +409,7 @@ function missingRequirementReply(input: { modelReply: string; requirement?: { fa
     ].filter((value): value is string => Boolean(value));
     return `Пожалуйста, отправьте фото:\n${missing.map((value) => `• ${value};`).join("\n")}`;
   }
+  if (replyAddressesRequirement(input.modelReply, fact)) return input.modelReply;
   return input.modelReply;
 }
 
@@ -618,7 +670,7 @@ const booleanLeadCardKeys = new Set([
 
 type ParsedVisit = { date: string; time?: string; issue?: "weekend" };
 
-export function interpretCurrentTurn(input: { text?: string; facts: ApplicationFacts; messages: Stage1Message[] }): { facts: Partial<ApplicationFacts>; money: ReturnType<typeof resolveMoneyFacts>; visit?: ParsedVisit } {
+export function interpretCurrentTurn(input: { text?: string; facts: ApplicationFacts; messages: Stage1Message[] }): { facts: Partial<ApplicationFacts>; money: ReturnType<typeof resolveMoneyFacts>; visit?: ParsedVisit; alternativeDecision?: "accepted" | "declined"; documentsAlreadySent?: boolean; carPhotoDeclined?: boolean } {
   const text = input.text;
   if (!text) return { facts: {}, money: resolveMoneyFacts({ text: "", currentFacts: input.facts }) };
   const normalized = text.toLocaleLowerCase("ru-RU");
@@ -634,11 +686,21 @@ export function interpretCurrentTurn(input: { text?: string; facts: ApplicationF
   else if (!hypotheticalProgram && /(?:без\s+изъяти|оставить\s+(?:авто|машин))/u.test(normalized)) facts.requestedProgram = "without_storage";
 
   const unresolvedQuestion = lastUnresolvedQuestion(input.messages);
+  const alternativeLimit = unresolvedQuestion === "alternativeAmount" ? extractAlternativeLimit(input.messages) : undefined;
+  const shortAnswer = normalized.trim();
+  const acceptedAlternative = alternativeLimit !== undefined && /^(?:да|ок|угу|ага|согласен|согласна|подходит|подойд[её]т)$/u.test(shortAnswer);
+  const declinedAlternative = alternativeLimit !== undefined && /^(?:нет|не подходит|не согласен|не согласна|отказываюсь)$/u.test(shortAnswer);
+  if (acceptedAlternative) {
+    facts.requestedAmount = alternativeLimit;
+    facts.requestedProgram = "parking";
+  }
   if (unresolvedQuestion === "guarantor" && /^(?:да|ну\s+да|есть|имеется)$/u.test(normalized.trim())) facts.guarantorAvailable = true;
   if (unresolvedQuestion === "guarantor" && /^(?:нет|нету|не\s*т|не\s+имеется)$/u.test(normalized.trim())) facts.guarantorAvailable = false;
   if (unresolvedQuestion === "spouseConsent" && /^(?:да|есть|оформлено|готов(?:а)?|смогу)$/u.test(normalized.trim())) facts.spouseConsentReady = true;
   if (unresolvedQuestion === "spouseConsent" && /^(?:нет|нету|не\s*т|не\s+могу|пока\s+нет)$/u.test(normalized.trim())) facts.spouseConsentReady = false;
-  if (unresolvedQuestion === "carPhoto" && /^(?:нет|нету|не\s*т|не\s+могу|не\s+буду)$/u.test(normalized.trim())) facts.declinedCarPhoto = true;
+  const carPhotoDeclined = unresolvedQuestion === "carPhoto" && /^(?:нет|нету|не\s*т|не\s+могу|не\s+буду)(?:\s+(?:фото(?:к|графи[йи])?))?$/u.test(normalized.trim());
+  if (carPhotoDeclined) facts.declinedCarPhoto = true;
+  const documentsAlreadySent = unresolvedQuestion === "documents" && /(?:уже\s+(?:отправил(?:а)?|прислал(?:а)?)|отправил(?:а)?\s+уже|прислал(?:а)?\s+уже)/u.test(normalized);
   if (/(?:поручител[ья]\s+(?:есть|имеется)|есть\s+поручител[ья])/u.test(normalized)) facts.guarantorAvailable = true;
   if (/(?:поручител[ья]\s+нет|нет\s+поручител[ья]|без\s+поручител[ья])/u.test(normalized)) facts.guarantorAvailable = false;
 
@@ -665,20 +727,30 @@ export function interpretCurrentTurn(input: { text?: string; facts: ApplicationF
       if (visit.time) facts.visitTime = visit.time;
     }
   }
-  return { facts, money, ...(visit ? { visit } : {}) };
+  return { facts, money, ...(visit ? { visit } : {}), ...(acceptedAlternative ? { alternativeDecision: "accepted" as const } : declinedAlternative ? { alternativeDecision: "declined" as const } : {}), ...(documentsAlreadySent ? { documentsAlreadySent: true } : {}), ...(carPhotoDeclined ? { carPhotoDeclined: true } : {}) };
 }
 
-function lastUnresolvedQuestion(messages: Stage1Message[]): "guarantor" | "spouseConsent" | "carPhoto" | "requestedAmount" | "vehicleValue" | "residence" | undefined {
+function lastUnresolvedQuestion(messages: Stage1Message[]): "guarantor" | "spouseConsent" | "carPhoto" | "documents" | "requestedAmount" | "vehicleValue" | "residence" | "alternativeAmount" | undefined {
   const prior = messages.filter((message) => message.author !== "client" || message.body.trim() === "");
   const lastAi = [...prior].reverse().find((message) => message.author === "ai")?.body.toLocaleLowerCase("ru-RU");
   if (!lastAi) return undefined;
   if (/(?:нотариальн|согласие).{0,80}(?:сможете|готов|предостав)|(?:сможете|готов[аы]?|предостав).{0,80}(?:нотариальн|согласие)/.test(lastAi)) return "spouseConsent";
   if (/(?:фото|фотограф).{0,80}(?:автомоб|машин)/.test(lastAi) && /(?:отправ|пришл|если\s+есть)/.test(lastAi)) return "carPhoto";
+  if (/(?:\bid\b|паспорт|стс|свидетельств)/u.test(lastAi) && /(?:отправ|пришл|фото)/u.test(lastAi)) return "documents";
   if (/поручител/.test(lastAi) && /(?:есть|имеется|сможет)/.test(lastAi)) return "guarantor";
+  if (/(?:сможете\s+рассмотреть|в\s+пределах).{0,100}(?:сом|лимит)/.test(lastAi)) return "alternativeAmount";
   if (/(?:какая|какую|нужн).{0,50}(?:сумм|займ)/.test(lastAi)) return "requestedAmount";
   if (/(?:какая|ориентировочн).{0,50}(?:стоимост|цен)/.test(lastAi)) return "vehicleValue";
   if (/(?:пропис|бишкек|чуй|регион)/.test(lastAi)) return "residence";
   return undefined;
+}
+
+function extractAlternativeLimit(messages: Stage1Message[]): number | undefined {
+  const lastAi = [...messages].reverse().find((message) => message.author === "ai")?.body ?? "";
+  const match = lastAi.match(/(?:в\s+пределах|до)\s+([\d\s\u00a0_]+)\s*сом/iu);
+  if (!match) return undefined;
+  const value = Number(match[1].replace(/[\s\u00a0_]/gu, ""));
+  return Number.isFinite(value) && value > 0 ? value : undefined;
 }
 
 function isResidenceAnswer(text: string | undefined, messages: Stage1Message[]): boolean {
@@ -687,7 +759,7 @@ function isResidenceAnswer(text: string | undefined, messages: Stage1Message[]):
   return lastUnresolvedQuestion(messages) === "residence" || /(?:^|\s)(?:пропис|жив[еу]|в\s+(?:г\.?\s*)?[\p{L}-]{4,})/u.test(normalized) || /^(?:бишкек|чуйская область|другой регион кыргызстана)$/u.test(normalized);
 }
 
-function validateAgentTurnSemantics(input: { result: AgentTurnResult; effectiveFacts: ApplicationFacts; explicitFacts: Partial<ApplicationFacts>; inputAttachments: InboundAttachment[]; errors: string[] }): string[] {
+function validateAgentTurnSemantics(input: { result: AgentTurnResult; effectiveFacts: ApplicationFacts; explicitFacts: Partial<ApplicationFacts>; inputAttachments: InboundAttachment[]; errors: string[]; alternativeDecision?: "accepted" | "declined" }): string[] {
   const errors = [...input.errors];
   for (const attachment of input.result.attachments) {
     if (!input.inputAttachments.some((item) => item.id === attachment.attachmentId)) errors.push(`attachment_state_conflict:${attachment.attachmentId}`);
@@ -697,8 +769,10 @@ function validateAgentTurnSemantics(input: { result: AgentTurnResult; effectiveF
       errors.push(`explicit_fact_lost:${key}`);
     }
   }
-  if (input.explicitFacts.requestedProgram === "parking" && /без\s+изъяти/u.test(input.result.reply.toLocaleLowerCase("ru-RU"))) errors.push("program_conflict");
-  if (input.explicitFacts.requestedProgram === "without_storage" && /(?:на\s+)?стоянк|парковк/u.test(input.result.reply.toLocaleLowerCase("ru-RU"))) errors.push("program_conflict");
+  if (!input.alternativeDecision) {
+    if (input.explicitFacts.requestedProgram === "parking" && /без\s+изъяти/u.test(input.result.reply.toLocaleLowerCase("ru-RU"))) errors.push("program_conflict");
+    if (input.explicitFacts.requestedProgram === "without_storage" && /(?:на\s+)?стоянк|парковк/u.test(input.result.reply.toLocaleLowerCase("ru-RU"))) errors.push("program_conflict");
+  }
   const requested = documentRequestPatterns(input.result.reply);
   for (const document of requested) if (input.effectiveFacts.documents?.[document] === "received") errors.push(`reply_reasks_received_document:${document}`);
   return [...new Set(errors)];
