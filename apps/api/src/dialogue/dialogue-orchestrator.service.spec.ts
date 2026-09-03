@@ -30,25 +30,17 @@ describe("single-agent dialogue", () => {
     expect(request.messages[1].content).toEqual(expect.arrayContaining([expect.objectContaining({ type: "image_url" })]));
   });
 
-  it("does not expose an invalid model payload as a card update", async () => {
-    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ ...validResult, leadCardPatch: { arbitrary: true } }) } }] }) } as any;
+  it("ignores derived or unknown fields inside the lead card patch", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ ...validResult, preliminaryLimit: 200000, leadCardPatch: { residenceRegion: "OTHER_KG", preliminaryLimit: 200000, arbitrary: true } }) } }] }) } as any;
     const logs = { warn: vi.fn().mockResolvedValue(undefined) } as any;
     const output = await new AgentTurnService(client, logs).run({ conversationId: "conversation-1", messages: [], facts: {}, settings: {}, text: "test", attachments: [] });
-    expect(output.result).toBeUndefined();
-    expect(output.reply).toContain("не удалось обработать");
-    expect(client.createChatCompletion).toHaveBeenCalledTimes(3);
-    expect(logs.warn).toHaveBeenCalledWith("dialogue.single-agent.fallback", "Agent fallback reply sent", expect.objectContaining({
-      conversationId: "conversation-1",
-      metadata: expect.objectContaining({
-        fallbackReply: output.reply,
-        inputText: "test",
-        attempts: expect.arrayContaining([expect.objectContaining({ attempt: 1, agentResponse: expect.stringContaining("arbitrary") })])
-      })
-    }));
+    expect(output.result).toEqual(expect.objectContaining({ preliminaryLimit: 200000, leadCardPatch: { residenceRegion: "Другой регион Кыргызстана" } }));
+    expect(client.createChatCompletion).toHaveBeenCalledTimes(1);
+    expect(logs.warn).not.toHaveBeenCalled();
   });
 
   it("retries a malformed multimodal photo turn and persists the first valid retry", async () => {
-    const malformed = { choices: [{ message: { content: JSON.stringify({ ...validResult, leadCardPatch: { arbitrary: true } }) } }] };
+    const malformed = { choices: [{ message: { content: JSON.stringify({ ...validResult, dialogueState: { ...validResult.dialogueState, stage: "not-a-stage" } }) } }] };
     const valid = { model: "one-model", choices: [{ message: { content: JSON.stringify(validResult) } }] };
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValueOnce(malformed).mockResolvedValueOnce(valid) } as any;
     const output = await new AgentTurnService(client).run({ messages: [], facts: {}, settings: {}, text: "", attachments: [{ id: "id-front", mimeType: "image/jpeg", contentBase64: "abc" }] });

@@ -49,7 +49,7 @@ export class AgentTurnService {
           : request;
         const response = await this.client.createChatCompletion(attemptRequest, { timeoutMs: this.config.routerAiTimeoutMs });
         agentResponse = truncateLogValue(response.choices?.[0]?.message?.content);
-        const payload = normalizeAgentPayload(JSON.parse(agentResponse ?? "{}") as Record<string, unknown>, input.text, input.facts);
+        const payload = normalizeAgentPayload(parseAgentJson(agentResponse), input.text, input.facts);
         const parsed = agentTurnResultSchema.safeParse(payload);
         if (!parsed.success) {
           const issues = parsed.error.issues.map((issue) => `${issue.path.join(".") || "root"}: ${issue.message}`).join("; ");
@@ -92,6 +92,29 @@ function truncateLogValue(value: unknown): string {
     return truncateLogValue(JSON.stringify(value));
   } catch {
     return String(value);
+  }
+}
+
+function parseAgentJson(value: string | undefined): Record<string, unknown> {
+  const text = (value ?? "{}").trim().replace(/^```(?:json)?\s*/iu, "").replace(/\s*```$/u, "").trim();
+  try {
+    const parsed: unknown = JSON.parse(text);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
+  } catch (error) {
+    // Some gateways occasionally prepend a short explanation around an
+    // otherwise valid JSON object. Recover that object before retrying so a
+    // formatting-only defect does not become a user-visible system fallback.
+    const start = text.indexOf("{");
+    const end = text.lastIndexOf("}");
+    if (start >= 0 && end > start) {
+      try {
+        const parsed: unknown = JSON.parse(text.slice(start, end + 1));
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed as Record<string, unknown>;
+      } catch {
+        // Preserve the original parse error in the retry/fallback diagnostics.
+      }
+    }
+    throw error;
   }
 }
 
@@ -200,7 +223,14 @@ function normalizeAgentPayload(payload: Record<string, unknown>, inputText?: str
   const leadCardPatch = payload.leadCardPatch;
   if (leadCardPatch && typeof leadCardPatch === "object" && !Array.isArray(leadCardPatch)) {
     const carriedFacts = Object.fromEntries(Object.entries(currentFacts).filter(([key, value]) => permittedLeadCardKeys.has(key) && value !== undefined));
-    const patch = { ...carriedFacts, ...(leadCardPatch as Record<string, unknown>) };
+    const rawPatch = leadCardPatch as Record<string, unknown>;
+    // The model sometimes mirrors derived/top-level fields (for example
+    // preliminaryLimit) inside leadCardPatch. They are not application facts,
+    // so drop them instead of rejecting an otherwise usable turn.
+    const patch = {
+      ...carriedFacts,
+      ...Object.fromEntries(Object.entries(rawPatch).filter(([key]) => permittedLeadCardKeys.has(key) || key in leadCardAliases))
+    };
     for (const [alias, key] of Object.entries(leadCardAliases)) {
       if (patch[key] === undefined && patch[alias] !== undefined) patch[key] = patch[alias];
       delete patch[alias];
