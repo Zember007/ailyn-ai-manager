@@ -160,7 +160,7 @@ describe("single-agent dialogue", () => {
   });
 
   it("retries a schema-valid reply that asks for an already received ID side", async () => {
-    const facts = { vehicleMake: "Toyota", vehicleYear: 2020, vehicleValue: 1_000_000, requestedAmount: 300_000, requestedProgram: "parking", residenceRegion: "Бишкек", documents: { id_front: "received", id_back: "received", vehicle_registration_front: "received", vehicle_registration_back: "received" } } as any;
+    const facts = { vehicleMake: "Toyota", vehicleYear: 2020, vehicleValue: 1_000_000, requestedAmount: 300_000, requestedProgram: "parking", residenceRegion: "Бишкек", familyStatus: "single", documents: { id_front: "received", id_back: "received", vehicle_registration_front: "received", vehicle_registration_back: "received" } } as any;
     const invalid = { ...validResult, reply: "Пришлите, пожалуйста, лицевую сторону ID.", dialogueState: { stage: "SCHEDULING_VISIT", status: "need_more_data", nextAction: "schedule_visit" } };
     const fixed = { ...validResult, reply: "Подскажите, пожалуйста, удобные дату и время визита.", dialogueState: { stage: "SCHEDULING_VISIT", status: "need_more_data", nextAction: "schedule_visit" } };
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify(invalid) } }] }).mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify(fixed) } }] }) } as any;
