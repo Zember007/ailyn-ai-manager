@@ -25,16 +25,26 @@ describe("single-agent dialogue", () => {
     expect(JSON.stringify(request.messages)).toContain("Б. Молодой Гвардии, 22, Бишкек");
     expect(JSON.stringify(request.messages)).toContain("+996 502 108 108");
     const context = JSON.parse((request.messages[1].content as Array<{ type: string; text?: string }>)[0].text ?? "{}");
-    expect(context.knowledge.length).toBeGreaterThan(300);
+    expect(context.knowledge.length).toBeGreaterThan(8);
+    expect(context.knowledge.length).toBeLessThan(100);
     expect(request.messages[1].content).toEqual(expect.arrayContaining([expect.objectContaining({ type: "image_url" })]));
   });
 
   it("does not expose an invalid model payload as a card update", async () => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ ...validResult, leadCardPatch: { arbitrary: true } }) } }] }) } as any;
-    const output = await new AgentTurnService(client).run({ messages: [], facts: {}, settings: {}, text: "test", attachments: [] });
+    const logs = { warn: vi.fn().mockResolvedValue(undefined) } as any;
+    const output = await new AgentTurnService(client, logs).run({ conversationId: "conversation-1", messages: [], facts: {}, settings: {}, text: "test", attachments: [] });
     expect(output.result).toBeUndefined();
     expect(output.reply).toContain("не удалось обработать");
     expect(client.createChatCompletion).toHaveBeenCalledTimes(3);
+    expect(logs.warn).toHaveBeenCalledWith("dialogue.single-agent.fallback", "Agent fallback reply sent", expect.objectContaining({
+      conversationId: "conversation-1",
+      metadata: expect.objectContaining({
+        fallbackReply: output.reply,
+        inputText: "test",
+        attempts: expect.arrayContaining([expect.objectContaining({ attempt: 1, agentResponse: expect.stringContaining("arbitrary") })])
+      })
+    }));
   });
 
   it("retries a malformed multimodal photo turn and persists the first valid retry", async () => {

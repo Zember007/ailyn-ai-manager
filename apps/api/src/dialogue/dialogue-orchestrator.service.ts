@@ -19,7 +19,7 @@ export class DialogueOrchestratorService {
     const { conversation, application: initialApplication } = await this.store.getOrCreateConversation({ externalContactId: message.externalContactId, externalConversationId: message.externalConversationId, channel: message.channel });
     const inbound = await this.store.addMessage(conversation, { author: "client", body: message.text?.trim() ?? "", attachmentIds: [], attachments: [], metadata: { externalMessageId: message.externalMessageId, channel: message.channel } });
     const currency = await resolveForeignCurrencyFacts(message.text, initialApplication.facts, this.integrations);
-    const turn = await this.agent.run({ messages: [...conversation.messages, inbound], facts: { ...initialApplication.facts, ...currency.facts }, settings: await this.settings.getValues(), text: message.text, attachments: message.attachments, currencyConversions: currency.conversions });
+    const turn = await this.agent.run({ conversationId: conversation.id, messages: [...conversation.messages, inbound], facts: { ...initialApplication.facts, ...currency.facts }, settings: await this.settings.getValues(), text: message.text, attachments: message.attachments, currencyConversions: currency.conversions });
     let application = initialApplication;
     let changedFactKeys: string[] = [];
     let managerEvent: "initial" | "delta" | null = null;

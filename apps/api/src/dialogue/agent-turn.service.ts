@@ -6,6 +6,7 @@ import { loadAppConfig } from "@ailyn/config";
 import type { ApplicationFacts } from "@ailyn/business-rules";
 import { RouterAiClient } from "../ai/router-ai/router-ai.client.js";
 import type { InboundAttachment } from "../channels/channel.interface.js";
+import { BackendLogsService } from "../logs/backend-logs.service.js";
 import { generatedDocumentationChunks } from "./documentation-chunks.generated.js";
 import { agentTurnResultSchema, type AgentTurnResult } from "./agent-turn.contracts.js";
 import type { Stage1Message } from "./stage1-store.service.js";
@@ -13,16 +14,20 @@ import type { Stage1Message } from "./stage1-store.service.js";
 const PROMPT_VERSION = "single-agent-v3";
 const NEUTRAL_REPLY = "Извините, сейчас не удалось обработать сообщение. Пожалуйста, напишите ещё раз или обратитесь к сотрудникам компании.";
 const MAX_MODEL_ATTEMPTS = 3;
+const MAX_LOG_VALUE_LENGTH = 4000;
 
 @Injectable()
 export class AgentTurnService {
   private readonly config = loadAppConfig();
   private readonly logger = new Logger(AgentTurnService.name);
 
-  constructor(private readonly client: RouterAiClient) {}
+  constructor(private readonly client: RouterAiClient, private readonly logs?: BackendLogsService) {}
 
-  async run(input: { messages: Stage1Message[]; facts: ApplicationFacts; settings: object; text?: string; attachments: InboundAttachment[]; currencyConversions?: unknown[] }): Promise<{ result?: AgentTurnResult; reply: string; model: string; promptVersion: string; error?: string }> {
-    if (!this.client.isConfigured()) return { reply: NEUTRAL_REPLY, model: "unconfigured", promptVersion: PROMPT_VERSION, error: "routerai_not_configured" };
+  async run(input: { messages: Stage1Message[]; facts: ApplicationFacts; settings: object; text?: string; attachments: InboundAttachment[]; currencyConversions?: unknown[]; conversationId?: string }): Promise<{ result?: AgentTurnResult; reply: string; model: string; promptVersion: string; error?: string }> {
+    if (!this.client.isConfigured()) {
+      await this.logFallback(input, "routerai_not_configured", []);
+      return { reply: NEUTRAL_REPLY, model: "unconfigured", promptVersion: PROMPT_VERSION, error: "routerai_not_configured" };
+    }
     const systemPrompt = loadPrompt("agent.system.md");
     const request = {
       // The configured production model (openai/gpt-5.4-mini) can return an
@@ -32,7 +37,9 @@ export class AgentTurnService {
       messages: [{ role: "system" as const, content: systemPrompt }, { role: "user" as const, content: buildMessage(input) }]
     };
     let lastError = "unknown_model_error";
+    const attempts: Array<{ attempt: number; error: string; agentResponse?: string }> = [];
     for (let attempt = 1; attempt <= MAX_MODEL_ATTEMPTS; attempt += 1) {
+      let agentResponse: string | undefined;
       try {
         const retryInstruction = attempt > 1
           ? "\n\nПОВТОРНАЯ ПОПЫТКА: предыдущий ответ не прошёл техническую проверку формата. Верните новый, полностью валидный JSON строго по заданной схеме. Не повторяйте техническое извинение: ответьте клиенту по существу и сохраните только допустимые поля карточки."
@@ -41,7 +48,8 @@ export class AgentTurnService {
           ? { ...request, messages: [{ role: "system" as const, content: `${systemPrompt}${retryInstruction}` }, request.messages[1]] }
           : request;
         const response = await this.client.createChatCompletion(attemptRequest, { timeoutMs: this.config.routerAiTimeoutMs });
-        const payload = normalizeAgentPayload(JSON.parse(response.choices?.[0]?.message?.content ?? "{}") as Record<string, unknown>, input.text, input.facts);
+        agentResponse = truncateLogValue(response.choices?.[0]?.message?.content);
+        const payload = normalizeAgentPayload(JSON.parse(agentResponse ?? "{}") as Record<string, unknown>, input.text, input.facts);
         const parsed = agentTurnResultSchema.safeParse(payload);
         if (!parsed.success) {
           const issues = parsed.error.issues.map((issue) => `${issue.path.join(".") || "root"}: ${issue.message}`).join("; ");
@@ -54,11 +62,36 @@ export class AgentTurnService {
         return { result, reply: result.reply, model: response.model ?? this.config.routerAiTextModel ?? "routerai", promptVersion: PROMPT_VERSION };
       } catch (error) {
         lastError = error instanceof Error ? error.message : String(error);
+        attempts.push({ attempt, error: truncateLogValue(lastError), ...(agentResponse ? { agentResponse } : {}) });
         if (attempt < MAX_MODEL_ATTEMPTS) this.logger.warn(`Single-agent attempt ${attempt}/${MAX_MODEL_ATTEMPTS} failed; retrying: ${lastError}`);
       }
     }
     this.logger.warn(`Single-agent fallback activated after ${MAX_MODEL_ATTEMPTS} attempts: ${lastError}`);
+    await this.logFallback(input, lastError, attempts);
     return { reply: NEUTRAL_REPLY, model: this.config.routerAiTextModel ?? "routerai", promptVersion: PROMPT_VERSION, error: lastError };
+  }
+
+  private async logFallback(input: { text?: string; attachments: InboundAttachment[]; conversationId?: string }, error: string, attempts: Array<{ attempt: number; error: string; agentResponse?: string }>): Promise<void> {
+    await this.logs?.warn("dialogue.single-agent.fallback", "Agent fallback reply sent", {
+      conversationId: input.conversationId,
+      metadata: {
+        fallbackReply: NEUTRAL_REPLY,
+        error: truncateLogValue(error),
+        attempts,
+        inputText: truncateLogValue(input.text ?? ""),
+        attachmentCount: input.attachments.length
+      }
+    });
+  }
+}
+
+function truncateLogValue(value: unknown): string {
+  if (typeof value === "string") return value.length > MAX_LOG_VALUE_LENGTH ? `${value.slice(0, MAX_LOG_VALUE_LENGTH)}…` : value;
+  if (value === undefined || value === null) return "";
+  try {
+    return truncateLogValue(JSON.stringify(value));
+  } catch {
+    return String(value);
   }
 }
 
@@ -74,7 +107,7 @@ function removeRepeatedGreeting(reply: string, messages: Stage1Message[]): strin
 function buildMessage(input: { messages: Stage1Message[]; facts: ApplicationFacts; settings: object; text?: string; attachments: InboundAttachment[]; currencyConversions?: unknown[] }) {
   const settings = input.settings as Record<string, unknown>;
   const timezone = typeof settings.timezone === "string" ? settings.timezone : "Asia/Bishkek";
-  const context = { now: currentDateTime(timezone), timezone, history: input.messages.map(({ author, body, createdAt }) => ({ author, text: body, createdAt })), leadCard: input.facts, settings: input.settings, currentMessage: input.text ?? "", interpretedCurrentMessage: explicitLeadFacts(input.text, {}), currencyConversions: input.currencyConversions ?? [], knowledge: selectKnowledge([input.text ?? "", JSON.stringify(input.facts), input.messages.at(-1)?.body ?? ""].join(" ")) };
+  const context = { now: currentDateTime(timezone), timezone, history: input.messages.map(({ author, body, createdAt }) => ({ author, text: body, createdAt })), leadCard: input.facts, settings: input.settings, currentMessage: input.text ?? "", interpretedCurrentMessage: explicitLeadFacts(input.text, {}), currencyConversions: input.currencyConversions ?? [], knowledge: selectKnowledge([input.text ?? "", JSON.stringify(input.facts), ...input.messages.slice(-8).map((message) => message.body)].join(" ")) };
   const parts: Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string; detail: "high" } }> = [{ type: "text", text: JSON.stringify(context) }];
   for (const attachment of input.attachments) {
     parts.push({ type: "text", text: JSON.stringify({ attachment: { id: attachment.id, fileName: attachment.fileName, mimeType: attachment.mimeType, textContent: attachment.textContent, metadata: attachment.metadata } }) });
@@ -97,11 +130,58 @@ function currentDateTime(timezone: string) {
   return `${part("year")}-${part("month")}-${part("day")}T${part("hour")}:${part("minute")}:00`;
 }
 
-function selectKnowledge(_query: string) {
-  // The complete normalized DOCX is intentionally sent on every turn. This
-  // keeps private rules, contacts, prices and edge cases available even when
-  // the user's short message has no matching keywords.
-  return generatedDocumentationChunks.map(({ key, text }) => ({ key, text }));
+function selectKnowledge(query: string) {
+  const terms = expandKnowledgeTerms(query);
+  const scored = generatedDocumentationChunks.map((chunk, index) => {
+    const keywordText = chunk.keywords.map(normalizeKnowledgeToken);
+    const bodyText = normalizeKnowledgeToken(chunk.text);
+    let score = 0;
+    for (const term of terms) {
+      if (keywordText.includes(term)) score += 8;
+      else if (keywordText.some((keyword) => keyword.startsWith(term) || term.startsWith(keyword))) score += 4;
+      else if (bodyText.includes(term)) score += 1;
+    }
+    if (/адрес|офис|2гис|google|телефон|whatsapp|молодой гвардии/.test(bodyText)) score += 100;
+    return { chunk, index, score };
+  });
+  const selected = new Map<string, { key: string; text: string }>();
+  // The first chunks form the compact, always-present behavior core.
+  for (const item of scored.slice(0, 8)) selected.set(item.chunk.key, item.chunk);
+  // Contact details are always retained even when the current message is not
+  // about a visit.
+  for (const item of scored.filter((candidate) => candidate.score >= 100)) selected.set(item.chunk.key, item.chunk);
+  const ranked = scored.filter((item) => item.score > 0).sort((left, right) => right.score - left.score || left.index - right.index).slice(0, 24);
+  for (const item of ranked) {
+    selected.set(item.chunk.key, item.chunk);
+    // Adjacent chunks usually contain the continuation of the same DOCX
+    // subsection and prevent cutting a rule in the middle.
+    for (const neighbor of [scored[item.index - 1], scored[item.index + 1]]) {
+      if (neighbor) selected.set(neighbor.chunk.key, neighbor.chunk);
+    }
+  }
+  return [...selected.values()].slice(0, 56);
+}
+
+function normalizeKnowledgeToken(value: string): string {
+  return value.toLocaleLowerCase("ru-RU").replace(/ё/g, "е").replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+}
+
+function expandKnowledgeTerms(query: string): Set<string> {
+  const normalized = normalizeKnowledgeToken(query);
+  const terms = new Set(normalized.split(/\s+/u).filter((term) => term.length >= 3));
+  const aliases: Record<string, string[]> = {
+    прописк: ["регион", "место", "прожив"],
+    регион: ["пропис"],
+    документ: ["паспорт", "ид", "стс", "техпаспорт"],
+    паспорт: ["ид", "документ"],
+    визит: ["дата", "время", "офис", "приех"],
+    фото: ["фотограф", "изображен"],
+    семейн: ["брака", "супруг", "нотариал"],
+    сумма: ["займ", "лимит", "стоимость"],
+    стоимость: ["цена", "оценка", "автомобил"]
+  };
+  for (const term of [...terms]) for (const alias of Object.entries(aliases).find(([key]) => term.startsWith(key))?.[1] ?? []) terms.add(alias);
+  return terms;
 }
 
 function loadPrompt(name: string) {
