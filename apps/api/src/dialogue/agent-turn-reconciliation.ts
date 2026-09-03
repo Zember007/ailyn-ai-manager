@@ -35,7 +35,6 @@ export interface ProgramAssessment {
 }
 
 export interface RuntimeGuardContext {
-  strictStagePrerequisites: true;
   programAssessment: ProgramAssessment;
   missingRequirement: { stage: ApplicationStage; fact: string; nextAction: string } | null;
   missingRequiredDocuments: DocumentCode[];
@@ -63,10 +62,7 @@ export function attachmentFactsFromResult(previous: ApplicationFacts, attachment
   return Object.keys(documents).length ? { documents } : {};
 }
 
-/**
- * Narrow context binding for facts that are unsafe to leave only to free-form
- * model interpretation. This intentionally does not attempt generic NLP.
- */
+/** Narrow context binding for facts that are unsafe to leave only to free-form model interpretation. */
 export function contextualGuardFacts(input: { text?: string; messages: Stage1Message[] }): Partial<ApplicationFacts> {
   const text = input.text?.trim().toLocaleLowerCase("ru-RU");
   if (!text) return {};
@@ -119,11 +115,9 @@ export function buildProgramAssessment(facts: ApplicationFacts, settings: object
 }
 
 export function buildRuntimeGuardContext(facts: ApplicationFacts, settings: object): RuntimeGuardContext {
-  const missingRequirement = firstMissingRequirement(facts, settings) ?? null;
   return {
-    strictStagePrerequisites: true,
     programAssessment: buildProgramAssessment(facts, settings),
-    missingRequirement,
+    missingRequirement: firstMissingRequirement(facts, settings) ?? null,
     missingRequiredDocuments: requiredDocuments.filter((key) => facts.documents?.[key] !== "received")
   };
 }
@@ -158,10 +152,7 @@ export function reconcileAgentTurn(input: {
   let state = input.proposedState;
 
   if (missing && stageIndex(input.proposedState.stage) > stageIndex(missing.stage)) {
-    const strict = Boolean((input.settings as { runtimeContext?: { strictStagePrerequisites?: boolean } }).runtimeContext?.strictStagePrerequisites);
-    semanticErrors.push(strict
-      ? `stage_missing_required_fact:${missing.fact}:proposed:${input.proposedState.stage}`
-      : `invalid_stage_transition:${input.proposedState.stage}:missing:${missing.fact}`);
+    semanticErrors.push(`stage_missing_required_fact:${missing.fact}:proposed:${input.proposedState.stage}:expected:${missing.stage}`);
     corrections.push(`stage_corrected:${input.proposedState.stage}->${missing.stage}`);
     state = { stage: missing.stage, status: "need_more_data", nextAction: missing.nextAction };
   }
@@ -173,8 +164,6 @@ export function reconcileAgentTurn(input: {
   const documentsReady = requiredDocuments.every((key) => input.effectiveFacts.documents?.[key] === "received");
   const visitReady = Boolean(input.effectiveFacts.visitDate && input.effectiveFacts.visitTime) && !firstBlockingVisitRequirement(input.effectiveFacts);
   const targetEvent = visitReady ? "visit" : documentsReady ? "documents" : null;
-  // `documents` can mean "request these next" in the model response, while
-  // the persisted event means that all document sides have been received.
   if (input.proposedTargetEvent === "documents" && targetEvent === null) {
     corrections.push("target_event_cleared:documents_not_reached");
   } else if (input.proposedTargetEvent && input.proposedTargetEvent !== targetEvent) {
@@ -234,7 +223,6 @@ function firstMissingRequirement(facts: ApplicationFacts, settings: object): { s
 
   if (!facts.residenceRegion && !facts.residenceCategory) return { stage: "COLLECTING_RESIDENCE", fact: "residenceRegion", nextAction: "collect_residence" };
 
-  // Re-evaluate after residence because without-storage limits are regional.
   const assessedWithResidence = buildProgramAssessment(facts, settings).selected;
   if (assessedWithResidence?.status === "does_not_fit") {
     return { stage: "ELIGIBILITY_CHECK", fact: "requestedProgramCompatibility", nextAction: "resolve_program_mismatch" };
