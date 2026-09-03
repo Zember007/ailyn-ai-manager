@@ -106,6 +106,33 @@ export function detectMoneyMentions(text: string): MoneyMention[] {
     });
   }
 
+  // A client often shortens the second value in one clause: "стоит 20 тыс
+  // долларов, надо 10". Inherit currency and multiplier only from the
+  // immediately preceding explicit amount in that same clause; never across
+  // sentences/messages or from a bare number without a role cue.
+  for (const match of source.matchAll(/(?:надо|нужно|хочу|требуется|дайте)\s+(\d{1,3})(?![\d\s]*(?:тыс|тыщ|млн|к\b))/giu)) {
+    const rawNumber = match[1];
+    if (!rawNumber || match.index === undefined) continue;
+    const start = match.index + match[0].lastIndexOf(rawNumber);
+    if (mentions.some((mention) => mention.start === start)) continue;
+    const clauseStart = Math.max(source.lastIndexOf(".", start - 1), source.lastIndexOf(";", start - 1)) + 1;
+    const prior = mentions.filter((mention) => (mention.start ?? -1) >= clauseStart && (mention.end ?? 0) <= start && mention.currency);
+    const currencies = new Set(prior.map((mention) => mention.currency));
+    const inherited = prior.at(-1);
+    if (!inherited || currencies.size !== 1 || !/(?:тыс|тыщ|\d\s*[кk]\b)/iu.test(inherited.sourceText)) continue;
+    const amount = Number(rawNumber) * 1_000;
+    mentions.push({
+      sourceText: rawNumber,
+      amount,
+      normalizedAmount: amount,
+      currency: inherited.currency,
+      roleCandidate: "requestedAmount",
+      confidence: 0.9,
+      start,
+      end: start + rawNumber.length
+    });
+  }
+
   return dedupeMentions(mentions);
 }
 

@@ -7,6 +7,8 @@ import type { ApplicationFacts } from "@ailyn/business-rules";
 import { RouterAiClient } from "../ai/router-ai/router-ai.client.js";
 import type { InboundAttachment } from "../channels/channel.interface.js";
 import { BackendLogsService } from "../logs/backend-logs.service.js";
+import { resolveMoneyFacts } from "./money-normalization.js";
+import { attachmentFactsFromResult, effectiveFactsForTurn, reconcileAgentTurn } from "./agent-turn-reconciliation.js";
 import { generatedDocumentationChunks } from "./documentation-chunks.generated.js";
 import { agentTurnResultSchema, type AgentTurnResult } from "./agent-turn.contracts.js";
 import type { Stage1Message } from "./stage1-store.service.js";
@@ -48,8 +50,9 @@ export class AgentTurnService {
           ? { ...request, messages: [{ role: "system" as const, content: `${systemPrompt}${retryInstruction}` }, request.messages[1]] }
           : request;
         const response = await this.client.createChatCompletion(attemptRequest, { timeoutMs: this.config.routerAiTimeoutMs });
-        agentResponse = truncateLogValue(response.choices?.[0]?.message?.content);
-        const payload = normalizeAgentPayload(parseAgentJson(agentResponse), input.text, input.facts);
+        const rawAgentResponse = response.choices?.[0]?.message?.content;
+        agentResponse = truncateLogValue(rawAgentResponse);
+        const payload = normalizeAgentPayload(parseAgentJson(typeof rawAgentResponse === "string" ? rawAgentResponse : undefined), input.text, input.facts, input.messages);
         const parsed = agentTurnResultSchema.safeParse(payload);
         if (!parsed.success) {
           const issues = parsed.error.issues.map((issue) => `${issue.path.join(".") || "root"}: ${issue.message}`).join("; ");
@@ -58,7 +61,30 @@ export class AgentTurnService {
             : undefined;
           throw new Error(`Agent response does not match AgentTurnResult (${issues}; stage=${JSON.stringify(state)}; targetEvent=${JSON.stringify(payload.targetEvent)})`);
         }
-        const result = { ...parsed.data, reply: removeRepeatedGreeting(parsed.data.reply, input.messages) };
+        const interpreted = interpretCurrentTurn({ text: input.text, facts: input.facts, messages: input.messages });
+        const effectiveFacts = effectiveFactsForTurn({
+          previous: input.facts,
+          modelPatch: parsed.data.leadCardPatch,
+          explicitFacts: interpreted.facts,
+          currencyFacts: {},
+          attachmentFacts: attachmentFactsFromResult(input.facts, parsed.data.attachments)
+        });
+        const reconciliation = reconcileAgentTurn({
+          effectiveFacts,
+          proposedState: parsed.data.dialogueState,
+          proposedTargetEvent: parsed.data.targetEvent,
+          proposedPreliminaryLimit: parsed.data.preliminaryLimit,
+          settings: input.settings
+        });
+        const semanticErrors = validateAgentTurnSemantics({ result: parsed.data, effectiveFacts, explicitFacts: interpreted.facts, inputAttachments: input.attachments, errors: reconciliation.semanticErrors });
+        const criticalErrors = semanticErrors.filter((issue) => !issue.startsWith("invalid_stage_transition:"));
+        if (criticalErrors.length > 0) throw new Error(`Agent response semantic validation failed (${criticalErrors.join("; ")})`);
+        const result = {
+          ...parsed.data,
+          dialogueState: reconciliation.state,
+          targetEvent: reconciliation.targetEvent,
+          reply: removeRepeatedGreeting(parsed.data.reply, input.messages)
+        };
         return { result, reply: result.reply, model: response.model ?? this.config.routerAiTextModel ?? "routerai", promptVersion: PROMPT_VERSION };
       } catch (error) {
         lastError = error instanceof Error ? error.message : String(error);
@@ -130,7 +156,8 @@ function removeRepeatedGreeting(reply: string, messages: Stage1Message[]): strin
 function buildMessage(input: { messages: Stage1Message[]; facts: ApplicationFacts; settings: object; text?: string; attachments: InboundAttachment[]; currencyConversions?: unknown[] }) {
   const settings = input.settings as Record<string, unknown>;
   const timezone = typeof settings.timezone === "string" ? settings.timezone : "Asia/Bishkek";
-  const context = { now: currentDateTime(timezone), timezone, history: input.messages.map(({ author, body, createdAt }) => ({ author, text: body, createdAt })), leadCard: input.facts, settings: input.settings, currentMessage: input.text ?? "", interpretedCurrentMessage: explicitLeadFacts(input.text, {}), currencyConversions: input.currencyConversions ?? [], knowledge: selectKnowledge([input.text ?? "", JSON.stringify(input.facts), ...input.messages.slice(-8).map((message) => message.body)].join(" ")) };
+  const interpretedCurrentMessage = interpretCurrentTurn({ text: input.text, facts: input.facts, messages: input.messages });
+  const context = { now: currentDateTime(timezone), timezone, history: input.messages.map(({ author, body, createdAt }) => ({ author, text: body, createdAt })), leadCard: input.facts, settings: input.settings, currentMessage: input.text ?? "", interpretedCurrentMessage, currencyConversions: input.currencyConversions ?? [], knowledge: selectKnowledge([input.text ?? "", JSON.stringify(input.facts), ...input.messages.slice(-8).map((message) => message.body)].join(" ")) };
   const parts: Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string; detail: "high" } }> = [{ type: "text", text: JSON.stringify(context) }];
   for (const attachment of input.attachments) {
     parts.push({ type: "text", text: JSON.stringify({ attachment: { id: attachment.id, fileName: attachment.fileName, mimeType: attachment.mimeType, textContent: attachment.textContent, metadata: attachment.metadata } }) });
@@ -219,7 +246,7 @@ function loadPrompt(name: string) {
  * validates the final boundary. Unknown values stay unchanged and are rejected. */
 const permittedLeadCardKeys = new Set(Object.keys(agentTurnResultSchema.shape.leadCardPatch.shape));
 
-function normalizeAgentPayload(payload: Record<string, unknown>, inputText?: string, currentFacts: ApplicationFacts = {}): Record<string, unknown> {
+function normalizeAgentPayload(payload: Record<string, unknown>, inputText?: string, currentFacts: ApplicationFacts = {}, messages: Stage1Message[] = []): Record<string, unknown> {
   const leadCardPatch = payload.leadCardPatch;
   if (leadCardPatch && typeof leadCardPatch === "object" && !Array.isArray(leadCardPatch)) {
     const carriedFacts = Object.fromEntries(Object.entries(currentFacts).filter(([key, value]) => permittedLeadCardKeys.has(key) && value !== undefined));
@@ -260,7 +287,7 @@ function normalizeAgentPayload(payload: Record<string, unknown>, inputText?: str
       const normalizedCategory = residenceCategoryAliases[patch.residenceCategory.trim().toLocaleUpperCase("ru-RU")];
       if (normalizedCategory) patch.residenceCategory = normalizedCategory;
     }
-    Object.assign(patch, explicitLeadFacts(inputText, patch));
+    Object.assign(patch, interpretCurrentTurn({ text: inputText, facts: currentFacts, messages }).facts);
     payload.leadCardPatch = patch;
   }
   const state = payload.dialogueState;
@@ -322,14 +349,26 @@ const booleanLeadCardKeys = new Set([
   "residenceNeedsClarification", "ownerChanged", "plateChanged", "ownerIsLegalEntity", "borrowerIsLegalEntity", "vehicleInCredit", "vehiclePledged", "vehicleArrested", "registrationRestricted", "refinancingRequested", "buyoutRequested", "accidentNotDrivable", "foreignTravelQuestion", "existingContractQuestion", "existingContractPaymentMessage", "borrowerIsOwner", "ownerCanVisit", "vehicleBoughtDuringMarriage", "spouseConsentReady", "spouseAway", "guarantorAvailable", "visitRequested", "clientPaused", "clientClosed", "declinedDocuments", "declinedCarPhoto", "vehiclePurchasedDuringMarriage", "divorceCertificateReady", "visitConfirmationPending", "handedToManager", "onTheWay", "arrivedAtOffice"
 ]);
 
-function explicitLeadFacts(text: string | undefined, currentPatch: Record<string, unknown>): Record<string, unknown> {
-  if (!text) return {};
+export function interpretCurrentTurn(input: { text?: string; facts: ApplicationFacts; messages: Stage1Message[] }): { facts: Partial<ApplicationFacts>; money: ReturnType<typeof resolveMoneyFacts> } {
+  const text = input.text;
+  if (!text) return { facts: {}, money: resolveMoneyFacts({ text: "", currentFacts: input.facts }) };
   const normalized = text.toLocaleLowerCase("ru-RU");
-  const facts: Record<string, unknown> = {};
+  const facts: Partial<ApplicationFacts> = {};
   if (/(?:в\s+разводе|развед[её]н(?:а)?|разв[её]дена)/u.test(normalized)) facts.familyStatus = "divorced";
   else if (/(?:не\s+женат|не\s+замужем|не\s+состою\s+в\s+браке)/u.test(normalized)) facts.familyStatus = "single";
   else if (/(?:в\s+браке|женат|замужем)/u.test(normalized)) facts.familyStatus = "married";
   if (/(?:не\s+буду|не\s+хочу|не\s+могу|отказываюсь)[^.!?]{0,50}(?:в\s+чат|чат(?:е|ик)|отправ|фото|документ)/u.test(normalized)) facts.declinedDocuments = true;
+  const hypotheticalProgram = /(?:а\s+если|сколько|какой\s+процент|какая\s+ставка)/u.test(normalized);
+  if (!hypotheticalProgram && /(?:давайте|буду|хочу|нужно|тогда)[^.!?]{0,30}(?:на\s+)?(?:стоянк|парковк)/u.test(normalized)) facts.requestedProgram = "parking";
+  else if (!hypotheticalProgram && /(?:без\s+изъяти|оставить\s+(?:авто|машин))/u.test(normalized)) facts.requestedProgram = "without_storage";
+
+  const unresolvedQuestion = lastUnresolvedQuestion(input.messages);
+  if (unresolvedQuestion === "guarantor" && /^(?:да|ну\s+да|есть|имеется)$/u.test(normalized.trim())) facts.guarantorAvailable = true;
+  if (unresolvedQuestion === "guarantor" && /^(?:нет|нету|не\s*т|не\s+имеется)$/u.test(normalized.trim())) facts.guarantorAvailable = false;
+
+  const money = resolveMoneyFacts({ text, currentFacts: input.facts, pendingFacts: unresolvedQuestion === "requestedAmount" ? ["requestedAmount"] : unresolvedQuestion === "vehicleValue" ? ["vehicleValue"] : [] });
+  if (money.requestedAmount !== undefined && (!money.requestedAmountCurrency || money.requestedAmountCurrency === "KGS")) facts.requestedAmount = money.requestedAmount;
+  if (money.vehicleValue !== undefined && (!money.vehicleValueCurrency || money.vehicleValueCurrency === "KGS")) facts.vehicleValue = money.vehicleValue;
 
   const visit = parseVisit(normalized);
   if (visit) {
@@ -337,9 +376,44 @@ function explicitLeadFacts(text: string | undefined, currentPatch: Record<string
     facts.visitDate = visit.date;
     if (visit.time) facts.visitTime = visit.time;
   }
-  return Object.fromEntries(Object.entries(facts).filter(([key]) =>
-    key === "familyStatus" || key === "declinedDocuments" || currentPatch[key] === undefined || currentPatch[key] === "unknown"
-  ));
+  return { facts, money };
+}
+
+function lastUnresolvedQuestion(messages: Stage1Message[]): "guarantor" | "requestedAmount" | "vehicleValue" | undefined {
+  const prior = messages.filter((message) => message.author !== "client" || message.body.trim() === "");
+  const lastAi = [...prior].reverse().find((message) => message.author === "ai")?.body.toLocaleLowerCase("ru-RU");
+  if (!lastAi) return undefined;
+  if (/поручител/.test(lastAi) && /(?:есть|имеется|сможет)/.test(lastAi)) return "guarantor";
+  if (/(?:какая|какую|нужн).{0,50}(?:сумм|займ)/.test(lastAi)) return "requestedAmount";
+  if (/(?:какая|ориентировочн).{0,50}(?:стоимост|цен)/.test(lastAi)) return "vehicleValue";
+  return undefined;
+}
+
+function validateAgentTurnSemantics(input: { result: AgentTurnResult; effectiveFacts: ApplicationFacts; explicitFacts: Partial<ApplicationFacts>; inputAttachments: InboundAttachment[]; errors: string[] }): string[] {
+  const errors = [...input.errors];
+  for (const attachment of input.result.attachments) {
+    if (!input.inputAttachments.some((item) => item.id === attachment.attachmentId)) errors.push(`attachment_state_conflict:${attachment.attachmentId}`);
+  }
+  for (const [key, value] of Object.entries(input.explicitFacts)) {
+    if (value !== undefined && JSON.stringify(input.result.leadCardPatch[key as keyof ApplicationFacts]) !== JSON.stringify(value)) {
+      errors.push(`explicit_fact_lost:${key}`);
+    }
+  }
+  if (input.explicitFacts.requestedProgram === "parking" && /без\s+изъяти/u.test(input.result.reply.toLocaleLowerCase("ru-RU"))) errors.push("program_conflict");
+  if (input.explicitFacts.requestedProgram === "without_storage" && /(?:на\s+)?стоянк|парковк/u.test(input.result.reply.toLocaleLowerCase("ru-RU"))) errors.push("program_conflict");
+  const requested = documentRequestPatterns(input.result.reply);
+  for (const document of requested) if (input.effectiveFacts.documents?.[document] === "received") errors.push(`reply_reasks_received_document:${document}`);
+  return [...new Set(errors)];
+}
+
+function documentRequestPatterns(reply: string): Array<"id_front" | "id_back" | "vehicle_registration_front" | "vehicle_registration_back"> {
+  const normalized = reply.toLocaleLowerCase("ru-RU");
+  const requested: Array<"id_front" | "id_back" | "vehicle_registration_front" | "vehicle_registration_back"> = [];
+  if (/(?:лицев[а-я]*\s+сторон[а-я]*\s+(?:id|паспорт)|(?:id|паспорт).{0,30}лицев)/u.test(normalized)) requested.push("id_front");
+  if (/(?:обратн[а-я]*\s+сторон[а-я]*\s+(?:id|паспорт)|(?:id|паспорт).{0,30}обратн)/u.test(normalized)) requested.push("id_back");
+  if (/(?:лицев[а-я]*\s+сторон[а-я]*\s+(?:стс|свидетельств)|(?:стс|свидетельств).{0,30}лицев)/u.test(normalized)) requested.push("vehicle_registration_front");
+  if (/(?:обратн[а-я]*\s+сторон[а-я]*\s+(?:стс|свидетельств)|(?:стс|свидетельств).{0,30}обратн)/u.test(normalized)) requested.push("vehicle_registration_back");
+  return requested;
 }
 
 function parseVisit(text: string): { date: string; time?: string } | undefined {

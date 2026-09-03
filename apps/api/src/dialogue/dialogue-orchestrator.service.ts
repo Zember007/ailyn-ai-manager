@@ -1,6 +1,8 @@
 import { Injectable } from "@nestjs/common";
-import { calculateLoanLimits, defaultBusinessRuleSettings, type ApplicationFacts, type BusinessRuleSettings } from "@ailyn/business-rules";
+import type { ApplicationFacts } from "@ailyn/business-rules";
 import { AgentTurnService } from "./agent-turn.service.js";
+import { interpretCurrentTurn } from "./agent-turn.service.js";
+import { attachmentFactsFromResult, effectiveFactsForTurn, reconcileAgentTurn } from "./agent-turn-reconciliation.js";
 import type { InboundMessage } from "../channels/channel.interface.js";
 import { SettingsService } from "../settings/settings.service.js";
 import { BackendLogsService } from "../logs/backend-logs.service.js";
@@ -19,32 +21,38 @@ export class DialogueOrchestratorService {
     const { conversation, application: initialApplication } = await this.store.getOrCreateConversation({ externalContactId: message.externalContactId, externalConversationId: message.externalConversationId, channel: message.channel });
     const inbound = await this.store.addMessage(conversation, { author: "client", body: message.text?.trim() ?? "", attachmentIds: [], attachments: [], metadata: { externalMessageId: message.externalMessageId, channel: message.channel } });
     const currency = await resolveForeignCurrencyFacts(message.text, initialApplication.facts, this.integrations);
-    const turn = await this.agent.run({ conversationId: conversation.id, messages: [...conversation.messages, inbound], facts: { ...initialApplication.facts, ...currency.facts }, settings: await this.settings.getValues(), text: message.text, attachments: message.attachments, currencyConversions: currency.conversions });
+    const settings = await this.settings.getValues();
+    const turnMessages = [...conversation.messages, inbound];
+    const inputFacts = { ...initialApplication.facts, ...currency.facts };
+    const turn = await this.agent.run({ conversationId: conversation.id, messages: turnMessages, facts: inputFacts, settings, text: message.text, attachments: message.attachments, currencyConversions: currency.conversions });
     let application = initialApplication;
     let changedFactKeys: string[] = [];
     let managerEvent: "initial" | "delta" | null = null;
     if (turn.result) {
-      const leadCardPatch: Partial<ApplicationFacts> = {
+      const modelPatch: Partial<ApplicationFacts> = {
         ...turn.result.leadCardPatch,
-        ...currency.facts,
         ...(turn.result.language === "unknown" ? {} : { language: turn.result.language })
       };
-      changedFactKeys = await this.store.updateFacts(application, leadCardPatch);
+      const explicitFacts = interpretCurrentTurn({ text: message.text, facts: inputFacts, messages: turnMessages }).facts;
+      const attachmentFacts = attachmentFactsFromResult(initialApplication.facts, turn.result.attachments);
+      const effectiveFacts = effectiveFactsForTurn({ previous: initialApplication.facts, modelPatch, explicitFacts, currencyFacts: currency.facts, attachmentFacts });
+      const reconciliation = reconcileAgentTurn({ effectiveFacts, proposedState: turn.result.dialogueState, proposedTargetEvent: turn.result.targetEvent, proposedPreliminaryLimit: turn.result.preliminaryLimit, settings });
+      changedFactKeys = await this.store.updateFacts(application, effectiveFacts);
       await this.store.saveAgentState(application, {
-        ...turn.result.dialogueState,
+        ...reconciliation.state,
         cardSummary: turn.result.cardSummary,
         intent: turn.result.intent,
-        preliminaryLimit: selectedProgramLimit({ ...application.facts, ...leadCardPatch }, await this.settings.getValues())
+        preliminaryLimit: reconciliation.preliminaryLimit
       });
       application = (await this.store.getApplication(application.id)) ?? application;
       for (const attachment of message.attachments) {
         const recognized = turn.result.attachments.find((item) => item.attachmentId === attachment.id);
         await this.store.addAttachment({ conversationId: conversation.id, messageId: inbound.id, type: recognized?.type ?? "unknown", status: recognized?.status ?? "received", fileName: attachment.fileName, mimeType: attachment.mimeType, byteSize: typeof attachment.metadata?.byteSize === "number" ? attachment.metadata.byteSize : undefined, storageKey: typeof attachment.metadata?.storageKey === "string" ? attachment.metadata.storageKey : undefined });
       }
-      const initial = turn.result.managerUpdate.kind === "initial" && turn.result.targetEvent && !application.facts.handedToManager;
-      const delta = turn.result.managerUpdate.kind === "delta" && application.facts.handedToManager && changedFactKeys.some((key) => managerDeltaFactKeys.has(key));
+      const initial = Boolean(reconciliation.targetEvent) && !application.facts.handedToManager;
+      const delta = application.facts.handedToManager && changedFactKeys.some((key) => managerDeltaFactKeys.has(key));
       if (initial) {
-        if (await this.store.createManagerNotification(application, "initial", { event: turn.result.targetEvent, summary: turn.result.cardSummary, facts: application.facts })) managerEvent = "initial";
+        if (await this.store.createManagerNotification(application, "initial", { event: reconciliation.targetEvent, summary: turn.result.cardSummary, facts: application.facts })) managerEvent = "initial";
         await this.store.updateFacts(application, { handedToManager: true });
       } else if (delta) {
         const fields = changedFactKeys.filter((key) => managerDeltaFactKeys.has(key));
@@ -122,10 +130,4 @@ function isForeignCurrency(value: string | null | undefined): value is ForeignMo
 function formatForeignMoney(amount: number, currency: ForeignMoneyCurrencyCode): string {
   const label = { USD: "долларов США", EUR: "евро", KZT: "тенге", RUB: "российских рублей" }[currency];
   return `${formatMoney(amount)} ${label}`;
-}
-
-function selectedProgramLimit(facts: ApplicationFacts, settings: object): number | null {
-  if (!facts.requestedProgram || !facts.residenceRegion) return null;
-  const limits = calculateLoanLimits(facts, { ...defaultBusinessRuleSettings, ...(settings as Partial<BusinessRuleSettings>) });
-  return facts.requestedProgram === "without_storage" ? limits.withoutStorage ?? null : limits.parking ?? null;
 }

@@ -94,6 +94,20 @@ describe("money normalization", () => {
     expect(ambiguousWithPendingValue.vehicleValue).toBeUndefined();
   });
 
+  it("inherits currency and thousand multiplier only inside the same money clause", () => {
+    const result = resolveMoneyFacts({
+      text: "Камри 2022 стоит 20 тыс долларов, надо 10",
+      currentFacts: {}
+    });
+    const ambiguous = resolveMoneyFacts({ text: "надо 10", currentFacts: {} });
+
+    expect(result.vehicleValue).toBe(20_000);
+    expect(result.vehicleValueCurrency).toBe("USD");
+    expect(result.requestedAmount).toBe(10_000);
+    expect(result.requestedAmountCurrency).toBe("USD");
+    expect(ambiguous.requestedAmount).toBeUndefined();
+  });
+
   it("assigns a standalone approximate price to the only pending money field", () => {
     const result = resolveMoneyFacts({
       text: "примерно 200000 сом",
