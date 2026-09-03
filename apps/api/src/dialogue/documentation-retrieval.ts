@@ -6,6 +6,9 @@ type DocumentationChunk = (typeof generatedDocumentationChunks)[number];
 type DocumentationStage = DocumentationChunk["primaryStage"];
 
 const requiredDocumentKeys = ["id_front", "id_back", "vehicle_registration_front", "vehicle_registration_back"] as const;
+// Chapter 5 is the approved answer base. It is deliberately supplied on every
+// turn so an exact company answer never depends on lexical retrieval.
+const commonKnowledge = generatedDocumentationChunks.filter((chunk) => /^5\./u.test(chunk.section));
 const stageKeywords: Record<DocumentationStage, RegExp> = {
   application: /автомобил|машин|марка|модель|год|стоимост|цен|сумм|займ|доллар|евро|тенге|рубл|валют|курс|изменил|изменить|дороже|дешевле/u,
   residence: /пропис|регион|бишкек|чуй|токмок|насел[её]нн/u,
@@ -25,7 +28,7 @@ export function selectRelevantDocumentation(input: {
   currentMessage?: string;
   messages: Stage1Message[];
   maxChunks?: number;
-}): { stages: DocumentationStage[]; knowledge: DocumentationChunk[] } {
+}): { stages: DocumentationStage[]; commonKnowledge: DocumentationChunk[]; knowledge: DocumentationChunk[] } {
   const current = `${input.currentMessage ?? ""} ${input.messages.slice(-3).map((message) => message.body).join(" ")}`.toLocaleLowerCase("ru-RU");
   const stages = relevantStages(input.facts, current);
   const tokens = new Set(current.match(/[\p{L}\p{N}]{3,}/gu) ?? []);
@@ -49,7 +52,7 @@ export function selectRelevantDocumentation(input: {
     if (selected.length >= limit) break;
     if (!selected.includes(item.chunk)) selected.push(item.chunk);
   }
-  return { stages, knowledge: selected.slice(0, limit) };
+  return { stages, commonKnowledge: [...commonKnowledge], knowledge: selected.slice(0, limit) };
 }
 
 function relevantStages(facts: ApplicationFacts, current: string): DocumentationStage[] {

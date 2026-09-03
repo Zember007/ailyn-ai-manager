@@ -261,7 +261,7 @@ function buildMessage(input: { messages: Stage1Message[]; facts: ApplicationFact
   const settings = input.settings as Record<string, unknown>;
   const timezone = typeof settings.timezone === "string" ? settings.timezone : "Asia/Bishkek";
   const retrieval = selectRelevantDocumentation({ facts: input.facts, currentMessage: input.text, messages: input.messages });
-  const context = { now: currentDateTime(timezone), timezone, history: input.messages.map(({ author, body, createdAt }) => ({ author, text: body, createdAt })), leadCard: input.facts, settings: input.settings, currentMessage: input.text ?? "", currencyConversions: input.currencyConversions ?? [], relevantStages: retrieval.stages, knowledge: retrieval.knowledge };
+  const context = { now: currentDateTime(timezone), timezone, history: input.messages.map(({ author, body, createdAt }) => ({ author, text: body, createdAt })), leadCard: input.facts, settings: input.settings, currentMessage: input.text ?? "", currencyConversions: input.currencyConversions ?? [], commonKnowledge: retrieval.commonKnowledge, relevantStages: retrieval.stages, knowledge: retrieval.knowledge };
   const parts: Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string; detail: "high" } }> = [{ type: "text", text: JSON.stringify(context) }];
   for (const attachment of input.attachments) {
     parts.push({ type: "text", text: JSON.stringify({ attachment: { id: attachment.id, fileName: attachment.fileName, mimeType: attachment.mimeType, textContent: attachment.textContent, metadata: attachment.metadata } }) });

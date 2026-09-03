@@ -2,6 +2,15 @@ import { describe, expect, it } from "vitest";
 import { selectRelevantDocumentation } from "./documentation-retrieval.js";
 
 describe("selectRelevantDocumentation", () => {
+  it("always supplies the approved Chapter 5 answer base", () => {
+    const result = selectRelevantDocumentation({ facts: {}, currentMessage: "здравствуйте", messages: [] });
+
+    expect(result.commonKnowledge.length).toBeGreaterThan(100);
+    expect(result.commonKnowledge.some((chunk) => chunk.section === "5.2")).toBe(true);
+    expect(result.commonKnowledge.some((chunk) => chunk.section === "5.23.1")).toBe(true);
+    expect(result.commonKnowledge.some((chunk) => chunk.section === "5.25")).toBe(true);
+  });
+
   it("retrieves currency guidance when the client provides foreign-currency prices", () => {
     const result = selectRelevantDocumentation({ facts: {}, currentMessage: "камри стоит 20 тысяч долларов, надо 10", messages: [] });
 
