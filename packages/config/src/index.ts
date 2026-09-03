@@ -13,6 +13,7 @@ export interface AppConfig {
   routerAiTextModel?: string;
   routerAiVisionModel?: string;
   routerAiEvalModel?: string;
+  routerAiNormalizerModel?: string;
   routerAiTimeoutMs: number;
   routerAiMaxRetries: number;
   whatsappProvider: "wazzup";
@@ -51,6 +52,7 @@ export function loadAppConfig(): AppConfig {
     routerAiTextModel: optionalEnv("ROUTERAI_TEXT_MODEL"),
     routerAiVisionModel: optionalEnv("ROUTERAI_VISION_MODEL"),
     routerAiEvalModel: optionalEnv("ROUTERAI_EVAL_MODEL"),
+    routerAiNormalizerModel: optionalEnv("ROUTERAI_NORMALIZER_MODEL"),
     routerAiTimeoutMs: Number(process.env.ROUTERAI_TIMEOUT_MS ?? "30000"),
     routerAiMaxRetries: Number(process.env.ROUTERAI_MAX_RETRIES ?? "2"),
     whatsappProvider: "wazzup",

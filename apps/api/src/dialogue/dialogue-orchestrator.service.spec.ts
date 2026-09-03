@@ -34,7 +34,8 @@ describe("single-agent dialogue", () => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ ...validResult, preliminaryLimit: 200000, leadCardPatch: { residenceRegion: "OTHER_KG", preliminaryLimit: 200000, arbitrary: true } }) } }] }) } as any;
     const logs = { warn: vi.fn().mockResolvedValue(undefined) } as any;
     const output = await new AgentTurnService(client, logs).run({ conversationId: "conversation-1", messages: [], facts: {}, settings: {}, text: "test", attachments: [] });
-    expect(output.result).toEqual(expect.objectContaining({ preliminaryLimit: 200000, leadCardPatch: { residenceRegion: "Другой регион Кыргызстана" } }));
+    expect(output.result).toEqual(expect.objectContaining({ leadCardPatch: { residenceRegion: "Другой регион Кыргызстана" } }));
+    expect(output.result?.preliminaryLimit).toBeUndefined();
     expect(client.createChatCompletion).toHaveBeenCalledTimes(1);
     expect(logs.warn).not.toHaveBeenCalled();
   });
@@ -52,11 +53,64 @@ describe("single-agent dialogue", () => {
     expect(client.createChatCompletion.mock.calls[1][0].messages[0].content).toContain("ПОВТОРНАЯ ПОПЫТКА");
   });
 
+  it("uses the cheap normalizer after the main agent exhausts format attempts", async () => {
+    const repaired = { ...validResult, leadCardPatch: { vehicleMake: "Toyota", vehicleYear: 2020 } };
+    const client = {
+      isConfigured: vi.fn().mockReturnValue(true),
+      createChatCompletion: vi.fn()
+        .mockResolvedValueOnce({ choices: [{ message: { content: "not json" } }] })
+        .mockResolvedValueOnce({ choices: [{ message: { content: "not json" } }] })
+        .mockResolvedValueOnce({ choices: [{ message: { content: "not json" } }] })
+        .mockResolvedValueOnce({ model: "cheap-normalizer", choices: [{ message: { content: JSON.stringify(repaired) } }] })
+    } as any;
+    const output = await new AgentTurnService(client).run({ messages: [], facts: {}, settings: {}, text: "Toyota 2020", attachments: [] });
+    expect(output.reply).toBe(repaired.reply);
+    expect(output.model).toBe("cheap-normalizer");
+    expect(output.promptVersion).toContain("normalizer");
+    expect(client.createChatCompletion).toHaveBeenCalledTimes(4);
+    expect(client.createChatCompletion.mock.calls[3][0].model).toBe("openai/gpt-4o-mini");
+  });
+
+  it("does not treat a document request as a reached target event", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ ...validResult, dialogueState: { stage: "COLLECTING_DOCUMENTS", status: "continue", nextAction: "request_documents" }, targetEvent: "documents" }) } }] }) } as any;
+    const output = await new AgentTurnService(client).run({
+      messages: [],
+      facts: { vehicleMake: "Toyota", vehicleYear: 2022, vehicleValue: 1_749_000, requestedAmount: 874_500, requestedProgram: "without_storage", residenceRegion: "Чуйская область", residenceCategory: "CHUY" },
+      settings: {},
+      text: "в такмоке",
+      attachments: []
+    });
+    expect(output.result?.targetEvent).toBeNull();
+    expect(output.reply).toContain("модель");
+    expect(client.createChatCompletion).toHaveBeenCalledTimes(1);
+  });
+
+  it("separates an optional photo explanation from the next question", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ ...validResult, reply: "Спасибо. Если есть возможность, пожалуйста, отправьте также 2–3 фотографии автомобиля. Это поможет быстрее провести предварительную оценку и ускорит рассмотрение заявки. Состоите ли Вы в браке?" }) } }] }) } as any;
+    const output = await new AgentTurnService(client).run({ messages: [], facts: {}, settings: {}, text: "", attachments: [] });
+    expect(output.reply).toContain("заявки.\n\nСостоите ли Вы в браке?");
+  });
+
   it("persists an explicit divorce status and a relative visit in normalized fields", async () => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ ...validResult, leadCardPatch: {} }) } }] }) } as any;
     const output = await new AgentTurnService(client).run({ messages: [], facts: {}, settings: {}, text: "Я в разводе, в 5 в четверг", attachments: [] });
     expect(output.result?.leadCardPatch).toEqual(expect.objectContaining({ familyStatus: "divorced", visitRequested: true, visitTime: "17:00" }));
     expect(output.result?.leadCardPatch.visitDate).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+
+  it("persists an explicit guarantor answer in the lead card", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ ...validResult, leadCardPatch: {} }) } }] }) } as any;
+    const output = await new AgentTurnService(client).run({ messages: [], facts: {}, settings: {}, text: "поручитель есть", attachments: [] });
+    expect(output.result?.leadCardPatch.guarantorAvailable).toBe(true);
+  });
+
+  it("keeps the 5.15 spouse-consent answer in normalized facts", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ ...validResult, leadCardPatch: {} }) } }] }) } as any;
+    const service = new AgentTurnService(client);
+    const married = await service.run({ messages: [], facts: {}, settings: {}, text: "да в браке", attachments: [] });
+    const consent = await service.run({ messages: [{ author: "ai", body: "Сможете предоставить нотариально заверенное согласие супруга?", createdAt: "now" } as any], facts: { familyStatus: "married" }, settings: {}, text: "нет", attachments: [] });
+    expect(married.result?.leadCardPatch.familyStatus).toBe("married");
+    expect(consent.result?.leadCardPatch.spouseConsentReady).toBe(false);
   });
 
   it("preserves a document-chat refusal and lets the latest family-status correction win", async () => {

@@ -71,7 +71,11 @@ export function reconcileAgentTurn(input: {
   const documentsReady = requiredDocuments.every((key) => input.effectiveFacts.documents?.[key] === "received");
   const visitReady = documentsReady && Boolean(input.effectiveFacts.visitDate && input.effectiveFacts.visitTime);
   const targetEvent = visitReady ? "visit" : documentsReady ? "documents" : null;
-  if (input.proposedTargetEvent && input.proposedTargetEvent !== targetEvent) {
+  // `documents` can mean "request these next" in the model response, while
+  // the persisted event means that all document sides have been received.
+  if (input.proposedTargetEvent === "documents" && targetEvent === null) {
+    corrections.push("target_event_cleared:documents_not_reached");
+  } else if (input.proposedTargetEvent && input.proposedTargetEvent !== targetEvent) {
     semanticErrors.push(`invalid_target_event:${input.proposedTargetEvent}`);
   }
 
@@ -86,8 +90,15 @@ function firstMissingRequirement(facts: ApplicationFacts): { stage: ApplicationS
   if (!facts.residenceRegion) return { stage: "COLLECTING_RESIDENCE", fact: "residenceRegion", nextAction: "collect_residence" };
   const document = requiredDocuments.find((key) => facts.documents?.[key] !== "received");
   if (document) return { stage: "COLLECTING_DOCUMENTS", fact: document, nextAction: "collect_documents" };
+  if (!facts.familyStatus || facts.familyStatus === "unknown") return { stage: "COLLECTING_FAMILY_STATUS", fact: "familyStatus", nextAction: "collect_family_status" };
+  if (facts.familyStatus === "married" && facts.spouseConsentReady !== true) return { stage: "COLLECTING_FAMILY_STATUS", fact: "spouseConsentReady", nextAction: "collect_spouse_consent" };
+  if (requiresGuarantor(facts) && facts.guarantorAvailable === undefined) return { stage: "CHECKING_GUARANTOR", fact: "guarantorAvailable", nextAction: "check_guarantor" };
   if (!facts.visitDate || !facts.visitTime) return { stage: "SCHEDULING_VISIT", fact: !facts.visitDate ? "visitDate" : "visitTime", nextAction: "schedule_visit" };
   return undefined;
+}
+
+function requiresGuarantor(facts: ApplicationFacts): boolean {
+  return facts.requestedProgram === "without_storage" && facts.residenceCategory === "OTHER_KG";
 }
 
 function stageIndex(stage: ApplicationStage): number {

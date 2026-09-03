@@ -17,6 +17,13 @@ const PROMPT_VERSION = "single-agent-v3";
 const NEUTRAL_REPLY = "Извините, сейчас не удалось обработать сообщение. Пожалуйста, напишите ещё раз или обратитесь к сотрудникам компании.";
 const MAX_MODEL_ATTEMPTS = 3;
 const MAX_LOG_VALUE_LENGTH = 4000;
+const NORMALIZER_PROMPT = `Вы — технический JSON-нормализатор ответа менеджера.
+Верните только один валидный JSON строго по переданной схеме AgentTurnResult.
+Исправляйте только формат, типы, допустимые имена полей и лишние поля; не меняйте смысл reply и не придумывайте факты.
+Не помещайте preliminaryLimit в leadCardPatch. targetEvent означает только уже достигнутое событие: documents только после получения всех четырёх сторон ID и СТС, visit только после даты и времени; при обычном запросе документов используйте null.
+Не запрашивайте уже полученные документы. Если исходный ответ нельзя безопасно восстановить, верните наиболее консервативный валидный результат без выдуманных фактов.`;
+
+type AgentTurnInput = { messages: Stage1Message[]; facts: ApplicationFacts; settings: object; text?: string; attachments: InboundAttachment[]; currencyConversions?: unknown[]; conversationId?: string };
 
 @Injectable()
 export class AgentTurnService {
@@ -25,7 +32,7 @@ export class AgentTurnService {
 
   constructor(private readonly client: RouterAiClient, private readonly logs?: BackendLogsService) {}
 
-  async run(input: { messages: Stage1Message[]; facts: ApplicationFacts; settings: object; text?: string; attachments: InboundAttachment[]; currencyConversions?: unknown[]; conversationId?: string }): Promise<{ result?: AgentTurnResult; reply: string; model: string; promptVersion: string; error?: string }> {
+  async run(input: AgentTurnInput): Promise<{ result?: AgentTurnResult; reply: string; model: string; promptVersion: string; error?: string }> {
     if (!this.client.isConfigured()) {
       await this.logFallback(input, "routerai_not_configured", []);
       return { reply: NEUTRAL_REPLY, model: "unconfigured", promptVersion: PROMPT_VERSION, error: "routerai_not_configured" };
@@ -39,6 +46,7 @@ export class AgentTurnService {
       messages: [{ role: "system" as const, content: systemPrompt }, { role: "user" as const, content: buildMessage(input) }]
     };
     let lastError = "unknown_model_error";
+    let lastRawAgentResponse: string | undefined;
     const attempts: Array<{ attempt: number; error: string; agentResponse?: string }> = [];
     for (let attempt = 1; attempt <= MAX_MODEL_ATTEMPTS; attempt += 1) {
       let agentResponse: string | undefined;
@@ -51,6 +59,7 @@ export class AgentTurnService {
           : request;
         const response = await this.client.createChatCompletion(attemptRequest, { timeoutMs: this.config.routerAiTimeoutMs });
         const rawAgentResponse = response.choices?.[0]?.message?.content;
+        lastRawAgentResponse = typeof rawAgentResponse === "string" ? rawAgentResponse : undefined;
         agentResponse = truncateLogValue(rawAgentResponse);
         const payload = normalizeAgentPayload(parseAgentJson(typeof rawAgentResponse === "string" ? rawAgentResponse : undefined), input.text, input.facts, input.messages);
         const parsed = agentTurnResultSchema.safeParse(payload);
@@ -61,30 +70,7 @@ export class AgentTurnService {
             : undefined;
           throw new Error(`Agent response does not match AgentTurnResult (${issues}; stage=${JSON.stringify(state)}; targetEvent=${JSON.stringify(payload.targetEvent)})`);
         }
-        const interpreted = interpretCurrentTurn({ text: input.text, facts: input.facts, messages: input.messages });
-        const effectiveFacts = effectiveFactsForTurn({
-          previous: input.facts,
-          modelPatch: parsed.data.leadCardPatch,
-          explicitFacts: interpreted.facts,
-          currencyFacts: {},
-          attachmentFacts: attachmentFactsFromResult(input.facts, parsed.data.attachments)
-        });
-        const reconciliation = reconcileAgentTurn({
-          effectiveFacts,
-          proposedState: parsed.data.dialogueState,
-          proposedTargetEvent: parsed.data.targetEvent,
-          proposedPreliminaryLimit: parsed.data.preliminaryLimit,
-          settings: input.settings
-        });
-        const semanticErrors = validateAgentTurnSemantics({ result: parsed.data, effectiveFacts, explicitFacts: interpreted.facts, inputAttachments: input.attachments, errors: reconciliation.semanticErrors });
-        const criticalErrors = semanticErrors.filter((issue) => !issue.startsWith("invalid_stage_transition:"));
-        if (criticalErrors.length > 0) throw new Error(`Agent response semantic validation failed (${criticalErrors.join("; ")})`);
-        const result = {
-          ...parsed.data,
-          dialogueState: reconciliation.state,
-          targetEvent: reconciliation.targetEvent,
-          reply: removeRepeatedGreeting(parsed.data.reply, input.messages)
-        };
+        const result = finalizeAgentPayload(parsed.data, input);
         return { result, reply: result.reply, model: response.model ?? this.config.routerAiTextModel ?? "routerai", promptVersion: PROMPT_VERSION };
       } catch (error) {
         lastError = error instanceof Error ? error.message : String(error);
@@ -92,9 +78,49 @@ export class AgentTurnService {
         if (attempt < MAX_MODEL_ATTEMPTS) this.logger.warn(`Single-agent attempt ${attempt}/${MAX_MODEL_ATTEMPTS} failed; retrying: ${lastError}`);
       }
     }
+    if (lastRawAgentResponse) {
+      const repaired = await this.normalizeFailedResponse(input, lastRawAgentResponse, lastError);
+      if (repaired) {
+        this.logger.warn(`Cheap JSON normalizer repaired the agent response after ${MAX_MODEL_ATTEMPTS} attempts (model=${repaired.model})`);
+        return { result: repaired.result, reply: repaired.result.reply, model: repaired.model, promptVersion: `${PROMPT_VERSION}-normalizer` };
+      }
+    }
     this.logger.warn(`Single-agent fallback activated after ${MAX_MODEL_ATTEMPTS} attempts: ${lastError}`);
     await this.logFallback(input, lastError, attempts);
     return { reply: NEUTRAL_REPLY, model: this.config.routerAiTextModel ?? "routerai", promptVersion: PROMPT_VERSION, error: lastError };
+  }
+
+  private async normalizeFailedResponse(input: AgentTurnInput, rawResponse: string, reason: string): Promise<{ result: AgentTurnResult; model: string } | undefined> {
+    const model = this.config.routerAiNormalizerModel ?? this.config.routerAiEvalModel ?? "openai/gpt-4o-mini";
+    try {
+      const response = await this.client.createChatCompletion({
+        model,
+        temperature: 0,
+        max_tokens: 2200,
+        reasoning: { enabled: false },
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: NORMALIZER_PROMPT },
+          { role: "user", content: JSON.stringify({
+            schema: "AgentTurnResult from the main agent prompt",
+            error: truncateLogValue(reason),
+            rawAgentResponse: rawResponse.slice(0, 16000),
+            currentMessage: input.text ?? "",
+            currentFacts: input.facts,
+            history: input.messages.slice(-8).map(({ author, body, createdAt }) => ({ author, text: body, createdAt })),
+            attachments: input.attachments.map(({ id, fileName, mimeType, textContent, metadata }) => ({ id, fileName, mimeType, textContent, metadata }))
+          }) }
+        ]
+      }, { timeoutMs: this.config.routerAiTimeoutMs });
+      const content = response.choices?.[0]?.message?.content;
+      const payload = normalizeAgentPayload(parseAgentJson(typeof content === "string" ? content : undefined), input.text, input.facts, input.messages);
+      const parsed = agentTurnResultSchema.safeParse(payload);
+      if (!parsed.success) return undefined;
+      return { result: finalizeAgentPayload(parsed.data, input), model: response.model ?? model };
+    } catch (error) {
+      this.logger.warn(`Cheap JSON normalizer failed: ${error instanceof Error ? error.message : String(error)}`);
+      return undefined;
+    }
   }
 
   private async logFallback(input: { text?: string; attachments: InboundAttachment[]; conversationId?: string }, error: string, attempts: Array<{ attempt: number; error: string; agentResponse?: string }>): Promise<void> {
@@ -109,6 +135,35 @@ export class AgentTurnService {
       }
     });
   }
+}
+
+function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): AgentTurnResult & { reply: string } {
+  const { preliminaryLimit: _proposedPreliminaryLimit, ...payloadWithoutProposedLimit } = parsed;
+  const interpreted = interpretCurrentTurn({ text: input.text, facts: input.facts, messages: input.messages });
+  const effectiveFacts = effectiveFactsForTurn({
+    previous: input.facts,
+    modelPatch: parsed.leadCardPatch,
+    explicitFacts: interpreted.facts,
+    currencyFacts: {},
+    attachmentFacts: attachmentFactsFromResult(input.facts, parsed.attachments)
+  });
+  const reconciliation = reconcileAgentTurn({
+    effectiveFacts,
+    proposedState: parsed.dialogueState,
+    proposedTargetEvent: parsed.targetEvent,
+    proposedPreliminaryLimit: parsed.preliminaryLimit,
+    settings: input.settings
+  });
+  const semanticErrors = validateAgentTurnSemantics({ result: parsed, effectiveFacts, explicitFacts: interpreted.facts, inputAttachments: input.attachments, errors: reconciliation.semanticErrors });
+  const criticalErrors = semanticErrors.filter((issue) => !issue.startsWith("invalid_stage_transition:"));
+  if (criticalErrors.length > 0) throw new Error(`Agent response semantic validation failed (${criticalErrors.join("; ")})`);
+  return {
+    ...payloadWithoutProposedLimit,
+    dialogueState: reconciliation.state,
+    targetEvent: reconciliation.targetEvent,
+    ...(reconciliation.preliminaryLimit === null ? {} : { preliminaryLimit: reconciliation.preliminaryLimit }),
+    reply: separateQuestions(removeRepeatedGreeting(parsed.reply, input.messages))
+  };
 }
 
 function truncateLogValue(value: unknown): string {
@@ -153,6 +208,12 @@ function removeRepeatedGreeting(reply: string, messages: Stage1Message[]): strin
   return withoutGreeting || reply;
 }
 
+function separateQuestions(reply: string): string {
+  // Keep the model's wording, but make a standalone question visually
+  // distinct when it follows an explanation in the same paragraph.
+  return reply.replace(/([.!?])\s+(?=[А-ЯЁA-Z][^.!?\n]{0,160}\?)/gu, "$1\n\n").trim();
+}
+
 function buildMessage(input: { messages: Stage1Message[]; facts: ApplicationFacts; settings: object; text?: string; attachments: InboundAttachment[]; currencyConversions?: unknown[] }) {
   const settings = input.settings as Record<string, unknown>;
   const timezone = typeof settings.timezone === "string" ? settings.timezone : "Asia/Bishkek";
@@ -195,6 +256,13 @@ function selectKnowledge(query: string) {
     return { chunk, index, score };
   });
   const selected = new Map<string, { key: string; text: string }>();
+  const stage = inferKnowledgeStage(query);
+  // Include the complete packet for the active branch. This prevents 5.15
+  // from being represented by only its first fragment and keeps the spouse
+  // answer branches together.
+  if (stage) {
+    for (const item of scored.filter((candidate) => (candidate.chunk.stages as readonly string[]).includes(stage)).slice(0, 16)) selected.set(item.chunk.key, item.chunk);
+  }
   // The first chunks form the compact, always-present behavior core.
   for (const item of scored.slice(0, 8)) selected.set(item.chunk.key, item.chunk);
   // Contact details are always retained even when the current message is not
@@ -210,6 +278,17 @@ function selectKnowledge(query: string) {
     }
   }
   return [...selected.values()].slice(0, 56);
+}
+
+function inferKnowledgeStage(query: string): "family_status" | "guarantor" | "residence" | "documents" | "vehicle_photos" | "visit" | undefined {
+  const value = query.toLocaleLowerCase("ru-RU");
+  if (/супруг|браке|развод|нотариальн|согласие/u.test(value)) return "family_status";
+  if (/поручител/u.test(value)) return "guarantor";
+  if (/пропис|регион|такмок|бишкек|чуй/u.test(value)) return "residence";
+  if (/паспорт|id\b|стс|документ|свидетельств/u.test(value)) return "documents";
+  if (/фото.*автомоб|фотограф.*автомоб/u.test(value)) return "vehicle_photos";
+  if (/визит|офис|приех|дата|врем/u.test(value)) return "visit";
+  return undefined;
 }
 
 function normalizeKnowledgeToken(value: string): string {
@@ -236,9 +315,16 @@ function expandKnowledgeTerms(query: string): Set<string> {
 
 function loadPrompt(name: string) {
   const directory = dirname(fileURLToPath(import.meta.url));
-  const candidates = [resolve(directory, "../ai/prompts", name), resolve(process.cwd(), "apps/api/src/ai/prompts", name)];
+  const promptDirectories = [
+    resolve(directory, "../ai/prompts"),
+    resolve(process.cwd(), "src/ai/prompts"),
+    resolve(process.cwd(), "dist/apps/api/src/ai/prompts"),
+    resolve(process.cwd(), "apps/api/src/ai/prompts"),
+    resolve(process.cwd(), "apps/api/dist/apps/api/src/ai/prompts")
+  ];
+  const candidates = promptDirectories.map((promptDirectory) => resolve(promptDirectory, name));
   const path = candidates.find(existsSync);
-  if (!path) throw new Error(`Prompt file not found: ${name}`);
+  if (!path) throw new Error(`Prompt file not found: ${name}. Checked: ${promptDirectories.join(", ")}`);
   return readFileSync(path, "utf8");
 }
 
@@ -357,6 +443,8 @@ export function interpretCurrentTurn(input: { text?: string; facts: ApplicationF
   if (/(?:в\s+разводе|развед[её]н(?:а)?|разв[её]дена)/u.test(normalized)) facts.familyStatus = "divorced";
   else if (/(?:не\s+женат|не\s+замужем|не\s+состою\s+в\s+браке)/u.test(normalized)) facts.familyStatus = "single";
   else if (/(?:в\s+браке|женат|замужем)/u.test(normalized)) facts.familyStatus = "married";
+  if (/(?:авто(?:мобиль)?|машин).{0,30}(?:куплен|приобретен|приобретён).{0,30}в\s+браке|купил.{0,20}в\s+браке/u.test(normalized)) facts.vehicleBoughtDuringMarriage = true;
+  if (/(?:купил|куплен|приобретен|приобретён).{0,30}после\s+развод|после\s+развод.{0,30}(?:купил|приобр)/u.test(normalized)) facts.vehicleBoughtDuringMarriage = false;
   if (/(?:не\s+буду|не\s+хочу|не\s+могу|отказываюсь)[^.!?]{0,50}(?:в\s+чат|чат(?:е|ик)|отправ|фото|документ)/u.test(normalized)) facts.declinedDocuments = true;
   const hypotheticalProgram = /(?:а\s+если|сколько|какой\s+процент|какая\s+ставка)/u.test(normalized);
   if (!hypotheticalProgram && /(?:давайте|буду|хочу|нужно|тогда)[^.!?]{0,30}(?:на\s+)?(?:стоянк|парковк)/u.test(normalized)) facts.requestedProgram = "parking";
@@ -365,6 +453,10 @@ export function interpretCurrentTurn(input: { text?: string; facts: ApplicationF
   const unresolvedQuestion = lastUnresolvedQuestion(input.messages);
   if (unresolvedQuestion === "guarantor" && /^(?:да|ну\s+да|есть|имеется)$/u.test(normalized.trim())) facts.guarantorAvailable = true;
   if (unresolvedQuestion === "guarantor" && /^(?:нет|нету|не\s*т|не\s+имеется)$/u.test(normalized.trim())) facts.guarantorAvailable = false;
+  if (unresolvedQuestion === "spouseConsent" && /^(?:да|есть|оформлено|готов(?:а)?|смогу)$/u.test(normalized.trim())) facts.spouseConsentReady = true;
+  if (unresolvedQuestion === "spouseConsent" && /^(?:нет|нету|не\s*т|не\s+могу|пока\s+нет)$/u.test(normalized.trim())) facts.spouseConsentReady = false;
+  if (/(?:поручител[ья]\s+(?:есть|имеется)|есть\s+поручител[ья])/u.test(normalized)) facts.guarantorAvailable = true;
+  if (/(?:поручител[ья]\s+нет|нет\s+поручител[ья]|без\s+поручител[ья])/u.test(normalized)) facts.guarantorAvailable = false;
 
   const money = resolveMoneyFacts({ text, currentFacts: input.facts, pendingFacts: unresolvedQuestion === "requestedAmount" ? ["requestedAmount"] : unresolvedQuestion === "vehicleValue" ? ["vehicleValue"] : [] });
   if (money.requestedAmount !== undefined && (!money.requestedAmountCurrency || money.requestedAmountCurrency === "KGS")) facts.requestedAmount = money.requestedAmount;
@@ -379,10 +471,11 @@ export function interpretCurrentTurn(input: { text?: string; facts: ApplicationF
   return { facts, money };
 }
 
-function lastUnresolvedQuestion(messages: Stage1Message[]): "guarantor" | "requestedAmount" | "vehicleValue" | undefined {
+function lastUnresolvedQuestion(messages: Stage1Message[]): "guarantor" | "spouseConsent" | "requestedAmount" | "vehicleValue" | undefined {
   const prior = messages.filter((message) => message.author !== "client" || message.body.trim() === "");
   const lastAi = [...prior].reverse().find((message) => message.author === "ai")?.body.toLocaleLowerCase("ru-RU");
   if (!lastAi) return undefined;
+  if (/(?:нотариальн|согласие).{0,80}(?:сможете|готов|предостав)|(?:сможете|готов[аы]?|предостав).{0,80}(?:нотариальн|согласие)/.test(lastAi)) return "spouseConsent";
   if (/поручител/.test(lastAi) && /(?:есть|имеется|сможет)/.test(lastAi)) return "guarantor";
   if (/(?:какая|какую|нужн).{0,50}(?:сумм|займ)/.test(lastAi)) return "requestedAmount";
   if (/(?:какая|ориентировочн).{0,50}(?:стоимост|цен)/.test(lastAi)) return "vehicleValue";

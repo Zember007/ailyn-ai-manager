@@ -8,6 +8,13 @@
 
 **Tech Stack:** NestJS, TypeScript, Zod, Prisma/PostgreSQL, Vitest, RouterAI JSON mode.
 
+## Implementation update (2026-09-03)
+
+- The final `preliminaryLimit` remains the deterministic TypeScript business decision; a model value is only validated as a proposal and is never persisted as authoritative.
+- `targetEvent` is reconciled from effective/persisted readiness. A model value of `documents` while the agent is merely requesting missing documents is cleared, not treated as an invalid semantic event.
+- After the three main-agent attempts are exhausted, the pipeline invokes `ROUTERAI_NORMALIZER_MODEL` (default `openai/gpt-4o-mini`) with the raw response, validation error and safe context. This model repairs JSON shape/types only; the repaired result goes through the same Zod, fact, stage, limit and event reconciliation boundary. If repair is unsafe, the existing logged fallback remains.
+- Prompt loading checks source and compiled API paths, preventing `Prompt file not found: agent.system.md` during local `apps/api dev` startup.
+
 ---
 
 ## Audit findings
