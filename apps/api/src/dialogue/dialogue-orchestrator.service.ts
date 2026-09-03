@@ -1,7 +1,6 @@
 import { Injectable } from "@nestjs/common";
 import type { ApplicationFacts } from "@ailyn/business-rules";
 import { AgentTurnService } from "./agent-turn.service.js";
-import { interpretCurrentTurn } from "./agent-turn.service.js";
 import { attachmentFactsFromResult, effectiveFactsForTurn, reconcileAgentTurn } from "./agent-turn-reconciliation.js";
 import type { InboundMessage } from "../channels/channel.interface.js";
 import { SettingsService } from "../settings/settings.service.js";
@@ -33,9 +32,8 @@ export class DialogueOrchestratorService {
         ...turn.result.leadCardPatch,
         ...(turn.result.language === "unknown" ? {} : { language: turn.result.language })
       };
-      const explicitFacts = interpretCurrentTurn({ text: message.text, facts: inputFacts, messages: turnMessages }).facts;
       const attachmentFacts = attachmentFactsFromResult(initialApplication.facts, turn.result.attachments);
-      const effectiveFacts = effectiveFactsForTurn({ previous: initialApplication.facts, modelPatch, explicitFacts, currencyFacts: currency.facts, attachmentFacts });
+      const effectiveFacts = effectiveFactsForTurn({ previous: initialApplication.facts, modelPatch, explicitFacts: {}, currencyFacts: currency.facts, attachmentFacts });
       const reconciliation = reconcileAgentTurn({ effectiveFacts, proposedState: turn.result.dialogueState, proposedTargetEvent: turn.result.targetEvent, proposedPreliminaryLimit: turn.result.preliminaryLimit, settings });
       changedFactKeys = await this.store.updateFacts(application, effectiveFacts);
       await this.store.saveAgentState(application, {

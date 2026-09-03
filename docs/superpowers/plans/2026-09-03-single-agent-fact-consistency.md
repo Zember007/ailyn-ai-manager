@@ -14,6 +14,8 @@
 - `targetEvent` is reconciled from effective/persisted readiness. A model value of `documents` while the agent is merely requesting missing documents is cleared, not treated as an invalid semantic event.
 - After the three main-agent attempts are exhausted, the pipeline invokes `ROUTERAI_NORMALIZER_MODEL` (default `openai/gpt-4o-mini`) with the raw response, validation error and safe context. This model repairs JSON shape/types only; the repaired result goes through the same Zod, fact, stage, limit and event reconciliation boundary. If repair is unsafe, the existing logged fallback remains.
 - Prompt loading checks source and compiled API paths, preventing `Prompt file not found: agent.system.md` during local `apps/api dev` startup.
+- Explicit vehicle years are reconciled from the current client message when a vehicle cue or a year suffix makes the meaning unambiguous. This current-turn value overrides a conflicting model patch and older lead-card value.
+- The agent receives every generated documentation chunk on every turn. Relevance scoring, stage filtering and top-N truncation are removed from `AgentTurnService`.
 
 ---
 

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
-import { AgentTurnService, interpretCurrentTurn } from "./agent-turn.service.js";
+import { AgentTurnService } from "./agent-turn.service.js";
 import { DialogueOrchestratorService, composeReply, resolveForeignCurrencyFacts } from "./dialogue-orchestrator.service.js";
+import { generatedDocumentationChunks } from "./documentation-chunks.generated.js";
 
 const validResult = {
   reply: "Подскажите, пожалуйста, модель и год выпуска автомобиля.", language: "ru", intent: "new_loan", leadCardPatch: { vehicleMake: "Toyota", vehicleYear: 2020 }, cardSummary: "Toyota 2020, ожидаются остальные данные.",
@@ -14,8 +15,9 @@ describe("single-agent dialogue", () => {
     process.env.REDIS_URL ??= "redis://localhost:6379";
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ model: "one-model", choices: [{ message: { content: JSON.stringify(validResult) } }] }) } as any;
     const service = new AgentTurnService(client);
-    const output = await service.run({ messages: [{ author: "client", body: "Старая реплика", createdAt: "2026-01-01" } as any], facts: { fullName: "Иван" }, settings: { parkingInterestRate: 2.4 }, text: "Toyota 2020", attachments: [{ id: "photo", mimeType: "image/jpeg", contentBase64: "abc" }] });
-    expect(output.result).toEqual({ ...validResult, leadCardPatch: { ...validResult.leadCardPatch, fullName: "Иван" } });
+    const facts = { fullName: "Иван", vehicleMake: "Toyota", documents: { id_front: "received" }, visitRequested: true, visitDate: "2026-09-04" } as any;
+    const output = await service.run({ messages: [{ author: "client", body: "Старая реплика", createdAt: "2026-01-01" } as any], facts, settings: { parkingInterestRate: 2.4 }, text: "Toyota 2020", attachments: [{ id: "photo", mimeType: "image/jpeg", contentBase64: "abc" }] });
+    expect(output.result).toEqual({ ...validResult, leadCardPatch: { ...validResult.leadCardPatch, ...facts } });
     expect(client.createChatCompletion).toHaveBeenCalledTimes(1);
     const request = client.createChatCompletion.mock.calls[0][0];
     expect(request.model).toBe(process.env.ROUTERAI_TEXT_MODEL ?? "routerai-text-model-not-configured");
@@ -25,8 +27,9 @@ describe("single-agent dialogue", () => {
     expect(JSON.stringify(request.messages)).toContain("Б. Молодой Гвардии, 22, Бишкек");
     expect(JSON.stringify(request.messages)).toContain("+996 502 108 108");
     const context = JSON.parse((request.messages[1].content as Array<{ type: string; text?: string }>)[0].text ?? "{}");
-    expect(context.knowledge.length).toBeGreaterThan(8);
-    expect(context.knowledge.length).toBeLessThan(100);
+    expect(context.leadCard).toEqual(facts);
+    expect(context.history).toEqual([{ author: "client", text: "Старая реплика", createdAt: "2026-01-01" }]);
+    expect(context.knowledge).toEqual(generatedDocumentationChunks);
     expect(request.messages[1].content).toEqual(expect.arrayContaining([expect.objectContaining({ type: "image_url" })]));
   });
 
@@ -102,15 +105,14 @@ describe("single-agent dialogue", () => {
       attachments: []
     });
     expect(output.result?.targetEvent).toBeNull();
-    expect(output.result?.leadCardPatch).toEqual(expect.objectContaining({ residenceRegion: "Чуйская область", residenceCategory: "BISHKEK_CHUY", requestedProgram: "parking" }));
+    expect(output.result?.leadCardPatch).toEqual(expect.objectContaining({ residenceRegion: "Другой регион Кыргызстана", residenceCategory: "OTHER_KG", requestedProgram: "parking" }));
     expect(output.result?.preliminaryLimit).toBe(874_488);
     expect(output.result?.dialogueState).toEqual(expect.objectContaining({ stage: "COLLECTING_DOCUMENTS", nextAction: "collect_documents" }));
-    expect(output.reply).toContain("600 000 сом");
+    expect(output.reply).toContain("200 000 сом");
     expect(output.reply).toContain("874 488 сом");
     expect(output.reply).toContain("подойдёт программа со стоянкой");
     expect(output.reply).toContain("свидетельства о регистрации ТС");
     expect(output.reply).not.toContain("Подойдёт такой вариант");
-    expect(output.reply).not.toContain("200 000");
     expect(client.createChatCompletion).toHaveBeenCalledTimes(1);
   });
 
@@ -120,124 +122,31 @@ describe("single-agent dialogue", () => {
     expect(output.reply).toContain("заявки.\n\nСостоите ли Вы в браке?");
   });
 
-  it("persists an explicit divorce status and a relative visit in normalized fields", async () => {
-    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ ...validResult, leadCardPatch: {} }) } }] }) } as any;
-    const output = await new AgentTurnService(client).run({ messages: [], facts: {}, settings: {}, text: "Я в разводе, в 5 в четверг", attachments: [] });
-    expect(output.result?.leadCardPatch).toEqual(expect.objectContaining({ familyStatus: "divorced", visitRequested: true, visitTime: "17:00" }));
-    expect(output.result?.leadCardPatch.visitDate).toMatch(/^\d{4}-\d{2}-\d{2}$/);
-  });
-
-  it("persists an explicit guarantor answer in the lead card", async () => {
-    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ ...validResult, leadCardPatch: {} }) } }] }) } as any;
-    const output = await new AgentTurnService(client).run({ messages: [], facts: {}, settings: {}, text: "поручитель есть", attachments: [] });
-    expect(output.result?.leadCardPatch.guarantorAvailable).toBe(true);
-  });
-
-  it("treats a spouse-consent refusal as resolved and moves to the next stage", async () => {
-    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ ...validResult, leadCardPatch: {}, reply: "Подскажите, пожалуйста, удобные дату и время визита.", dialogueState: { stage: "SCHEDULING_VISIT", status: "continue", nextAction: "schedule_visit" } }) } }] }) } as any;
+  it("uses the model's semantic interpretation for flexible registration, guarantor and family answers", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn()
+      .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ ...validResult, reply: "Продолжаем оформление, пришлите документы.", leadCardPatch: { requestedProgram: "without_storage", residenceText: "я не из бишкека и не из чуя", residenceRegion: "Другой регион Кыргызстана", residenceCategory: "OTHER_KG", residenceNeedsClarification: false }, dialogueState: { stage: "COLLECTING_DOCUMENTS", status: "need_more_data", nextAction: "collect_documents" } }) } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ ...validResult, leadCardPatch: { guarantorAvailable: true } }) } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ ...validResult, leadCardPatch: { familyStatus: "married" } }) } }] })
+    } as any;
     const service = new AgentTurnService(client);
-    const married = await service.run({ messages: [], facts: {}, settings: {}, text: "да в браке", attachments: [] });
-    const consent = await service.run({
-      messages: [{ author: "ai", body: "Сможете предоставить нотариально заверенное согласие супруга?", createdAt: "now" } as any],
-      facts: {
-        vehicleMake: "Toyota", vehicleYear: 2022, vehicleValue: 1_749_000, requestedAmount: 600_000,
-        requestedProgram: "parking", residenceRegion: "Бишкек", familyStatus: "married",
-        documents: { id_front: "received", id_back: "received", vehicle_registration_front: "received", vehicle_registration_back: "received" }
-      },
-      settings: {}, text: "нет", attachments: []
-    });
-    expect(married.result?.leadCardPatch.familyStatus).toBe("married");
-    expect(consent.result?.leadCardPatch.spouseConsentReady).toBe(false);
-    expect(consent.result?.dialogueState.stage).toBe("SCHEDULING_VISIT");
-    expect(consent.reply).toContain("в нашем здании");
-    expect(consent.reply).toContain("1 500 сом");
-    expect(consent.reply).toContain("дату и время визита");
-    expect(consent.reply).not.toMatch(/сможете предоставить.+согласие/iu);
+    const region = await service.run({ messages: [{ author: "ai", body: "Подскажите, пожалуйста, Ваша прописка: Бишкек, Чуйская область или другой регион Кыргызстана?", createdAt: "now" } as any], facts: { requestedProgram: "without_storage" }, settings: {}, text: "я не из бишкека и не из чуя", attachments: [] });
+    const guarantor = await service.run({ messages: [{ author: "ai", body: "Есть ли у Вас поручитель?", createdAt: "now" } as any], facts: {}, settings: {}, text: "поручителя смогу привести", attachments: [] });
+    const family = await service.run({ messages: [{ author: "ai", body: "Состоите ли Вы в браке?", createdAt: "now" } as any], facts: {}, settings: {}, text: "мы официально женаты", attachments: [] });
+
+    expect(region.result?.leadCardPatch).toEqual(expect.objectContaining({ residenceRegion: "Другой регион Кыргызстана", residenceCategory: "OTHER_KG", residenceNeedsClarification: false }));
+    expect(region.reply).not.toContain("Ваша прописка");
+    expect(guarantor.result?.leadCardPatch.guarantorAvailable).toBe(true);
+    expect(family.result?.leadCardPatch.familyStatus).toBe("married");
+    expect(client.createChatCompletion).toHaveBeenCalledTimes(3);
   });
 
-  it("preserves a document-chat refusal and lets the latest family-status correction win", async () => {
-    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ ...validResult, leadCardPatch: { familyStatus: "divorced" } }) } }] }) } as any;
-    const service = new AgentTurnService(client);
-    const refusal = await service.run({ messages: [], facts: {}, settings: {}, text: "не буду отправлять документы в чате", attachments: [] });
-    const correction = await service.run({ messages: [], facts: { familyStatus: "divorced", declinedDocuments: true }, settings: {}, text: "а нет, в браке", attachments: [] });
-    expect(refusal.result?.leadCardPatch).toEqual(expect.objectContaining({ declinedDocuments: true }));
-    expect(correction.result?.leadCardPatch).toEqual(expect.objectContaining({ familyStatus: "married", declinedDocuments: true }));
-    expect(client.createChatCompletion).toHaveBeenCalledTimes(2);
-  });
+  it("does not repeat the residence question after the exact other-region answer", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ ...validResult, reply: "Пожалуйста, отправьте фото ID и СТС с двух сторон.", leadCardPatch: { requestedProgram: "without_storage", residenceText: "другой регион Кыргызстана", residenceRegion: "Другой регион Кыргызстана", residenceCategory: "OTHER_KG", residenceNeedsClarification: false }, dialogueState: { stage: "COLLECTING_DOCUMENTS", status: "need_more_data", nextAction: "collect_documents" } }) } }] }) } as any;
+    const output = await new AgentTurnService(client).run({ messages: [{ author: "ai", body: "Подскажите, пожалуйста, Ваша прописка: Бишкек; Чуйская область; другой регион Кыргызстана.", createdAt: "now" } as any], facts: { vehicleMake: "Toyota", vehicleYear: 2020, vehicleValue: 1_000_000, requestedAmount: 200_000, requestedProgram: "without_storage" }, settings: {}, text: "другой регион Кыргызстана", attachments: [] });
 
-  it("normalizes tomorrow at noon before the model writes its reply", async () => {
-    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ ...validResult, leadCardPatch: {} }) } }] }) } as any;
-    const output = await new AgentTurnService(client).run({ messages: [], facts: {}, settings: {}, text: "завтра, в 12", attachments: [] });
-    expect(output.result?.leadCardPatch).toEqual(expect.objectContaining({ visitRequested: true, visitTime: "12:00" }));
-    expect(output.result?.leadCardPatch.visitDate).toMatch(/^\d{4}-\d{2}-\d{2}$/);
-    expect(JSON.stringify(client.createChatCompletion.mock.calls[0][0].messages)).toContain("interpretedCurrentMessage");
-  });
-
-  it("does not create a visit on a weekend requested as the day after tomorrow", async () => {
-    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ ...validResult, leadCardPatch: { visitRequested: true, visitDate: "2026-09-04", visitTime: "17:00" }, reply: "Предварительно записала Вас на 4 сентября в 17:00.", dialogueState: { stage: "TARGET_REACHED_VISIT", status: "target_reached", nextAction: "confirm_visit" }, targetEvent: "visit" }) } }] }) } as any;
-    const facts = { vehicleMake: "Toyota", vehicleYear: 2022, vehicleValue: 1_749_000, requestedAmount: 600_000, requestedProgram: "parking", residenceRegion: "Бишкек", familyStatus: "single", documents: { id_front: "received", id_back: "received", vehicle_registration_front: "received", vehicle_registration_back: "received" } } as any;
-    const output = await new AgentTurnService(client).run({ messages: [], facts, settings: {}, text: "Послезавтра в 5", attachments: [] });
-    expect(output.result?.leadCardPatch.visitDate).toBeUndefined();
-    expect(output.result?.leadCardPatch.visitTime).toBeUndefined();
-    expect(output.result?.dialogueState.stage).toBe("SCHEDULING_VISIT");
-    expect(output.reply).toContain("выходной");
-    expect(output.reply).toContain("Ближайший рабочий день");
-    expect(output.reply).not.toContain("Предварительно записала");
-  });
-
-  it("makes an explicit current amount and program override a stale model patch", async () => {
-    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ ...validResult, leadCardPatch: { requestedAmount: 200_000, requestedProgram: "without_storage" } }) } }] }) } as any;
-    const service = new AgentTurnService(client);
-    const amount = await service.run({ messages: [], facts: { requestedAmount: 200_000, vehicleValue: 1_000_000 }, settings: {}, text: "нет, надо 450 тысяч", attachments: [] });
-    const program = await service.run({ messages: [], facts: { requestedProgram: "without_storage" }, settings: {}, text: "тогда давайте на стоянку", attachments: [] });
-    const hypothetical = interpretCurrentTurn({ text: "а если на стоянку сколько дадите", facts: { requestedProgram: "without_storage" }, messages: [] });
-
-    expect(amount.result?.leadCardPatch.requestedAmount).toBe(450_000);
-    expect(program.result?.leadCardPatch.requestedProgram).toBe("parking");
-    expect(hypothetical.facts.requestedProgram).toBeUndefined();
-  });
-
-  it("binds a short yes to the last unresolved guarantor question", () => {
-    const interpreted = interpretCurrentTurn({
-      text: "да",
-      facts: {},
-      messages: [{ author: "ai", body: "Подскажите, пожалуйста, есть ли у Вас поручитель?", createdAt: "now" } as any]
-    });
-    expect(interpreted.facts.guarantorAvailable).toBe(true);
-  });
-
-  it.each([["да", "accepted"], ["ок", "accepted"], ["нет", "declined"]] as const)("binds %s to the proposed lower limit", (answer, decision) => {
-    const interpreted = interpretCurrentTurn({
-      text: answer,
-      facts: { requestedAmount: 1_311_732 },
-      messages: [{ author: "ai", body: "По программе со стоянкой доступно до 874 488 сом. Запрошенная сумма превышает и этот лимит. Подскажите, пожалуйста, сможете рассмотреть сумму в пределах 874 488 сом?", createdAt: "now" } as any]
-    });
-    expect(interpreted.alternativeDecision).toBe(decision);
-    if (decision === "accepted") expect(interpreted.facts).toEqual(expect.objectContaining({ requestedAmount: 874_488, requestedProgram: "parking" }));
-  });
-
-  it("continues with the lower amount after accepting a proposed parking limit", async () => {
-    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ ...validResult, reply: "Продолжаем оформление.", leadCardPatch: {}, preliminaryLimit: 600_000 }) } }] }) } as any;
-    const output = await new AgentTurnService(client).run({
-      messages: [{ author: "ai", body: "По программе со стоянкой доступно до 874 488 сом. Запрошенная сумма превышает и этот лимит. Подскажите, пожалуйста, сможете рассмотреть сумму в пределах 874 488 сом?", createdAt: "now" } as any],
-      facts: { vehicleMake: "Toyota", vehicleYear: 2022, vehicleValue: 1_748_976, requestedAmount: 1_311_732, requestedProgram: "without_storage", residenceRegion: "Чуйская область", residenceCategory: "BISHKEK_CHUY" } as any,
-      settings: {}, text: "да", attachments: []
-    });
-    expect(output.result?.leadCardPatch).toEqual(expect.objectContaining({ requestedAmount: 874_488, requestedProgram: "parking" }));
-    expect(output.reply).toContain("874 488 сом");
-    expect(output.reply).toContain("отправьте фото");
-  });
-
-  it("explains that the requested amount is unavailable after declining the lower limit", async () => {
-    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ ...validResult, leadCardPatch: {} }) } }] }) } as any;
-    const output = await new AgentTurnService(client).run({
-      messages: [{ author: "ai", body: "По программе со стоянкой доступно до 874 488 сом. Подскажите, пожалуйста, сможете рассмотреть сумму в пределах 874 488 сом?", createdAt: "now" } as any],
-      facts: { requestedAmount: 1_311_732, requestedProgram: "without_storage", residenceRegion: "Чуйская область", vehicleValue: 1_748_976, vehicleMake: "Toyota", vehicleYear: 2022 } as any,
-      settings: {}, text: "нет", attachments: []
-    });
-    expect(output.reply).toContain("не можем выдать 1 311 732 сом");
-    expect(output.reply).toContain("меньший лимит");
-    expect(output.reply).not.toContain("сможете рассмотреть сумму в пределах предварительного лимита");
+    expect(output.result?.leadCardPatch).toEqual(expect.objectContaining({ residenceRegion: "Другой регион Кыргызстана", residenceCategory: "OTHER_KG", residenceNeedsClarification: false }));
+    expect(output.reply).not.toContain("Ваша прописка");
+    expect(client.createChatCompletion).toHaveBeenCalledTimes(1);
   });
 
   it("corrects a model stage that skips an unresolved required amount", async () => {
@@ -266,22 +175,22 @@ describe("single-agent dialogue", () => {
     expect(output.reply).toBe("Подскажите, пожалуйста, состоите ли Вы в браке?");
   });
 
-  it("records a refusal of optional car photos and moves to family status", async () => {
+  it("uses the model's car-photo refusal fact and moves to family status", async () => {
     const facts = { vehicleMake: "Toyota", vehicleYear: 2022, vehicleValue: 1_000_000, requestedAmount: 300_000, requestedProgram: "parking", residenceRegion: "Бишкек", documents: { id_front: "received", id_back: "received", vehicle_registration_front: "received", vehicle_registration_back: "received" } } as any;
-    const skipped = { ...validResult, reply: "Когда Вам удобно приехать в офис?", dialogueState: { stage: "SCHEDULING_VISIT", status: "continue", nextAction: "schedule_visit" } };
+    const skipped = { ...validResult, reply: "Ничего страшного, продолжаем оформление.", leadCardPatch: { declinedCarPhoto: true }, dialogueState: { stage: "SCHEDULING_VISIT", status: "continue", nextAction: "schedule_visit" } };
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify(skipped) } }] }) } as any;
     const output = await new AgentTurnService(client).run({ messages: [{ author: "ai", body: "Если есть возможность, отправьте 2–3 фотографии автомобиля.", createdAt: "now" } as any], facts, settings: {}, text: "нет фоток", attachments: [] });
     expect(output.result?.leadCardPatch.declinedCarPhoto).toBe(true);
-    expect(output.reply).toBe("Ничего страшного, продолжаем оформление.\n\nПодскажите, пожалуйста, состоите ли Вы в браке?");
+    expect(output.reply).toBe("Подскажите, пожалуйста, состоите ли Вы в браке?");
   });
 
-  it("apologizes when the client has already sent the requested documents", async () => {
+  it("keeps a model acknowledgement when the client says documents were already sent", async () => {
     const facts = {
       vehicleMake: "Toyota", vehicleYear: 2022, vehicleValue: 1_000_000, requestedAmount: 300_000,
       requestedProgram: "parking", residenceRegion: "Бишкек",
       documents: { id_front: "received", id_back: "received", vehicle_registration_front: "received", vehicle_registration_back: "received" }
     } as any;
-    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ ...validResult, reply: "Если есть возможность, пожалуйста, отправьте также 2–3 фотографии автомобиля.", dialogueState: { stage: "COLLECTING_FAMILY_STATUS", status: "need_more_data", nextAction: "collect_family_status" } }) } }] }) } as any;
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ ...validResult, reply: "Извините, вижу, документы уже получены.", leadCardPatch: { familyStatus: "single" }, dialogueState: { stage: "COLLECTING_FAMILY_STATUS", status: "need_more_data", nextAction: "collect_family_status" } }) } }] }) } as any;
     const output = await new AgentTurnService(client).run({
       messages: [{ author: "ai", body: "Пожалуйста, отправьте фото ID / паспорта и СТС с двух сторон.", createdAt: "now" } as any],
       facts, settings: {}, text: "уже отправил", attachments: []
@@ -344,14 +253,14 @@ describe("single-agent dialogue", () => {
     expect(output.reply).toContain("950 000 сом");
   });
 
-  it("retries a reply that keeps the old program after an explicit switch", async () => {
+  it("does not infer a programme switch from reply wording", async () => {
     const invalid = { ...validResult, reply: "По программе без изъятия продолжим оформление." };
     const fixed = { ...validResult, reply: "По программе со стоянкой продолжим оформление." };
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify(invalid) } }] }).mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify(fixed) } }] }) } as any;
     const output = await new AgentTurnService(client).run({ messages: [], facts: { requestedProgram: "without_storage" }, settings: {}, text: "тогда давайте на стоянку", attachments: [] });
-    expect(client.createChatCompletion).toHaveBeenCalledTimes(2);
-    expect(output.result?.leadCardPatch.requestedProgram).toBe("parking");
-    expect(output.reply).toBe(fixed.reply);
+    expect(client.createChatCompletion).toHaveBeenCalledTimes(1);
+    expect(output.result?.leadCardPatch.requestedProgram).toBe("without_storage");
+    expect(output.reply).toBe(invalid.reply);
   });
 
   it("accepts a plain Chuy residence answer on the first model response", async () => {

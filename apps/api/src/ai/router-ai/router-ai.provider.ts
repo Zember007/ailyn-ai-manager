@@ -176,6 +176,15 @@ function supplementExplicitPendingProgram(result: ExtractionResult, input: Extra
       additions.push({ key: "familyStatus", value: "married", confidence: 1 });
     }
   }
+  if (!result.facts.some((fact) => fact.key === "familyStatus" || fact.key === "ownerFamilyStatus")) {
+    const pendingFamilyStatus = activeFamilyStatusFact(input);
+    // RouterAI interprets contextual language freely. This intentionally tiny
+    // fallback only protects the most unequivocal Russian refusals when the
+    // model returns otherwise valid JSON without the active marital-status fact.
+    if (pendingFamilyStatus && isStandaloneNegativeReply(text)) {
+      additions.push({ key: pendingFamilyStatus, value: "single", confidence: 1 });
+    }
+  }
   if (!result.facts.some((fact) => fact.key === "spouseConsentReady" && fact.value === false) && /согласие[^.!?]{0,30}(?:не\s+готово|нет|не\s+оформлено)/i.test(text)) additions.push({ key: "spouseConsentReady", value: false, confidence: 1 });
   const hasValidRequestedProgram = result.facts.some((fact) =>
     fact.key === "requestedProgram" && (fact.value === "without_storage" || fact.value === "parking")
@@ -205,6 +214,16 @@ function supplementExplicitPendingProgram(result: ExtractionResult, input: Extra
     : result.questions;
   if (!additions.length && intents.length === result.intents.length && moneyMentions === result.moneyMentions && fallbackQuestions === result.questions) return result;
   return { ...result, intents: [...new Set(intents)], questions: fallbackQuestions, facts: [...result.facts, ...additions], moneyMentions, changedFacts: [...result.changedFacts, ...additions.map((fact) => ({ key: fact.key, newValue: fact.value }))] };
+}
+
+function activeFamilyStatusFact(input: ExtractionInput): "familyStatus" | "ownerFamilyStatus" | undefined {
+  const pendingFacts = input.dialogueContext?.pendingFacts ?? input.pendingFacts ?? [];
+  if (pendingFacts.includes("ownerFamilyStatus")) return "ownerFamilyStatus";
+  return pendingFacts.includes("familyStatus") ? "familyStatus" : undefined;
+}
+
+function isStandaloneNegativeReply(text: string): boolean {
+  return /^(?:нет|не)$/iu.test(text.trim());
 }
 
 function buildVisionPromptInput(input: VisionInput): Record<string, unknown> {

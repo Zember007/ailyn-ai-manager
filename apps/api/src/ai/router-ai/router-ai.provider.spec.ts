@@ -693,6 +693,33 @@ describe("RouterAiProvider", () => {
     expect(notMarried.facts).not.toEqual(expect.arrayContaining([expect.objectContaining({ key: "familyStatus", value: "married" })]));
   });
 
+  it("uses the active marriage question to preserve a terse refusal that RouterAI omitted", async () => {
+    const client = {
+      isConfigured: vi.fn().mockReturnValue(true),
+      createChatCompletion: vi.fn().mockResolvedValue({
+        choices: [{ message: { content: JSON.stringify({ language: "ru" }) } }]
+      })
+    } as any;
+    const provider = new RouterAiProvider(client);
+
+    for (const text of ["не", "нет"]) {
+      const result = await provider.extract({
+        text,
+        attachments: [],
+        dialogueContext: {
+          summary: "The assistant asks whether the client is married.",
+          recentMessages: [{ author: "ai", text: "Подскажите, пожалуйста, состоите ли Вы в браке?" }],
+          currentFacts: {},
+          pendingFacts: ["familyStatus"],
+          decisionEnvelope: { allowedNextFacts: ["familyStatus"] }
+        }
+      } as any);
+
+      expect(result.facts).toContainEqual(expect.objectContaining({ key: "familyStatus", value: "single" }));
+      expect(result.facts).not.toContainEqual(expect.objectContaining({ key: "familyStatus", value: "married" }));
+    }
+  });
+
   it("extracts attachment facts from text documents and classifies them conservatively", async () => {
     process.env.DATABASE_URL ??= "postgresql://test:test@localhost:5432/ailyn";
     process.env.REDIS_URL ??= "redis://localhost:6379";
