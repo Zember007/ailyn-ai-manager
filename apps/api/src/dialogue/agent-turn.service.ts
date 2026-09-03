@@ -383,7 +383,6 @@ const leadCardAliases: Record<string, string> = {
 const residenceRegionAliases: Record<string, string> = {
   BISHKEK: "Бишкек",
   CHUY: "Чуйская область",
-  BISHKEK_CHUY: "Чуйская область",
   OTHER_KG: "Другой регион Кыргызстана",
   FOREIGN: "Другая страна"
 };
