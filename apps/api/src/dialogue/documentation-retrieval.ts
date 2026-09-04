@@ -17,7 +17,7 @@ const commonKnowledge = generatedDocumentationChunks.filter((chunk) =>
   ["docx_0289", "docx_0290", "docx_0334", "docx_0335"].includes(chunk.key)
 );
 const stageKeywords: Record<DocumentationStage, RegExp> = {
-  application: /автомобил|машин|марка|модель|год|стоимост|цен|сумм|займ|доллар|евро|тенге|рубл|валют|курс|изменил|изменить|дороже|дешевле/u,
+  application: /автомобил|машин|марка|модель|год|стоимост|цен|сумм|займ|доллар|евро|тенге|рубл|валют|курс|изменил|изменить|дороже|дешевле|изъят|стоян/u,
   residence: /пропис|регион|бишкек|чуй|токмок|насел[её]нн/u,
   documents: /документ|паспорт|\bid\b|стс|свидетельств|фото.*документ/u,
   vehicle_photos: /фото.*автомоб|фотограф.*автомоб|нет фот|не могу.*фото/u,
@@ -82,7 +82,7 @@ function relevantStages(facts: ApplicationFacts, current: string): Documentation
 function firstIncompleteStage(facts: ApplicationFacts): DocumentationStage {
   if (!facts.vehicleModel || !facts.vehicleYear || !facts.vehicleValue || !facts.requestedAmount || !facts.requestedProgram) return "application";
   if (!facts.residenceRegion || !facts.residenceCategory) return "residence";
-  if (facts.requestedProgram === "without_storage" && facts.residenceCategory === "OTHER_KG" && facts.guarantorAvailable === undefined) return "guarantor";
+  if (facts.residenceCategory === "OTHER_KG" && facts.guarantorAvailable === undefined) return "guarantor";
   const documentsComplete = facts.documentsProvided || requiredDocumentKeys.every((key) => facts.documents?.[key] === "received");
   if (!documentsComplete && !facts.declinedDocuments) return "documents";
   if (facts.documents?.car_photo !== "received" && !facts.declinedCarPhoto) return "vehicle_photos";

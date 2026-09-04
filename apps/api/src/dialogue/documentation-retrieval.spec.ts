@@ -45,6 +45,20 @@ describe("selectRelevantDocumentation", () => {
     expect(result.stageInstructions).toHaveLength(2);
   });
 
+  it("requires a guarantor for every OTHER_KG card, including parking", () => {
+    const result = selectRelevantDocumentation({
+      facts: {
+        vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 1_000_000, requestedAmount: 300_000,
+        requestedProgram: "parking", residenceRegion: "Иссык-Кульская область", residenceCategory: "OTHER_KG"
+      } as any,
+      currentMessage: "со стоянкой",
+      messages: []
+    });
+
+    expect(result.stages[0]).toBe("guarantor");
+    expect(result.stageInstructions.some((instruction) => instruction.includes("OTHER_KG всегда требует вопроса о поручителе"))).toBe(true);
+  });
+
   it("brings back application guidance when a client changes an earlier price", () => {
     const result = selectRelevantDocumentation({
       facts: { vehicleValue: 1_000_000, requestedAmount: 300_000, requestedProgram: "parking" } as any,
@@ -54,6 +68,20 @@ describe("selectRelevantDocumentation", () => {
 
     expect(result.stages).toContain("application");
     expect(result.knowledge.some((chunk) => /стоимост|валют|курс/u.test(chunk.text))).toBe(true);
+  });
+
+  it("brings back programme-limit guidance when the client switches to parking", () => {
+    const result = selectRelevantDocumentation({
+      facts: {
+        vehicleModel: "Camry", vehicleYear: 2002, vehicleValue: 2_623_464, requestedAmount: 787_039,
+        requestedProgram: "without_storage", residenceRegion: "Иссык-Кульская область", residenceCategory: "OTHER_KG"
+      } as any,
+      currentMessage: "стоянка тогда",
+      messages: []
+    });
+
+    expect(result.stages).toContain("application");
+    expect(result.stageInstructions.some((instruction) => instruction.includes("пересчитайте лимит уже для новой программы"))).toBe(true);
   });
 
   it("retrieves vehicle-photo guidance immediately after all required documents arrive", () => {
@@ -72,6 +100,15 @@ describe("selectRelevantDocumentation", () => {
     expect(result.stageInstructions.some((instruction) => instruction.includes("ЭТАП ФОТОГРАФИЙ АВТОМОБИЛЯ"))).toBe(true);
   });
 
+  it("supplies multi-document and electronic-document recognition guidance during document collection", () => {
+    const result = selectRelevantDocumentation({ facts: { vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 1_000_000, requestedAmount: 300_000, requestedProgram: "parking", residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY" } as any, currentMessage: "отправляю ID и СТС", messages: [] });
+
+    const instruction = result.stageInstructions.find((item) => item.includes("ЭТАП ДОКУМЕНТОВ")) ?? "";
+    expect(instruction).toContain("несколько документов на одном фото");
+    expect(instruction).toContain("Электронный документ/скриншот Tunduk");
+    expect(instruction).toContain("отметьте все уверенно различимые части");
+  });
+
   it("continues past document collection after any client file was supplied", () => {
     const result = selectRelevantDocumentation({
       facts: {
@@ -85,5 +122,6 @@ describe("selectRelevantDocumentation", () => {
     });
 
     expect(result.stages[0]).toBe("vehicle_photos");
+    expect(result.stageInstructions.some((instruction) => instruction.includes("этап документов окончательно закрыт"))).toBe(true);
   });
 });
