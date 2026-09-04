@@ -390,6 +390,12 @@ describe("single-agent dialogue", () => {
     expect(reply).toBe("Здравствуйте! Я Айлин, менеджер.\n\nПо официальному курсу НБКР: 6 000 долларов США — ориентировочно 524 700 сом.\n\nПодскажите год автомобиля.");
   });
 
+  it("removes reformulated currency echoes from the model reply", () => {
+    const currency = "По текущему курсу НБКР:\n• Стоимость автомобиля: 30 000 долларов США — ориентировочно 2 610 000 сом.\n• Необходимая сумма займа: 10 000 долларов США — ориентировочно 870 000 сом.";
+    const reply = composeReply("• Camry — автомобиль ориентировочно 2 610 000 сом. • 10 000 USD, ориентировочно 870 000 сом. Подскажите программу.", currency);
+    expect(reply).toBe(`${currency}\n\nПодскажите программу.`);
+  });
+
   it("persists a validated patch and preserves the public result shape", async () => {
     const application = { id: "app", facts: {}, contactId: "contact", stage: "NEW", status: "need_more_data" } as any;
     const conversation = { id: "conversation", messages: [], application, channel: "web-test" } as any;
