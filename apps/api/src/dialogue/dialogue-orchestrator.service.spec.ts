@@ -95,6 +95,16 @@ describe("single-agent dialogue", () => {
     expect(result.clientText).toContain("Необходимая сумма займа: 10 000 долларов США — ориентировочно 870 000 сом.");
   });
 
+  it("persists and presents a conversion when the client named only one price", async () => {
+    const integrations = { convertToSom: vi.fn().mockResolvedValue({ available: true, value: 524_700, currency: "USD", rate: 87.45, nominal: 1, source: "NBKR", effectiveDate: "2026-09-04" }) } as any;
+    const result = await resolveNormalizedMoneyFacts([
+      { field: "requestedAmount", amount: 6_000, currency: "USD", confidence: 1 }
+    ], integrations);
+
+    expect(result.facts).toMatchObject({ requestedAmount: 524_700, requestedAmountSourceCurrency: "USD" });
+    expect(result.clientText).toBe("По текущему курсу НБКР:\n• Необходимая сумма займа: 6 000 долларов США — ориентировочно 524 700 сом.");
+  });
+
   it("keeps the requested amount when the model binds yes to a parking-program offer", async () => {
     process.env.DATABASE_URL ??= "postgresql://test:test@localhost:5432/ailyn";
     process.env.REDIS_URL ??= "redis://localhost:6379";
