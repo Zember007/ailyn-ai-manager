@@ -43,6 +43,7 @@ describe("selectRelevantDocumentation", () => {
     expect(result.knowledge.some((chunk) => chunk.section === "5.15")).toBe(true);
     expect(result.knowledge.some((chunk) => chunk.section === "5.16")).toBe(true);
     expect(result.stageInstructions).toHaveLength(2);
+    expect(result.stageInstructions.some((instruction) => instruction.includes("разрешено только в первом объяснении условия"))).toBe(true);
   });
 
   it("requires a guarantor for an OTHER_KG without-storage card", () => {
