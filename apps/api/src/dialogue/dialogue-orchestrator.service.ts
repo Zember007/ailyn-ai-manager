@@ -21,13 +21,15 @@ export class DialogueOrchestratorService {
     const { conversation, application: initialApplication } = await this.store.getOrCreateConversation({ externalContactId: message.externalContactId, externalConversationId: message.externalConversationId, channel: message.channel });
     const inbound = await this.store.addMessage(conversation, { author: "client", body: message.text?.trim() ?? "", attachmentIds: [], attachments: [], metadata: { externalMessageId: message.externalMessageId, channel: message.channel } });
     const turnMessages = [...conversation.messages, inbound];
-    const normalizedMoney = this.agent.normalizeMoney
+    const settings = await this.settings.getValues();
+    // The dialogue model sees every message first and explicitly signals
+    // whether it found a monetary value. Running the specialised normalizer
+    // only then removes one model round trip from ordinary answers.
+    const turn = await this.agent.run({ conversationId: conversation.id, messages: turnMessages, facts: initialApplication.facts, settings, text: message.text, attachments: message.attachments });
+    const normalizedMoney = turn.result?.hasMoney && this.agent.normalizeMoney
       ? await this.agent.normalizeMoney({ text: message.text, facts: initialApplication.facts, messages: turnMessages })
       : [];
     const currency = await resolveNormalizedMoneyFacts(normalizedMoney, this.integrations);
-    const settings = await this.settings.getValues();
-    const inputFacts = { ...initialApplication.facts, ...currency.facts };
-    const turn = await this.agent.run({ conversationId: conversation.id, messages: turnMessages, facts: inputFacts, settings, text: message.text, attachments: message.attachments, currencyConversions: currency.conversions });
     let application = initialApplication;
     let changedFactKeys: string[] = [];
     let managerEvent: "initial" | "delta" | null = null;

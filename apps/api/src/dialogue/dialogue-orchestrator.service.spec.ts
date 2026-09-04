@@ -6,12 +6,42 @@ process.env.DATABASE_URL ??= "postgresql://test:test@localhost:5432/ailyn";
 process.env.REDIS_URL ??= "redis://localhost:6379";
 
 const validResult = {
-  reply: "Подскажите, пожалуйста, модель и год выпуска автомобиля.", language: "ru", intent: "new_loan", leadCardPatch: { vehicleMake: "Toyota", vehicleYear: 2020 }, cardSummary: "Toyota 2020, ожидаются остальные данные.",
+  reply: "Подскажите, пожалуйста, модель и год выпуска автомобиля.", hasMoney: false, language: "ru", intent: "new_loan", leadCardPatch: { vehicleMake: "Toyota", vehicleYear: 2020 }, cardSummary: "Toyota 2020, ожидаются остальные данные.",
   dialogueState: { stage: "COLLECTING_VALUE", status: "need_more_data", nextAction: "Запросить стоимость" }, targetEvent: null,
   managerUpdate: { kind: "none", changedFields: [] }, attachments: []
 };
 
 describe("single-agent dialogue", () => {
+  it("runs money normalization only after the agent explicitly detected money", async () => {
+    const application = { id: "app", facts: {}, contactId: "contact", stage: "NEW", status: "need_more_data" } as any;
+    const conversation = { id: "conversation", messages: [], application, channel: "web-test" } as any;
+    const store = { getOrCreateConversation: vi.fn().mockResolvedValue({ conversation, application }), addMessage: vi.fn().mockResolvedValue({ id: "inbound", author: "client", body: "нужно 6к долларов", createdAt: "now" }), updateFacts: vi.fn().mockResolvedValue(["requestedAmount"]), saveAgentState: vi.fn(), getApplication: vi.fn().mockResolvedValue(application), getConversation: vi.fn().mockResolvedValue(conversation), addAttachment: vi.fn(), createManagerNotification: vi.fn() } as any;
+    const agent = {
+      run: vi.fn().mockResolvedValue({ result: { ...validResult, hasMoney: true, leadCardPatch: {} }, reply: "Подскажите стоимость автомобиля.", model: "one", promptVersion: "v1" }),
+      normalizeMoney: vi.fn().mockResolvedValue([{ field: "requestedAmount", amount: 6_000, currency: "USD", confidence: 0.99 }])
+    } as any;
+    const integrations = { convertToSom: vi.fn().mockResolvedValue({ available: true, value: 524_700, currency: "USD", rate: 87.45, nominal: 1, source: "NBKR", effectiveDate: "2026-09-04" }) } as any;
+
+    await new DialogueOrchestratorService(agent, store, { getValues: vi.fn().mockResolvedValue({}) } as any, { log: vi.fn() } as any, integrations)
+      .receive({ externalMessageId: "m", channel: "web-test", externalContactId: "c", text: "нужно 6к долларов", attachments: [], timestamp: new Date() });
+
+    expect(agent.run).toHaveBeenCalledTimes(1);
+    expect(agent.normalizeMoney).toHaveBeenCalledTimes(1);
+    expect(store.updateFacts).toHaveBeenCalledWith(application, expect.objectContaining({ requestedAmount: 524_700, requestedAmountSourceCurrency: "USD" }));
+  });
+
+  it("does not normalize money after an ordinary agent turn", async () => {
+    const application = { id: "app", facts: {}, contactId: "contact", stage: "NEW", status: "need_more_data" } as any;
+    const conversation = { id: "conversation", messages: [], application, channel: "web-test" } as any;
+    const store = { getOrCreateConversation: vi.fn().mockResolvedValue({ conversation, application }), addMessage: vi.fn().mockResolvedValue({ id: "inbound", author: "client", body: "да", createdAt: "now" }), updateFacts: vi.fn().mockResolvedValue([]), saveAgentState: vi.fn(), getApplication: vi.fn().mockResolvedValue(application), getConversation: vi.fn().mockResolvedValue(conversation), addAttachment: vi.fn(), createManagerNotification: vi.fn() } as any;
+    const agent = { run: vi.fn().mockResolvedValue({ result: validResult, reply: validResult.reply, model: "one", promptVersion: "v1" }), normalizeMoney: vi.fn() } as any;
+
+    await new DialogueOrchestratorService(agent, store, { getValues: vi.fn().mockResolvedValue({}) } as any, { log: vi.fn() } as any)
+      .receive({ externalMessageId: "m", channel: "web-test", externalContactId: "c", text: "да", attachments: [], timestamp: new Date() });
+
+    expect(agent.normalizeMoney).not.toHaveBeenCalled();
+  });
+
   it("normalizes both monetary roles through the model contract", async () => {
     process.env.DATABASE_URL ??= "postgresql://test:test@localhost:5432/ailyn";
     process.env.REDIS_URL ??= "redis://localhost:6379";
@@ -37,6 +67,21 @@ describe("single-agent dialogue", () => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ values: [{ field: "requestedAmount", amount: 600_000, currency: "KZT", confidence: 0.9 }] }) } }] }) } as any;
     const result = await new AgentTurnService(client).normalizeMoney({ text: "на 600к", facts: {}, messages: [] });
     expect(result).toEqual([{ field: "requestedAmount", amount: 600_000, currency: "KGS", confidence: 0.9 }]);
+  });
+
+  it("does not persist a notary fee from Ailyn's message as the client's loan amount", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult,
+      hasMoney: false,
+      leadCardPatch: { requestedAmount: 1_500, familyStatus: "married" }
+    }) } }] }) } as any;
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "Согласие можно оформить у нотариуса в нашем здании за 1500 сом.", createdAt: "now" } as any],
+      facts: {}, settings: {}, text: "да", attachments: []
+    });
+
+    expect(output.result?.leadCardPatch).toEqual(expect.objectContaining({ familyStatus: "married" }));
+    expect(output.result?.leadCardPatch.requestedAmount).toBeUndefined();
   });
 
   it("keeps the shared thousand multiplier and explains both converted roles", async () => {
@@ -115,6 +160,16 @@ describe("single-agent dialogue", () => {
     expect(context.commonKnowledge.some((chunk: { section: string }) => chunk.section === "5.1")).toBe(true);
     expect(context.relevantStages).toContain("application");
     expect(request.messages[1].content).toEqual(expect.arrayContaining([expect.objectContaining({ type: "image_url" })]));
+  });
+
+  it("provides a server-built working-day calendar for a visit request", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify(validResult) } }] }) } as any;
+    const service = new AgentTurnService(client);
+    await service.run({ messages: [], facts: {}, settings: { timezone: "Asia/Bishkek" }, text: "завтра в 2", attachments: [] });
+
+    const context = JSON.parse((client.createChatCompletion.mock.calls[0][0].messages[1].content as Array<{ type: string; text?: string }>)[0].text ?? "{}");
+    expect(context.visitCalendar.officeHours).toContain("ПН–ПТ");
+    expect(context.visitCalendar.dates).toEqual(expect.arrayContaining([expect.objectContaining({ weekday: "суббота", working: false }), expect.objectContaining({ weekday: "воскресенье", working: false })]));
   });
 
   it("ignores derived or unknown fields inside the lead card patch", async () => {

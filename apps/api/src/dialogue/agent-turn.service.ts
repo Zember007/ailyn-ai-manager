@@ -18,6 +18,7 @@ const PROMPT_VERSION = "single-agent-v3";
 const NEUTRAL_REPLY = "Извините, сейчас не удалось обработать сообщение. Пожалуйста, напишите ещё раз или обратитесь к сотрудникам компании.";
 const MAX_MODEL_ATTEMPTS = 3;
 const MAX_LOG_VALUE_LENGTH = 4000;
+const unnormalizedMoneyFactKeys = new Set(["vehicleValue", "requestedAmount", "vehicleValueSourceCurrency", "requestedAmountSourceCurrency"]);
 const NORMALIZER_PROMPT = `Вы — технический JSON-нормализатор ответа менеджера.
 Верните только один валидный JSON строго по переданной схеме AgentTurnResult.
 Исправляйте только формат, типы, допустимые имена полей и лишние поля; не меняйте смысл reply и не придумывайте факты.
@@ -197,6 +198,7 @@ function localAttachmentRecovery(input: AgentTurnInput): AgentTurnResult {
   const reply = "Фотографии получили. Продолжаем оформление; если какой-то снимок окажется неразборчивым, я уточню нужную сторону.";
   return {
     reply,
+    hasMoney: false,
     language: input.facts.language ?? "ru",
     intent: "attachments_received_pending_recognition",
     leadCardPatch: input.facts,
@@ -210,9 +212,14 @@ function localAttachmentRecovery(input: AgentTurnInput): AgentTurnResult {
 }
 
 function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): AgentTurnResult & { reply: string } {
+  // Monetary facts belong exclusively to the turn-local normalizer. The main
+  // dialogue model reads the whole history, so without this boundary it can
+  // mistake an amount mentioned by Ailyn (for example a notary fee) for the
+  // client's requested loan amount.
+  const modelPatch = withoutUnnormalizedMoney(parsed.leadCardPatch);
   const effectiveFacts = effectiveFactsForTurn({
     previous: input.facts,
-    modelPatch: parsed.leadCardPatch,
+    modelPatch,
     explicitFacts: {},
     currencyFacts: {},
     attachmentFacts: attachmentFactsFromResult(input.facts, parsed.attachments)
@@ -224,6 +231,10 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     leadCardPatch: effectiveFacts,
     reply: separateQuestions(removeRepeatedGreeting(parsed.reply, input.messages))
   };
+}
+
+function withoutUnnormalizedMoney(patch: Partial<ApplicationFacts>): Partial<ApplicationFacts> {
+  return Object.fromEntries(Object.entries(patch).filter(([key]) => !unnormalizedMoneyFactKeys.has(key))) as Partial<ApplicationFacts>;
 }
 
 function truncateLogValue(value: unknown): string {
@@ -278,7 +289,11 @@ function buildMessage(input: { messages: Stage1Message[]; facts: ApplicationFact
   const settings = input.settings as Record<string, unknown>;
   const timezone = typeof settings.timezone === "string" ? settings.timezone : "Asia/Bishkek";
   const retrieval = selectRelevantDocumentation({ facts: input.facts, currentMessage: input.text, messages: input.messages });
-  const context = { now: currentDateTime(timezone), timezone, history: input.messages.map(({ author, body, createdAt }) => ({ author, text: body, createdAt })), leadCard: input.facts, settings: input.settings, currentMessage: input.text ?? "", currencyConversions: input.currencyConversions ?? [], commonKnowledge: retrieval.commonKnowledge, relevantStages: retrieval.stages, stageInstructions: retrieval.stageInstructions, knowledge: retrieval.knowledge };
+  const now = currentDateTime(timezone);
+  // Date arithmetic is not delegated to the language model. The calendar is
+  // only attached when a visit is relevant, so ordinary turns stay compact.
+  const visitCalendar = retrieval.stages.includes("visit") ? buildVisitCalendar(now) : undefined;
+  const context = { now, timezone, history: input.messages.map(({ author, body, createdAt }) => ({ author, text: body, createdAt })), leadCard: input.facts, settings: input.settings, currentMessage: input.text ?? "", currencyConversions: input.currencyConversions ?? [], ...(visitCalendar ? { visitCalendar } : {}), commonKnowledge: retrieval.commonKnowledge, relevantStages: retrieval.stages, stageInstructions: retrieval.stageInstructions, knowledge: retrieval.knowledge };
   const parts: Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string; detail: "high" } }> = [{ type: "text", text: JSON.stringify(context) }];
   for (const attachment of input.attachments) {
     parts.push({ type: "text", text: JSON.stringify({ attachment: { id: attachment.id, fileName: attachment.fileName, mimeType: attachment.mimeType, textContent: attachment.textContent, metadata: attachment.metadata } }) });
@@ -299,6 +314,22 @@ function currentDateTime(timezone: string) {
   }).formatToParts(new Date());
   const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((item) => item.type === type)?.value ?? "00";
   return `${part("year")}-${part("month")}-${part("day")}T${part("hour")}:${part("minute")}:00`;
+}
+
+function buildVisitCalendar(now: string) {
+  const [year, month, day] = now.slice(0, 10).split("-").map(Number);
+  const start = new Date(Date.UTC(year, (month ?? 1) - 1, day ?? 1));
+  const weekday = new Intl.DateTimeFormat("ru-RU", { weekday: "long", timeZone: "UTC" });
+  return {
+    officeHours: "ПН–ПТ 11:00–19:00; для оформления приехать не позднее 18:00",
+    dates: Array.from({ length: 15 }, (_, offset) => {
+      const date = new Date(start);
+      date.setUTCDate(start.getUTCDate() + offset);
+      const isoDate = date.toISOString().slice(0, 10);
+      const dayOfWeek = date.getUTCDay();
+      return { date: isoDate, weekday: weekday.format(date), working: dayOfWeek !== 0 && dayOfWeek !== 6 };
+    })
+  };
 }
 
 function loadPrompt(name: string) {

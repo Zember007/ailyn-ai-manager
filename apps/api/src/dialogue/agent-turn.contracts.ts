@@ -12,6 +12,9 @@ const applicationFactsPatchSchema = z.object({
 
 export const agentTurnResultSchema = z.object({
   reply: z.string().min(1).max(4000),
+  // This is a routing signal, not a lead-card fact. It lets the orchestrator
+  // pay for money normalization only on turns that actually contain a value.
+  hasMoney: z.boolean().default(false),
   language: z.enum(["ru", "kg", "mixed", "unknown"]),
   intent: z.string().min(1).max(120),
   leadCardPatch: applicationFactsPatchSchema,
