@@ -39,7 +39,7 @@ export class DialogueOrchestratorService {
       ? await this.agent.normalizeMoney({ text, facts: initialApplication.facts, messages: turnMessages, signal: options.signal })
       : [];
     throwIfAborted(options.signal);
-    const currency = await resolveNormalizedMoneyFacts(normalizedMoney, this.integrations);
+    const currency = await resolveNormalizedMoneyFacts(normalizedMoney, this.integrations, initialApplication.facts);
     let application = initialApplication;
     let changedFactKeys: string[] = [];
     let managerEvent: "initial" | "delta" | null = null;
@@ -156,7 +156,7 @@ export async function resolveForeignCurrencyFacts(text: string | undefined, curr
   return { facts, conversions, clientText };
 }
 
-export async function resolveNormalizedMoneyFacts(values: NormalizedMoneyValue[], integrations?: DeferredIntegrationsService): Promise<{ facts: Partial<ApplicationFacts>; conversions: { role: "requestedAmount" | "vehicleValue"; amount: number; currency: ForeignMoneyCurrencyCode; somValue: number; effectiveDate: string }[]; clientText?: string }> {
+export async function resolveNormalizedMoneyFacts(values: NormalizedMoneyValue[], integrations?: DeferredIntegrationsService, existingFacts?: ApplicationFacts): Promise<{ facts: Partial<ApplicationFacts>; conversions: { role: "requestedAmount" | "vehicleValue"; amount: number; currency: ForeignMoneyCurrencyCode; somValue: number; effectiveDate: string }[]; clientText?: string }> {
   if (values.length === 0) return { facts: {}, conversions: [] };
   const facts: Partial<ApplicationFacts> = {};
   const conversions: { role: "requestedAmount" | "vehicleValue"; amount: number; currency: ForeignMoneyCurrencyCode; somValue: number; effectiveDate: string }[] = [];
@@ -165,12 +165,16 @@ export async function resolveNormalizedMoneyFacts(values: NormalizedMoneyValue[]
     if (seen.has(value.field)) continue;
     seen.add(value.field);
     if (value.currency === "KGS") {
+      if (existingFacts?.[value.field] === Math.round(value.amount)) continue;
       facts[value.field] = Math.round(value.amount);
       continue;
     }
     if (!integrations) continue;
     const conversion = await integrations.convertToSom({ amount: value.amount, currency: value.currency });
     if (!conversion.available) continue;
+    // The normalizer can repeat an amount visible in the prior assistant
+    // message. Do not turn that into a second public currency block.
+    if (existingFacts?.[value.field] === conversion.value) continue;
     facts[value.field] = conversion.value;
     facts[value.field === "requestedAmount" ? "requestedAmountSourceCurrency" : "vehicleValueSourceCurrency"] = value.currency;
     conversions.push({ role: value.field, amount: value.amount, currency: value.currency, somValue: conversion.value, effectiveDate: conversion.effectiveDate });
