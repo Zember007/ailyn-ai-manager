@@ -14,11 +14,14 @@ export function ConversationWorkspace({
 }>) {
   const [conversation, setConversation] = useState(initialConversation);
   const [feedback, setFeedback] = useState(initialFeedback ?? null);
-  const [isPendingReply, setIsPendingReply] = useState(false);
-  const [optimisticMessage, setOptimisticMessage] = useState<Stage1Message | null>(null);
+  const [pendingReplyCount, setPendingReplyCount] = useState(0);
+  const isPendingReply = pendingReplyCount > 0;
+  const [optimisticMessages, setOptimisticMessages] = useState<Stage1Message[]>([]);
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const application = conversation.application;
-  const displayedMessages = optimisticMessage ? [...conversation.messages, optimisticMessage] : conversation.messages;
+  // Do not replace a pending client message with the next one: a user can
+  // send several short messages while Ailyn's combined turn is being queued.
+  const displayedMessages = [...conversation.messages, ...optimisticMessages];
   const conversationAttachments = flattenAttachments(displayedMessages);
   const latestAi = [...displayedMessages].reverse().find((message) => message.author === "ai");
 
@@ -34,7 +37,7 @@ export function ConversationWorkspace({
   }, [conversation.messages, isPendingReply]);
 
   function handleSuccess(payload: TestChatSendResponse) {
-    setOptimisticMessage(null);
+    setOptimisticMessages([]);
     setConversation({
       ...payload.conversation,
       application: payload.application ?? payload.conversation.application
@@ -43,7 +46,7 @@ export function ConversationWorkspace({
   }
 
   function handleError(code: string) {
-    setOptimisticMessage(null);
+    setOptimisticMessages([]);
     setFeedback(toFeedbackMessage(code) ?? { tone: "error", text: `Backend вернул ошибку: ${code}` });
   }
 
@@ -69,10 +72,10 @@ export function ConversationWorkspace({
             conversationId={conversation.id}
             onError={handleError}
             onSubmitStart={({ message, files }) => {
-              setOptimisticMessage(buildOptimisticMessage(conversation.id, message, files));
+              setOptimisticMessages((current) => [...current, buildOptimisticMessage(conversation.id, message, files)]);
             }}
             onPendingChange={(pending) => {
-              setIsPendingReply(pending);
+              setPendingReplyCount((count) => Math.max(0, count + (pending ? 1 : -1)));
               if (pending) {
                 setFeedback(toFeedbackMessage("message_send_in_progress"));
               }

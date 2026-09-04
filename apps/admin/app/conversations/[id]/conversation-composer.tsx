@@ -24,7 +24,8 @@ export function ConversationComposer({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [files, setFiles] = useState<File[]>([]);
   const [message, setMessage] = useState("");
-  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [inFlightCount, setInFlightCount] = useState(0);
+  const isSubmitting = inFlightCount > 0;
   const totalSizeLabel = formatBytes(files.reduce((sum, file) => sum + file.size, 0));
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -43,7 +44,7 @@ export function ConversationComposer({
       payload.append("files", file, file.name);
     }
 
-    setIsSubmitting(true);
+    setInFlightCount((count) => count + 1);
     setMessage("");
     setFiles([]);
     if (fileInputRef.current) {
@@ -68,7 +69,7 @@ export function ConversationComposer({
     } catch {
       onError("api_unavailable");
     } finally {
-      setIsSubmitting(false);
+      setInFlightCount((count) => Math.max(0, count - 1));
       onPendingChange(false);
     }
   }
@@ -79,7 +80,6 @@ export function ConversationComposer({
       <div className="composerInputRow">
         <button
           className="composerAttach"
-          disabled={isSubmitting}
           onClick={(event) => {
             event.preventDefault();
             fileInputRef.current?.click();
@@ -94,10 +94,18 @@ export function ConversationComposer({
           onChange={(event) => {
             setMessage(event.target.value);
           }}
+          onKeyDown={(event) => {
+            // Enter sends the turn; Ctrl+Enter intentionally retains the
+            // ordinary textarea newline, as in common chat applications.
+            if (event.key === "Enter" && !event.ctrlKey) {
+              event.preventDefault();
+              event.currentTarget.form?.requestSubmit();
+            }
+          }}
           placeholder="Напишите сообщение клиенту от имени тестового пользователя"
           value={message}
         />
-        <button disabled={isSubmitting} type="submit">
+        <button type="submit">
           {isSubmitting ? "Отправляем..." : "Отправить"}
         </button>
       </div>
@@ -121,7 +129,6 @@ export function ConversationComposer({
               <div className="attachmentPill pending" key={`${file.name}-${file.size}-${index}`}>
                 <span>{file.name}</span>
                 <button
-                  disabled={isSubmitting}
                   onClick={(event) => {
                     event.preventDefault();
                     const nextFiles = files.filter((_, currentIndex) => currentIndex !== index);

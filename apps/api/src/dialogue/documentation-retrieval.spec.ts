@@ -59,6 +59,7 @@ describe("selectRelevantDocumentation", () => {
     expect(result.stages[0]).toBe("guarantor");
     expect(result.stageInstructions.some((instruction) => instruction.includes("Сначала рассчитайте и сообщите предварительный лимит без изъятия"))).toBe(true);
     expect(result.stageInstructions.some((instruction) => instruction.includes("вопрос поручителя пока ЗАПРЕЩЁН"))).toBe(true);
+    expect(result.stageInstructions.some((instruction) => instruction.includes("ЖЁСТКОЕ ПРАВИЛО"))).toBe(true);
   });
 
   it("brings back application guidance when a client changes an earlier price", () => {

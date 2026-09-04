@@ -18,17 +18,27 @@ export class DialogueOrchestratorService {
   constructor(private readonly agent: AgentTurnService, private readonly store: Stage1StoreService, private readonly settings: SettingsService, private readonly logs: BackendLogsService, private readonly integrations?: DeferredIntegrationsService) {}
 
   async receive(message: InboundMessage): Promise<DialogueResult> {
-    const { conversation, application: initialApplication } = await this.store.getOrCreateConversation({ externalContactId: message.externalContactId, externalConversationId: message.externalConversationId, channel: message.channel });
-    const inbound = await this.store.addMessage(conversation, { author: "client", body: message.text?.trim() ?? "", attachmentIds: [], attachments: [], metadata: { externalMessageId: message.externalMessageId, channel: message.channel } });
-    const turnMessages = [...conversation.messages, inbound];
+    return this.receiveBatch([message]);
+  }
+
+  async receiveBatch(messages: InboundMessage[], options: { signal?: AbortSignal } = {}): Promise<DialogueResult> {
+    if (messages.length === 0) throw new Error("dialogue_batch_empty");
+    const firstMessage = messages[0]!;
+    const lastMessage = messages.at(-1)!;
+    const { conversation, application: initialApplication } = await this.store.getOrCreateConversation({ externalContactId: firstMessage.externalContactId, externalConversationId: firstMessage.externalConversationId, channel: firstMessage.channel });
+    const inbounds = await Promise.all(messages.map((message) => this.store.addMessage(conversation, { author: "client", body: message.text?.trim() ?? "", attachmentIds: [], attachments: [], metadata: { externalMessageId: message.externalMessageId, channel: message.channel } })));
+    const turnMessages = [...conversation.messages, ...inbounds];
+    const text = messages.map((message) => message.text?.trim()).filter((value): value is string => Boolean(value)).join("\n");
+    const attachments = messages.flatMap((message) => message.attachments);
     const settings = await this.settings.getValues();
     // The dialogue model sees every message first and explicitly signals
     // whether it found a monetary value. Running the specialised normalizer
     // only then removes one model round trip from ordinary answers.
-    const turn = await this.agent.run({ conversationId: conversation.id, messages: turnMessages, facts: initialApplication.facts, settings, text: message.text, attachments: message.attachments });
+    const turn = await this.agent.run({ conversationId: conversation.id, messages: turnMessages, facts: initialApplication.facts, settings, text, attachments, signal: options.signal });
     const normalizedMoney = turn.result?.hasMoney && this.agent.normalizeMoney
-      ? await this.agent.normalizeMoney({ text: message.text, facts: initialApplication.facts, messages: turnMessages })
+      ? await this.agent.normalizeMoney({ text, facts: initialApplication.facts, messages: turnMessages, signal: options.signal })
       : [];
+    throwIfAborted(options.signal);
     const currency = await resolveNormalizedMoneyFacts(normalizedMoney, this.integrations);
     let application = initialApplication;
     let changedFactKeys: string[] = [];
@@ -43,7 +53,7 @@ export class DialogueOrchestratorService {
         // A file is evidence supplied by the client even when the vision model
         // cannot reliably name every document/side in it. Persist that fact so
         // the dialogue never asks for a replacement set.
-        ...(message.attachments.length > 0 ? { documentsProvided: true } : {})
+        ...(attachments.length > 0 ? { documentsProvided: true } : {})
       };
       const effectiveFacts = effectiveFactsForTurn({ previous: initialApplication.facts, modelPatch, explicitFacts: {}, currencyFacts: currency.facts, attachmentFacts });
       changedFactKeys = await this.store.updateFacts(application, effectiveFacts);
@@ -67,23 +77,30 @@ export class DialogueOrchestratorService {
     // Keep the uploaded files even if RouterAI is unavailable. Recognition can
     // be retried later, but a temporary model outage must not discard client
     // documents or turn their upload into a system-error response.
-    for (const attachment of message.attachments) {
+    for (const attachment of attachments) {
       const recognized = turn.result?.attachments.find((item) => item.attachmentId === attachment.id);
-      await this.store.addAttachment({ conversationId: conversation.id, messageId: inbound.id, type: recognized?.type ?? "unknown", status: recognized?.status ?? "received", fileName: attachment.fileName, mimeType: attachment.mimeType, byteSize: typeof attachment.metadata?.byteSize === "number" ? attachment.metadata.byteSize : undefined, storageKey: typeof attachment.metadata?.storageKey === "string" ? attachment.metadata.storageKey : undefined });
+      const inbound = inbounds[messages.findIndex((message) => message.attachments.some((candidate) => candidate.id === attachment.id))] ?? inbounds.at(-1);
+      await this.store.addAttachment({ conversationId: conversation.id, messageId: inbound?.id, type: recognized?.type ?? "unknown", status: recognized?.status ?? "received", fileName: attachment.fileName, mimeType: attachment.mimeType, byteSize: typeof attachment.metadata?.byteSize === "number" ? attachment.metadata?.byteSize : undefined, storageKey: typeof attachment.metadata?.storageKey === "string" ? attachment.metadata?.storageKey : undefined });
     }
     // Preserve the client's progress even if the model was temporarily unable
     // to classify the upload or return a valid answer for this turn.
-    if (message.attachments.length > 0 && !application.facts.documentsProvided) {
+    if (attachments.length > 0 && !application.facts.documentsProvided) {
       await this.store.updateFacts(application, { documentsProvided: true });
       application = (await this.store.getApplication(application.id)) ?? application;
     }
     const validation = { passed: Boolean(turn.result), errors: turn.error ? [turn.error] : [] };
     const reply = composeReply(turn.reply, currency.clientText);
-    await this.store.addMessage(conversation, { author: "ai", body: reply, attachmentIds: [], attachments: [], metadata: { sourceMessageId: inbound.id, routerAiModel: turn.model, promptVersion: turn.promptVersion, validation, trace: { singleModel: true, changedFactKeys, managerEvent, intent: turn.result?.intent, targetEvent: turn.result?.targetEvent } } });
+    await this.store.addMessage(conversation, { author: "ai", body: reply, attachmentIds: [], attachments: [], metadata: { sourceMessageId: lastMessage.externalMessageId, routerAiModel: turn.model, promptVersion: turn.promptVersion, validation, trace: { singleModel: true, batchedClientMessages: messages.length, changedFactKeys, managerEvent, intent: turn.result?.intent, targetEvent: turn.result?.targetEvent } } });
     const refreshedConversation = (await this.store.getConversation(conversation.id)) ?? conversation;
     const refreshedApplication = (await this.store.getApplication(application.id)) ?? refreshedConversation.application ?? application;
     void this.logs.log("dialogue.single-agent", "Processed dialogue turn", { conversationId: conversation.id, metadata: { applicationId: refreshedApplication.id, validModelResult: Boolean(turn.result), model: turn.model } });
     return { conversation: refreshedConversation, application: refreshedApplication, reply, validation, routerAiModel: turn.model, promptVersion: turn.promptVersion };
+  }
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) {
+    throw new DOMException("Dialogue turn superseded by a newer client message", "AbortError");
   }
 }
 

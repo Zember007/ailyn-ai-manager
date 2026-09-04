@@ -6,6 +6,8 @@ const ROUTERAI_CHAT_COMPLETIONS_URL = "https://routerai.ru/api/v1/chat/completio
 
 interface RouterAiRequestOptions {
   timeoutMs?: number;
+  /** Cancels an obsolete dialogue turn when a newer client message arrives. */
+  signal?: AbortSignal;
 }
 
 @Injectable()
@@ -23,6 +25,9 @@ export class RouterAiClient {
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? this.config.routerAiTimeoutMs);
+    const abortFromCaller = () => controller.abort();
+    options.signal?.addEventListener("abort", abortFromCaller, { once: true });
+    if (options.signal?.aborted) controller.abort();
 
     try {
       const response = await fetch(ROUTERAI_CHAT_COMPLETIONS_URL, {
@@ -42,6 +47,7 @@ export class RouterAiClient {
       return (await response.json()) as RouterAiChatResponse;
     } finally {
       clearTimeout(timeout);
+      options.signal?.removeEventListener("abort", abortFromCaller);
     }
   }
 }

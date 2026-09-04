@@ -25,7 +25,7 @@ const NORMALIZER_PROMPT = `Вы — технический JSON-нормализ
 Не помещайте preliminaryLimit в leadCardPatch. targetEvent означает только уже достигнутое событие: documents после хотя бы одного вложения на этапе документов, полного комплекта или declinedDocuments=true; visit только после даты и времени; при обычном запросе документов используйте null.
 Не запрашивайте уже полученные документы. Если исходный ответ нельзя безопасно восстановить, верните наиболее консервативный валидный результат без выдуманных фактов.`;
 
-type AgentTurnInput = { messages: Stage1Message[]; facts: ApplicationFacts; settings: object; text?: string; attachments: InboundAttachment[]; currencyConversions?: unknown[]; conversationId?: string };
+type AgentTurnInput = { messages: Stage1Message[]; facts: ApplicationFacts; settings: object; text?: string; attachments: InboundAttachment[]; currencyConversions?: unknown[]; conversationId?: string; signal?: AbortSignal };
 
 @Injectable()
 export class AgentTurnService {
@@ -34,7 +34,7 @@ export class AgentTurnService {
 
   constructor(private readonly client: RouterAiClient, private readonly logs?: BackendLogsService) {}
 
-  async normalizeMoney(input: { text?: string; facts: ApplicationFacts; messages: Stage1Message[] }): Promise<NormalizedMoneyValue[]> {
+  async normalizeMoney(input: { text?: string; facts: ApplicationFacts; messages: Stage1Message[]; signal?: AbortSignal }): Promise<NormalizedMoneyValue[]> {
     if (!this.client.isConfigured() || !input.text?.trim()) return [];
     try {
       const response = await this.client.createChatCompletion({
@@ -50,13 +50,14 @@ export class AgentTurnService {
           // resolve a short answer to its immediately preceding offer.
           { role: "user", content: JSON.stringify({ currentMessage: input.text, lastAssistantMessage: [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "" }) }
         ]
-      }, { timeoutMs: this.config.routerAiTimeoutMs });
+      }, { timeoutMs: this.config.routerAiTimeoutMs, signal: input.signal });
       const parsed = moneyNormalizationSchema.safeParse(JSON.parse(response.choices?.[0]?.message?.content ?? "{}"));
       if (!parsed.success) return [];
       return parsed.data.values.map((value) => value.currency !== "KGS" && !explicitlyMentionsCurrency(input.text, value.currency)
         ? { ...value, currency: "KGS" as const }
         : value);
     } catch (error) {
+      if (input.signal?.aborted) throw error;
       this.logger.warn(`Money normalization unavailable: ${formatError(error)}`);
       return [];
     }
@@ -81,6 +82,7 @@ export class AgentTurnService {
     for (let attempt = 1; attempt <= MAX_MODEL_ATTEMPTS; attempt += 1) {
       let agentResponse: string | undefined;
       try {
+        throwIfAborted(input.signal);
         const retryInstruction = attempt > 1
           ? "\n\nПОВТОРНАЯ ПОПЫТКА: предыдущий ответ не прошёл техническую проверку формата. Верните новый, полностью валидный JSON строго по заданной схеме. Не повторяйте техническое извинение: ответьте клиенту по существу и сохраните только допустимые поля карточки."
           : "";
@@ -89,7 +91,7 @@ export class AgentTurnService {
           ...request,
           messages: [{ role: "system" as const, content: retryInstruction ? `${systemPrompt}${retryInstruction}` : systemPrompt }, userMessage]
         };
-        const response = await this.client.createChatCompletion(attemptRequest, { timeoutMs: this.config.routerAiTimeoutMs });
+        const response = await this.client.createChatCompletion(attemptRequest, { timeoutMs: this.config.routerAiTimeoutMs, signal: input.signal });
         const rawAgentResponse = response.choices?.[0]?.message?.content;
         lastRawAgentResponse = typeof rawAgentResponse === "string" ? rawAgentResponse : undefined;
         agentResponse = truncateLogValue(rawAgentResponse);
@@ -105,6 +107,7 @@ export class AgentTurnService {
         const result = finalizeAgentPayload(parsed.data, input);
         return { result, reply: result.reply, model: response.model ?? this.config.routerAiTextModel ?? "routerai", promptVersion: PROMPT_VERSION };
       } catch (error) {
+        if (input.signal?.aborted) throw error;
         lastError = error instanceof Error ? error.message : String(error);
         attempts.push({ attempt, error: truncateLogValue(lastError), ...(agentResponse ? { agentResponse } : {}) });
         if (isFetchFailure(error) && input.attachments.some((attachment) => Boolean(attachment.contentBase64))) retryWithoutImages = true;
@@ -153,7 +156,7 @@ export class AgentTurnService {
             attachments: input.attachments.map(({ id, fileName, mimeType, textContent, metadata }) => ({ id, fileName, mimeType, textContent, metadata }))
           }) }
         ]
-      }, { timeoutMs: this.config.routerAiTimeoutMs });
+      }, { timeoutMs: this.config.routerAiTimeoutMs, signal: input.signal });
       const content = response.choices?.[0]?.message?.content;
       const payload = normalizeAgentPayload(parseAgentJson(typeof content === "string" ? content : undefined), input.facts);
       const parsed = agentTurnResultSchema.safeParse(payload);
@@ -192,6 +195,12 @@ function explicitlyMentionsCurrency(text: string | undefined, currency: Exclude<
 
 function isFetchFailure(error: unknown): boolean {
   return error instanceof Error && /fetch failed|network|econnreset|enotfound|timeout|aborted/i.test(`${error.name}: ${error.message}`);
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) {
+    throw new DOMException("Dialogue turn superseded by a newer client message", "AbortError");
+  }
 }
 
 function localAttachmentRecovery(input: AgentTurnInput): AgentTurnResult {

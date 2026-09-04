@@ -1,7 +1,7 @@
 import { BadRequestException, Body, Controller, Get, NotFoundException, Post, UploadedFiles, UseInterceptors } from "@nestjs/common";
 import { FilesInterceptor } from "@nestjs/platform-express";
 import { sendTestChatMessageSchema } from "@ailyn/schemas";
-import { DialogueOrchestratorService } from "../dialogue/dialogue-orchestrator.service.js";
+import { DialogueTurnBatcherService } from "../dialogue/dialogue-turn-batcher.service.js";
 import { Stage1StoreService } from "../dialogue/stage1-store.service.js";
 import { BackendLogsService } from "../logs/backend-logs.service.js";
 
@@ -18,7 +18,7 @@ interface TestChatBody {
 @Controller("messages")
 export class MessagesController {
   constructor(
-    private readonly orchestrator: DialogueOrchestratorService,
+    private readonly batcher: DialogueTurnBatcherService,
     private readonly store: Stage1StoreService,
     private readonly logs: BackendLogsService
   ) {}
@@ -103,7 +103,7 @@ export class MessagesController {
       }
     });
 
-    const result = await this.orchestrator.receive(input);
+    const result = await this.batcher.enqueue(input);
 
     return {
       reply: result.reply,

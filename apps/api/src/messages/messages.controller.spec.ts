@@ -11,8 +11,8 @@ describe("MessagesController", () => {
         externalContactId: "web-client-1"
       })
     } as any;
-    const orchestrator = {
-      receive: vi.fn().mockResolvedValue({
+    const batcher = {
+      enqueue: vi.fn().mockResolvedValue({
         reply: "ok",
         conversation: { id: "conv-internal-1", application: { id: "app-1" } },
         application: { id: "app-1" },
@@ -21,7 +21,7 @@ describe("MessagesController", () => {
         promptVersion: "stage1-local-v1"
       })
     } as any;
-    const controller = new MessagesController(orchestrator, store, logs);
+    const controller = new MessagesController(batcher, store, logs);
 
     const result = await controller.testChat({
       conversationId: "conv-internal-1",
@@ -36,7 +36,7 @@ describe("MessagesController", () => {
         conversationId: "conv-internal-1"
       })
     );
-    expect(orchestrator.receive).toHaveBeenCalledWith(
+    expect(batcher.enqueue).toHaveBeenCalledWith(
       expect.objectContaining({
         externalContactId: "web-client-1",
         externalConversationId: "web-conversation-1",
@@ -50,7 +50,7 @@ describe("MessagesController", () => {
     const store = {
       getConversationByIdForChannel: vi.fn().mockResolvedValue(undefined)
     } as any;
-    const controller = new MessagesController({ receive: vi.fn() } as any, store, { log: vi.fn() } as any);
+    const controller = new MessagesController({ enqueue: vi.fn() } as any, store, { log: vi.fn() } as any);
 
     await expect(controller.testChat({ conversationId: "missing-conversation", message: "test" })).rejects.toMatchObject({
       message: "conversation_not_found"
@@ -66,8 +66,8 @@ describe("MessagesController", () => {
         externalContactId: "web-client-1"
       })
     } as any;
-    const orchestrator = {
-      receive: vi.fn().mockResolvedValue({
+    const batcher = {
+      enqueue: vi.fn().mockResolvedValue({
         reply: "ok",
         conversation: { id: "conv-internal-1", application: { id: "app-1" } },
         application: { id: "app-1" },
@@ -76,7 +76,7 @@ describe("MessagesController", () => {
         promptVersion: "stage1-local-v1"
       })
     } as any;
-    const controller = new MessagesController(orchestrator, store, logs);
+    const controller = new MessagesController(batcher, store, logs);
 
     await controller.testChat(
       {
@@ -86,7 +86,7 @@ describe("MessagesController", () => {
       [{ originalname: "car-photo.jpg", mimetype: "image/jpeg", size: 2048, buffer: Buffer.from("image") }]
     );
 
-    expect(orchestrator.receive).toHaveBeenCalledWith(
+    expect(batcher.enqueue).toHaveBeenCalledWith(
       expect.objectContaining({
         attachments: [
           expect.objectContaining({
@@ -111,8 +111,8 @@ describe("MessagesController", () => {
         externalContactId: "web-client-1"
       })
     } as any;
-    const orchestrator = {
-      receive: vi.fn().mockResolvedValue({
+    const batcher = {
+      enqueue: vi.fn().mockResolvedValue({
         reply: "ok",
         conversation: { id: "conv-internal-1", application: { id: "app-1" } },
         application: { id: "app-1" },
@@ -121,7 +121,7 @@ describe("MessagesController", () => {
         promptVersion: "stage1-local-v1"
       })
     } as any;
-    const controller = new MessagesController(orchestrator, store, logs);
+    const controller = new MessagesController(batcher, store, logs);
 
     await controller.testChat(
       {
@@ -131,7 +131,7 @@ describe("MessagesController", () => {
       [{ originalname: "passport-front.txt", mimetype: "text/plain", size: 64, buffer: Buffer.from("ФИО: Иванов Иван Иванович", "utf8") }]
     );
 
-    expect(orchestrator.receive).toHaveBeenCalledWith(
+    expect(batcher.enqueue).toHaveBeenCalledWith(
       expect.objectContaining({
         attachments: [
           expect.objectContaining({
@@ -152,8 +152,8 @@ describe("MessagesController", () => {
         externalContactId: "web-client-1"
       })
     } as any;
-    const orchestrator = {
-      receive: vi
+    const batcher = {
+      enqueue: vi
         .fn()
         .mockResolvedValueOnce({
           reply: "first",
@@ -172,7 +172,7 @@ describe("MessagesController", () => {
           promptVersion: "stage1-local-v1"
         })
     } as any;
-    const controller = new MessagesController(orchestrator, store, logs);
+    const controller = new MessagesController(batcher, store, logs);
 
     const first = await controller.testChat({
       conversationId: "conv-internal-1",
@@ -186,6 +186,6 @@ describe("MessagesController", () => {
     expect(first.conversationId).toBe("conv-internal-1");
     expect(second.conversationId).toBe("conv-internal-1");
     expect(store.getConversationByIdForChannel).toHaveBeenCalledTimes(2);
-    expect(orchestrator.receive).toHaveBeenCalledTimes(2);
+    expect(batcher.enqueue).toHaveBeenCalledTimes(2);
   });
 });
