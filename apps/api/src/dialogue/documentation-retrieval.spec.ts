@@ -9,7 +9,7 @@ describe("selectRelevantDocumentation", () => {
     expect(result.commonKnowledge.length).toBeLessThan(10);
     expect(result.commonKnowledge.some((chunk) => chunk.section === "5.1")).toBe(true);
     expect(result.commonKnowledge.some((chunk) => chunk.section === "5.25")).toBe(true);
-    expect(result.stageInstructions.some((instruction) => instruction.includes("Марку отдельно не запрашивайте"))).toBe(true);
+    expect(result.stageInstructions.some((instruction) => instruction.includes("марку отдельно не спрашивайте"))).toBe(true);
   });
 
   it("does not preload future family or guarantor branches into an application turn", () => {
@@ -17,7 +17,7 @@ describe("selectRelevantDocumentation", () => {
 
     expect(result.stages).toEqual(["application"]);
     expect(result.knowledge.some((chunk) => chunk.primaryStage === "family_status" || chunk.primaryStage === "guarantor")).toBe(false);
-    expect(result.stageInstructions.some((instruction) => instruction.includes("Марку отдельно не запрашивайте"))).toBe(true);
+    expect(result.stageInstructions.some((instruction) => instruction.includes("марку отдельно не спрашивайте"))).toBe(true);
   });
 
   it("retrieves currency guidance when the client provides foreign-currency prices", () => {
@@ -84,7 +84,7 @@ describe("selectRelevantDocumentation", () => {
     });
 
     expect(result.stages).toContain("application");
-    expect(result.stageInstructions.some((instruction) => instruction.includes("пересчитайте лимит уже для новой программы"))).toBe(true);
+    expect(result.stageInstructions.some((instruction) => instruction.includes("пересчитайте и сообщите новый preliminaryLimit"))).toBe(true);
   });
 
   it("retrieves vehicle-photo guidance immediately after all required documents arrive", () => {
