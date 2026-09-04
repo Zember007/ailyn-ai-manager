@@ -9,7 +9,7 @@ describe("selectRelevantDocumentation", () => {
     expect(result.commonKnowledge.length).toBeLessThan(10);
     expect(result.commonKnowledge.some((chunk) => chunk.section === "5.1")).toBe(true);
     expect(result.commonKnowledge.some((chunk) => chunk.section === "5.25")).toBe(true);
-    expect(result.stageInstructions).toEqual([]);
+    expect(result.stageInstructions.some((instruction) => instruction.includes("Марку отдельно не запрашивайте"))).toBe(true);
   });
 
   it("does not preload future family or guarantor branches into an application turn", () => {
@@ -17,7 +17,7 @@ describe("selectRelevantDocumentation", () => {
 
     expect(result.stages).toEqual(["application"]);
     expect(result.knowledge.some((chunk) => chunk.primaryStage === "family_status" || chunk.primaryStage === "guarantor")).toBe(false);
-    expect(result.stageInstructions).toEqual([]);
+    expect(result.stageInstructions.some((instruction) => instruction.includes("Марку отдельно не запрашивайте"))).toBe(true);
   });
 
   it("retrieves currency guidance when the client provides foreign-currency prices", () => {
@@ -30,7 +30,7 @@ describe("selectRelevantDocumentation", () => {
   it("retrieves family and guarantor guidance for a non-Bishkek without-storage application", () => {
     const result = selectRelevantDocumentation({
       facts: {
-        vehicleMake: "Toyota", vehicleYear: 2022, vehicleValue: 1_000_000, requestedAmount: 300_000,
+        vehicleMake: "Toyota", vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 1_000_000, requestedAmount: 300_000,
         requestedProgram: "without_storage", residenceRegion: "Нарын", residenceCategory: "OTHER_KG",
         documents: { id_front: "received", id_back: "received", vehicle_registration_front: "received", vehicle_registration_back: "received" },
         declinedCarPhoto: true
@@ -59,7 +59,7 @@ describe("selectRelevantDocumentation", () => {
   it("retrieves vehicle-photo guidance immediately after all required documents arrive", () => {
     const result = selectRelevantDocumentation({
       facts: {
-        vehicleMake: "Toyota", vehicleYear: 2022, vehicleValue: 1_000_000, requestedAmount: 300_000,
+        vehicleMake: "Toyota", vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 1_000_000, requestedAmount: 300_000,
         requestedProgram: "parking", residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY",
         documents: { id_front: "received", id_back: "received", vehicle_registration_front: "received", vehicle_registration_back: "received" }
       } as any,
@@ -70,5 +70,20 @@ describe("selectRelevantDocumentation", () => {
     expect(result.stages).toContain("vehicle_photos");
     expect(result.knowledge.some((chunk) => chunk.primaryStage === "vehicle_photos")).toBe(true);
     expect(result.stageInstructions.some((instruction) => instruction.includes("ЭТАП ФОТОГРАФИЙ АВТОМОБИЛЯ"))).toBe(true);
+  });
+
+  it("continues past document collection after any client file was supplied", () => {
+    const result = selectRelevantDocumentation({
+      facts: {
+        vehicleMake: "Toyota", vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 1_000_000, requestedAmount: 300_000,
+        requestedProgram: "parking", residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY",
+        documentsProvided: true,
+        documents: { unknown: "received" }
+      } as any,
+      currentMessage: "вот документы",
+      messages: []
+    });
+
+    expect(result.stages[0]).toBe("vehicle_photos");
   });
 });

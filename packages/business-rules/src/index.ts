@@ -98,6 +98,9 @@ export interface ApplicationFacts {
   clientPaused?: boolean;
   clientClosed?: boolean;
   declinedDocuments?: boolean;
+  /** Client has sent one or more files for the document stage. Completeness is
+   * assessed by the manager; the chat must not demand a replacement set. */
+  documentsProvided?: boolean;
   declinedCarPhoto?: boolean;
   ownerFullName?: string;
   ownerResidenceRegion?: string;
@@ -302,8 +305,8 @@ export function evaluateApplication(
     ], forbiddenStatements, blockedRules);
   }
 
-  if (!facts.vehicleMake && !facts.vehicleModel) {
-    return needMore("COLLECTING_VEHICLE", "collect_vehicle", ["vehicleMake", "vehicleModel", "vehicleYear"], rulesApplied, eligiblePrograms, calculatedLimits, flowStatements, forbiddenStatements, blockedRules);
+  if (!facts.vehicleModel) {
+    return needMore("COLLECTING_VEHICLE", "collect_vehicle", ["vehicleModel", "vehicleYear"], rulesApplied, eligiblePrograms, calculatedLimits, flowStatements, forbiddenStatements, blockedRules);
   }
 
   if (!facts.vehicleValue) {
@@ -340,7 +343,10 @@ export function evaluateApplication(
     ], forbiddenStatements, blockedRules);
   }
 
-  const missingDocuments = getMissingDocuments(facts);
+  // Any client upload completes the chat's document-collection stage. The
+  // original file remains available to a manager even when automatic reading
+  // cannot identify every side.
+  const missingDocuments = facts.documentsProvided ? [] : getMissingDocuments(facts);
   if (missingDocuments.length > 0 && !facts.visitRequested && !facts.declinedDocuments) {
     return needMore("COLLECTING_DOCUMENTS", "collect_documents", missingDocuments, rulesApplied, eligiblePrograms, calculatedLimits, [
       ...flowStatements,
@@ -382,7 +388,7 @@ export function evaluateApplication(
     ], forbiddenStatements, blockedRules, documentsTarget);
   }
 
-  if (missingDocuments.length > 0 && facts.declinedDocuments && !facts.visitRequested) {
+  if (missingDocuments.length > 0 && facts.declinedDocuments && !facts.documentsProvided && !facts.visitRequested) {
     rulesApplied.push("documents_declined_originals_on_visit");
     return needMore("SCHEDULING_VISIT", "schedule_visit", ["visitDate", "visitTime"], rulesApplied, eligiblePrograms, calculatedLimits, [
       ...flowStatements,
@@ -494,7 +500,7 @@ function firstRefusal(
   }
   if (normalize(facts.vehicleRegistrationRegion) === "10") {
     rulesApplied.push("region_10_refusal");
-    return "По автомобилям с регионом 10 компания займ не оформляет. Если у Вас есть другой автомобиль, можете написать его марку, модель, год выпуска, примерную стоимость и нужную сумму займа. Если другого автомобиля нет, по этой заявке мы, к сожалению, не сможем продолжить оформление.";
+    return "По автомобилям с регионом 10 компания займ не оформляет. Если у Вас есть другой автомобиль, можете написать его модель, год выпуска, примерную стоимость и нужную сумму займа. Если другого автомобиля нет, по этой заявке мы, к сожалению, не сможем продолжить оформление.";
   }
   if (facts.vehicleRegistrationCountry && normalize(facts.vehicleRegistrationCountry) !== "kg" && normalize(facts.vehicleRegistrationCountry) !== "кр" && normalize(facts.vehicleRegistrationCountry) !== "кыргызстан") {
     rulesApplied.push("foreign_vehicle_registration");

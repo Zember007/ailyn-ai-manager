@@ -80,6 +80,19 @@ describe("business rules", () => {
     expect(result.requiredFacts).toEqual(["familyStatus"]);
   });
 
+  it("continues after any uploaded document even when the individual sides are unknown", () => {
+    const result = evaluateApplication({
+      vehicleMake: "Toyota", vehicleModel: "Camry", vehicleYear: 2021,
+      vehicleValue: 1_500_000, requestedAmount: 500_000, requestedProgram: "parking",
+      residenceRegion: "Бишкек", documentsProvided: true,
+      documents: { unknown: "received" }
+    });
+
+    expect(result.targetEvent).toBe("documents");
+    expect(result.nextAction).toBe("collect_family_status");
+    expect(result.requiredFacts).toEqual(["familyStatus"]);
+  });
+
   it("requires residence before final regional limit decision", () => {
     const result = evaluateApplication({
       vehicleMake: "Toyota",

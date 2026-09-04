@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import { AgentTurnService } from "./agent-turn.service.js";
-import { DialogueOrchestratorService, composeReply, resolveForeignCurrencyFacts } from "./dialogue-orchestrator.service.js";
+import { DialogueOrchestratorService, composeReply, resolveForeignCurrencyFacts, resolveNormalizedMoneyFacts } from "./dialogue-orchestrator.service.js";
+
+process.env.DATABASE_URL ??= "postgresql://test:test@localhost:5432/ailyn";
+process.env.REDIS_URL ??= "redis://localhost:6379";
 
 const validResult = {
   reply: "Подскажите, пожалуйста, модель и год выпуска автомобиля.", language: "ru", intent: "new_loan", leadCardPatch: { vehicleMake: "Toyota", vehicleYear: 2020 }, cardSummary: "Toyota 2020, ожидаются остальные данные.",
@@ -22,6 +25,29 @@ describe("single-agent dialogue", () => {
       { field: "requestedAmount", amount: 10_000, currency: "USD", confidence: 0.99 }
     ]);
     expect(client.createChatCompletion).toHaveBeenCalledTimes(1);
+  });
+
+  it("gives money normalization only the current message and immediate offer context", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ values: [] }) } }] }) } as any;
+    await new AgentTurnService(client).normalizeMoney({ text: "без изъятия", facts: { requestedAmount: 874_488 } as any, messages: [{ author: "client", body: "30 тыс долларов надо 10", createdAt: "now" } as any] });
+    expect(JSON.parse(client.createChatCompletion.mock.calls[0][0].messages[1].content)).toEqual({ currentMessage: "без изъятия", lastAssistantMessage: "" });
+  });
+
+  it("does not accept an invented foreign currency for a compact thousand amount", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ values: [{ field: "requestedAmount", amount: 600_000, currency: "KZT", confidence: 0.9 }] }) } }] }) } as any;
+    const result = await new AgentTurnService(client).normalizeMoney({ text: "на 600к", facts: {}, messages: [] });
+    expect(result).toEqual([{ field: "requestedAmount", amount: 600_000, currency: "KGS", confidence: 0.9 }]);
+  });
+
+  it("keeps the shared thousand multiplier and explains both converted roles", async () => {
+    const integrations = { convertToSom: vi.fn().mockImplementation(async ({ amount, currency }: { amount: number; currency: string }) => ({ available: true, value: amount * 87, currency, rate: 87, nominal: 1, source: "NBKR", sourceUrl: "https://example.test", effectiveDate: "2026-09-03" })) } as any;
+    const result = await resolveNormalizedMoneyFacts([
+      { field: "vehicleValue", amount: 30_000, currency: "USD", confidence: 1 },
+      { field: "requestedAmount", amount: 10_000, currency: "USD", confidence: 1 }
+    ], integrations);
+    expect(result.facts).toMatchObject({ vehicleValue: 2_610_000, requestedAmount: 870_000 });
+    expect(result.clientText).toContain("Стоимость автомобиля: 30 000 долларов США — ориентировочно 2 610 000 сом.");
+    expect(result.clientText).toContain("Необходимая сумма займа: 10 000 долларов США — ориентировочно 870 000 сом.");
   });
 
   it("keeps the requested amount when the model binds yes to a parking-program offer", async () => {
@@ -384,7 +410,7 @@ describe("single-agent dialogue", () => {
     const store = { getOrCreateConversation: vi.fn().mockResolvedValue({ conversation, application }), addMessage: vi.fn().mockResolvedValue({ id: "inbound", author: "client", body: "", createdAt: "now" }), updateFacts: vi.fn().mockResolvedValue(["documents"]), saveAgentState: vi.fn(), getApplication: vi.fn().mockResolvedValue(application), getConversation: vi.fn().mockResolvedValue(conversation), addAttachment: vi.fn(), createManagerNotification: vi.fn() } as any;
     const service = new DialogueOrchestratorService({ run: vi.fn().mockResolvedValue({ result: agentResult, reply: agentResult.reply, model: "one", promptVersion: "v1" }) } as any, store, { getValues: vi.fn().mockResolvedValue({}) } as any, { log: vi.fn() } as any);
     await service.receive({ externalMessageId: "m", channel: "web-test", externalContactId: "c", attachments: [{ id: "front" }, { id: "back" }], timestamp: new Date() });
-    expect(store.updateFacts).toHaveBeenCalledWith(application, expect.objectContaining({ documents: expect.objectContaining({ id_front: "received", id_back: "received" }) }));
+    expect(store.updateFacts).toHaveBeenCalledWith(application, expect.objectContaining({ documents: expect.objectContaining({ id_front: "received", id_back: "received" }), documentsProvided: true }));
     expect(store.addAttachment).toHaveBeenCalledTimes(2);
   });
 

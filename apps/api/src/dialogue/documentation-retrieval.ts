@@ -80,10 +80,10 @@ function relevantStages(facts: ApplicationFacts, current: string): Documentation
 }
 
 function firstIncompleteStage(facts: ApplicationFacts): DocumentationStage {
-  if ((!facts.vehicleMake && !facts.vehicleModel) || !facts.vehicleYear || !facts.vehicleValue || !facts.requestedAmount || !facts.requestedProgram) return "application";
+  if (!facts.vehicleModel || !facts.vehicleYear || !facts.vehicleValue || !facts.requestedAmount || !facts.requestedProgram) return "application";
   if (!facts.residenceRegion || !facts.residenceCategory) return "residence";
   if (facts.requestedProgram === "without_storage" && facts.residenceCategory === "OTHER_KG" && facts.guarantorAvailable === undefined) return "guarantor";
-  const documentsComplete = requiredDocumentKeys.every((key) => facts.documents?.[key] === "received");
+  const documentsComplete = facts.documentsProvided || requiredDocumentKeys.every((key) => facts.documents?.[key] === "received");
   if (!documentsComplete && !facts.declinedDocuments) return "documents";
   if (facts.documents?.car_photo !== "received" && !facts.declinedCarPhoto) return "vehicle_photos";
   if (!facts.familyStatus || facts.familyStatus === "unknown") return "family_status";

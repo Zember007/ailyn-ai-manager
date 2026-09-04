@@ -21,7 +21,7 @@ const MAX_LOG_VALUE_LENGTH = 4000;
 const NORMALIZER_PROMPT = `Вы — технический JSON-нормализатор ответа менеджера.
 Верните только один валидный JSON строго по переданной схеме AgentTurnResult.
 Исправляйте только формат, типы, допустимые имена полей и лишние поля; не меняйте смысл reply и не придумывайте факты.
-Не помещайте preliminaryLimit в leadCardPatch. targetEvent означает только уже достигнутое событие: documents только после получения всех четырёх сторон ID и СТС, visit только после даты и времени; при обычном запросе документов используйте null.
+Не помещайте preliminaryLimit в leadCardPatch. targetEvent означает только уже достигнутое событие: documents после хотя бы одного вложения на этапе документов, полного комплекта или declinedDocuments=true; visit только после даты и времени; при обычном запросе документов используйте null.
 Не запрашивайте уже полученные документы. Если исходный ответ нельзя безопасно восстановить, верните наиболее консервативный валидный результат без выдуманных фактов.`;
 
 type AgentTurnInput = { messages: Stage1Message[]; facts: ApplicationFacts; settings: object; text?: string; attachments: InboundAttachment[]; currencyConversions?: unknown[]; conversationId?: string };
@@ -37,18 +37,24 @@ export class AgentTurnService {
     if (!this.client.isConfigured() || !input.text?.trim()) return [];
     try {
       const response = await this.client.createChatCompletion({
-        model: this.config.routerAiTextModel ?? "routerai-text-model-not-configured",
+        model: this.config.routerAiNormalizerModel ?? this.config.routerAiTextModel ?? "routerai-text-model-not-configured",
         temperature: 0,
         max_tokens: 300,
         reasoning: { enabled: false },
         response_format: { type: "json_object" },
         messages: [
           { role: "system", content: loadPrompt("money-normalization.system.md") },
-          { role: "user", content: JSON.stringify({ currentMessage: input.text, leadCard: input.facts, history: input.messages.map(({ author, body }) => ({ author, text: body })) }) }
+          // Keep normalization turn-local so old prices cannot be extracted
+          // again. The one preceding assistant message is retained solely to
+          // resolve a short answer to its immediately preceding offer.
+          { role: "user", content: JSON.stringify({ currentMessage: input.text, lastAssistantMessage: [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "" }) }
         ]
       }, { timeoutMs: this.config.routerAiTimeoutMs });
       const parsed = moneyNormalizationSchema.safeParse(JSON.parse(response.choices?.[0]?.message?.content ?? "{}"));
-      return parsed.success ? parsed.data.values : [];
+      if (!parsed.success) return [];
+      return parsed.data.values.map((value) => value.currency !== "KGS" && !explicitlyMentionsCurrency(input.text, value.currency)
+        ? { ...value, currency: "KGS" as const }
+        : value);
     } catch (error) {
       this.logger.warn(`Money normalization unavailable: ${formatError(error)}`);
       return [];
@@ -170,6 +176,17 @@ export class AgentTurnService {
       }
     });
   }
+}
+
+function explicitlyMentionsCurrency(text: string | undefined, currency: Exclude<NormalizedMoneyValue["currency"], "KGS">): boolean {
+  const source = text ?? "";
+  const patterns = {
+    USD: /(?:\busd\b|\$|доллар)/iu,
+    EUR: /(?:\beur\b|€|евро)/iu,
+    KZT: /(?:\bkzt\b|₸|тенге)/iu,
+    RUB: /(?:\brub\b|₽|руб)/iu
+  };
+  return patterns[currency].test(source);
 }
 
 function isFetchFailure(error: unknown): boolean {

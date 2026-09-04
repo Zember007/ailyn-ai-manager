@@ -114,7 +114,7 @@ export function reconcileAgentTurn(input: {
     semanticErrors.push("preliminary_limit_conflict");
   }
 
-  const documentsReady = requiredDocuments.every((key) => input.effectiveFacts.documents?.[key] === "received");
+  const documentsReady = input.effectiveFacts.documentsProvided || requiredDocuments.every((key) => input.effectiveFacts.documents?.[key] === "received");
   const visitReady = documentsReady && Boolean(input.effectiveFacts.visitDate && input.effectiveFacts.visitTime);
   const targetEvent = visitReady ? "visit" : documentsReady ? "documents" : null;
   // `documents` can mean "request these next" in the model response, while
@@ -134,7 +134,7 @@ function firstMissingRequirement(facts: ApplicationFacts): { stage: ApplicationS
   if (facts.requestedAmount === undefined) return { stage: "COLLECTING_AMOUNT", fact: "requestedAmount", nextAction: "collect_amount" };
   if (!facts.requestedProgram) return { stage: "ELIGIBILITY_CHECK", fact: "requestedProgram", nextAction: "collect_program" };
   if (!facts.residenceRegion) return { stage: "COLLECTING_RESIDENCE", fact: "residenceRegion", nextAction: "collect_residence" };
-  const document = requiredDocuments.find((key) => facts.documents?.[key] !== "received");
+  const document = facts.documentsProvided ? undefined : requiredDocuments.find((key) => facts.documents?.[key] !== "received");
   if (document) return { stage: "COLLECTING_DOCUMENTS", fact: document, nextAction: "collect_documents" };
   if (!facts.familyStatus || facts.familyStatus === "unknown") return { stage: "COLLECTING_FAMILY_STATUS", fact: "familyStatus", nextAction: "collect_family_status" };
   // A refusal is a resolved answer, not a missing fact. The client can

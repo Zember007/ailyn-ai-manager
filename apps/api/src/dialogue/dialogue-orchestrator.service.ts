@@ -36,7 +36,13 @@ export class DialogueOrchestratorService {
         ...turn.result.leadCardPatch,
         ...(turn.result.language === "unknown" ? {} : { language: turn.result.language })
       };
-      const attachmentFacts = attachmentFactsFromResult(initialApplication.facts, turn.result.attachments);
+      const attachmentFacts = {
+        ...attachmentFactsFromResult(initialApplication.facts, turn.result.attachments),
+        // A file is evidence supplied by the client even when the vision model
+        // cannot reliably name every document/side in it. Persist that fact so
+        // the dialogue never asks for a replacement set.
+        ...(message.attachments.length > 0 ? { documentsProvided: true } : {})
+      };
       const effectiveFacts = effectiveFactsForTurn({ previous: initialApplication.facts, modelPatch, explicitFacts: {}, currencyFacts: currency.facts, attachmentFacts });
       changedFactKeys = await this.store.updateFacts(application, effectiveFacts);
       await this.store.saveAgentState(application, {
@@ -63,6 +69,12 @@ export class DialogueOrchestratorService {
       const recognized = turn.result?.attachments.find((item) => item.attachmentId === attachment.id);
       await this.store.addAttachment({ conversationId: conversation.id, messageId: inbound.id, type: recognized?.type ?? "unknown", status: recognized?.status ?? "received", fileName: attachment.fileName, mimeType: attachment.mimeType, byteSize: typeof attachment.metadata?.byteSize === "number" ? attachment.metadata.byteSize : undefined, storageKey: typeof attachment.metadata?.storageKey === "string" ? attachment.metadata.storageKey : undefined });
     }
+    // Preserve the client's progress even if the model was temporarily unable
+    // to classify the upload or return a valid answer for this turn.
+    if (message.attachments.length > 0 && !application.facts.documentsProvided) {
+      await this.store.updateFacts(application, { documentsProvided: true });
+      application = (await this.store.getApplication(application.id)) ?? application;
+    }
     const validation = { passed: Boolean(turn.result), errors: turn.error ? [turn.error] : [] };
     const reply = composeReply(turn.reply, currency.clientText);
     await this.store.addMessage(conversation, { author: "ai", body: reply, attachmentIds: [], attachments: [], metadata: { sourceMessageId: inbound.id, routerAiModel: turn.model, promptVersion: turn.promptVersion, validation, trace: { singleModel: true, changedFactKeys, managerEvent, intent: turn.result?.intent, targetEvent: turn.result?.targetEvent } } });
@@ -79,7 +91,7 @@ export class DialogueOrchestratorService {
  * exact duplicate here makes the public reply idempotent as well. */
 export function composeReply(modelReply: string, currencyText?: string): string {
   const cleanReply = currencyText
-    ? modelReply.split(currencyText).join("").replace(/\n{3,}/g, "\n\n").replace(/[ \t]{2,}/g, " ").trim()
+    ? modelReply.split(currencyText).join("").replace(/(?:По\s+(?:текущему|официальному)\s+курсу)[^.!?\n]*сом[.!]?/giu, "").replace(/(?:•\s*)?(?:Стоимость автомобиля|Необходимая сумма займа)\s*:[^.!?\n]*сом[.!]?/giu, "").replace(/—\s*(?:стоимость автомобиля|необходимая сумма займа)\.?\s*/giu, "").replace(/\s*;\s*(?=[А-ЯЁ])/gu, " ").replace(/\n{3,}/g, "\n\n").replace(/[ \t]{2,}/g, " ").trim()
     : modelReply.trim();
   if (!currencyText) return cleanReply;
   const introduction = cleanReply.match(/^\s*((?:Здравствуйте|Добрый\s+(?:день|вечер)|Салам(?:атсызбы)?)[!,.]?\s*(?:(?:Меня\s+зовут|Я)\s+Айлин[^.!?\n]*[.!?]\s*)?)/iu)?.[1]?.trim();
@@ -121,9 +133,7 @@ export async function resolveForeignCurrencyFacts(text: string | undefined, curr
     facts[candidate.role === "requestedAmount" ? "requestedAmountSourceCurrency" : "vehicleValueSourceCurrency"] = candidate.currency;
     conversions.push({ role: candidate.role, amount: candidate.amount, currency: candidate.currency, somValue: conversion.value, effectiveDate: conversion.effectiveDate });
   }
-  const clientText = conversions.length
-    ? `По официальному курсу НБКР: ${conversions.map((item) => `${formatForeignMoney(item.amount, item.currency)} — ориентировочно ${formatMoney(item.somValue)} сом`).join("; ")}.`
-    : undefined;
+  const clientText = formatConversionText(conversions);
   return { facts, conversions, clientText };
 }
 
@@ -146,7 +156,13 @@ export async function resolveNormalizedMoneyFacts(values: NormalizedMoneyValue[]
     facts[value.field === "requestedAmount" ? "requestedAmountSourceCurrency" : "vehicleValueSourceCurrency"] = value.currency;
     conversions.push({ role: value.field, amount: value.amount, currency: value.currency, somValue: conversion.value, effectiveDate: conversion.effectiveDate });
   }
-  return { facts, conversions };
+  return { facts, conversions, clientText: formatConversionText(conversions) };
+}
+
+function formatConversionText(conversions: { role: "requestedAmount" | "vehicleValue"; amount: number; currency: ForeignMoneyCurrencyCode; somValue: number }[]): string | undefined {
+  if (conversions.length === 0) return undefined;
+  const lines = conversions.map((item) => `• ${item.role === "vehicleValue" ? "Стоимость автомобиля" : "Необходимая сумма займа"}: ${formatForeignMoney(item.amount, item.currency)} — ориентировочно ${formatMoney(item.somValue)} сом.`);
+  return `По текущему курсу НБКР:\n${lines.join("\n")}`;
 }
 
 function isForeignCurrency(value: string | null | undefined): value is ForeignMoneyCurrencyCode {
