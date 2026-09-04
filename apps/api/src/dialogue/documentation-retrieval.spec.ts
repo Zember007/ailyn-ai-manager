@@ -45,18 +45,18 @@ describe("selectRelevantDocumentation", () => {
     expect(result.stageInstructions).toHaveLength(2);
   });
 
-  it("requires a guarantor for every OTHER_KG card, including parking", () => {
+  it("requires a guarantor for an OTHER_KG without-storage card", () => {
     const result = selectRelevantDocumentation({
       facts: {
         vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 1_000_000, requestedAmount: 300_000,
-        requestedProgram: "parking", residenceRegion: "Иссык-Кульская область", residenceCategory: "OTHER_KG"
+        requestedProgram: "without_storage", residenceRegion: "Иссык-Кульская область", residenceCategory: "OTHER_KG"
       } as any,
       currentMessage: "со стоянкой",
       messages: []
     });
 
     expect(result.stages[0]).toBe("guarantor");
-    expect(result.stageInstructions.some((instruction) => instruction.includes("OTHER_KG всегда требует вопроса о поручителе"))).toBe(true);
+    expect(result.stageInstructions.some((instruction) => instruction.includes("Сначала рассчитайте и сообщите предварительный лимит без изъятия"))).toBe(true);
   });
 
   it("brings back application guidance when a client changes an earlier price", () => {

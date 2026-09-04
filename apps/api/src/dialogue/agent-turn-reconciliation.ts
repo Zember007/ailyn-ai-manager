@@ -146,7 +146,7 @@ function firstMissingRequirement(facts: ApplicationFacts): { stage: ApplicationS
 }
 
 function requiresGuarantor(facts: ApplicationFacts): boolean {
-  return facts.residenceCategory === "OTHER_KG";
+  return facts.requestedProgram === "without_storage" && facts.residenceCategory === "OTHER_KG";
 }
 
 function stageIndex(stage: ApplicationStage): number {
