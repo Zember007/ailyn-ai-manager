@@ -13,6 +13,7 @@ import { selectRelevantDocumentation } from "./documentation-retrieval.js";
 import { agentTurnResultSchema, type AgentTurnResult } from "./agent-turn.contracts.js";
 import { moneyNormalizationSchema } from "./pipeline.contracts.js";
 import type { LoanPricing } from "./loan-pricing.js";
+import { roundSomAmount } from "./money-normalization.js";
 import type { Stage1Message } from "./stage1-store.service.js";
 
 const PROMPT_VERSION = "single-agent-v3";
@@ -246,7 +247,12 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   // dialogue model reads the whole history, so without this boundary it can
   // mistake an amount mentioned by Ailyn (for example a notary fee) for the
   // client's requested loan amount.
-  const modelPatch = withoutUnnormalizedMoney(parsed.leadCardPatch);
+  // Monetary fields normally come from the turn-local normalizer so amounts
+  // mentioned by Ailyn in history cannot leak into the card. There is one
+  // important conversational exception: a short confirmation such as «ок»
+  // contains no number for the normalizer, while the main model must still be
+  // able to commit the public limit that the client just accepted.
+  const modelPatch = modelMoneyPatchForTurn(parsed.leadCardPatch, input);
   const attachmentFacts = attachmentFactsFromResult(input.facts, parsed.attachments);
   const effectiveFacts = effectiveFactsForTurn({
     previous: input.facts,
@@ -264,8 +270,20 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   };
 }
 
-function withoutUnnormalizedMoney(patch: Partial<ApplicationFacts>): Partial<ApplicationFacts> {
-  return Object.fromEntries(Object.entries(patch).filter(([key]) => !unnormalizedMoneyFactKeys.has(key))) as Partial<ApplicationFacts>;
+function modelMoneyPatchForTurn(patch: Partial<ApplicationFacts>, input: Pick<AgentTurnInput, "text" | "pricing">): Partial<ApplicationFacts> {
+  const result = Object.fromEntries(Object.entries(patch).filter(([key]) => !unnormalizedMoneyFactKeys.has(key))) as Partial<ApplicationFacts>;
+  const currentTextHasAmount = /(?:\d[\d\s.,]*\s*(?:тыс|к|сом|доллар|евро|тенге|руб|млн)|(?:сумм|займ|получ|нужн|надо|стоим)[^\d]{0,30}\d)/iu.test(input.text ?? "");
+  const offeredPublicLimits = new Set([
+    input.pricing?.withoutStorage.publicMax,
+    input.pricing?.parking.publicMax
+  ].filter((value): value is number => typeof value === "number"));
+  for (const key of ["vehicleValue", "requestedAmount"] as const) {
+    const value = patch[key];
+    if (typeof value !== "number" || !Number.isFinite(value)) continue;
+    const rounded = roundSomAmount(value);
+    if (currentTextHasAmount || offeredPublicLimits.has(rounded)) result[key] = rounded;
+  }
+  return result;
 }
 
 function truncateLogValue(value: unknown): string {
