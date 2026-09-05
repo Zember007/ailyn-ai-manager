@@ -9,8 +9,6 @@ export const PARKING_AFTER_WITHOUT_STORAGE_LIMIT_OFFER =
 
 @Injectable()
 export class ResponsePlanService {
-  private readonly parkingRateBoundary = "Программа со стоянкой (авто на парковке): ставка 2,4% в месяц + стоимость парковки 130 сом/сутки; сумма до 2 000 000 сом.";
-  private readonly withoutStorageRateBoundary = "По программе без изъятия ставка определяется индивидуально";
   build(input: {
     facts: ApplicationFacts;
     decision: DecisionResult;

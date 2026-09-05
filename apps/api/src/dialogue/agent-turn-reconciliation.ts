@@ -1,4 +1,4 @@
-import type { ApplicationFacts } from "@ailyn/business-rules";
+import { resolveKyrgyzstanLocality, type ApplicationFacts } from "@ailyn/business-rules";
 import type { AgentTurnResult } from "./agent-turn.contracts.js";
 import { calculateLoanPricing, type LoanPricingSettings } from "./loan-pricing.js";
 import { roundSomAmount } from "./money-normalization.js";
@@ -22,6 +22,22 @@ export function effectiveFactsForTurn(input: {
     ...(input.explicitFacts.documents ?? {})
   };
   const result = Object.keys(documents).length > 0 ? { ...merged, documents } : merged;
+  // A locality detected in the current client turn is authoritative over a
+  // stale generic category from an earlier model response. Without this,
+  // "Токмок" can coexist with OTHER_KG and incorrectly open the guarantor
+  // branch on the next turn.
+  const currentResidence = input.explicitFacts.residenceText
+    ?? input.explicitFacts.residenceRegion
+    ?? input.modelPatch.residenceText
+    ?? input.modelPatch.residenceRegion
+    ?? result.residenceText
+    ?? result.residenceRegion;
+  const resolvedResidence = resolveKyrgyzstanLocality(currentResidence);
+  if (resolvedResidence) {
+    result.residenceRegion = resolvedResidence.residenceRegion;
+    result.residenceCategory = resolvedResidence.category;
+    result.residenceNeedsClarification = false;
+  }
   for (const key of ["vehicleValue", "requestedAmount"] as const) {
     if (typeof result[key] === "number") result[key] = roundSomAmount(result[key]);
   }

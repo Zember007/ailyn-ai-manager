@@ -14,7 +14,7 @@ const requiredDocumentKeys = ["id_front", "id_back", "vehicle_registration_front
 // where they can affect the reply, so unrelated branches do not compete for
 // the model's attention.
 const commonKnowledge = generatedDocumentationChunks.filter((chunk) =>
-  ["docx_0289", "docx_0290", "docx_0334", "docx_0335", "docx_0095", "docx_0293", "docx_0294", "docx_0234"].includes(chunk.key)
+  ["docx_0289", "docx_0290", "docx_0334", "docx_0335", "docx_0095", "docx_0293", "docx_0294", "docx_0234", "docx_0327"].includes(chunk.key)
 );
 const stageKeywords: Record<DocumentationStage, RegExp> = {
   application: /автомобил|машин|марка|модель|год|стоимост|цен|сумм|займ|доллар|евро|тенге|рубл|валют|курс|изменил|изменить|дороже|дешевле|изъят|стоян|долго|длится|сколько\s+времен|оформля|осмотр|оценк/u,
@@ -35,13 +35,14 @@ export function selectRelevantDocumentation(input: {
   currentMessage?: string;
   messages: Stage1Message[];
   maxChunks?: number;
+  includeCrossStageMatches?: boolean;
 }): { stages: DocumentationStage[]; commonKnowledge: DocumentationChunk[]; knowledge: DocumentationChunk[]; stageInstructions: string[] } {
   const current = `${input.currentMessage ?? ""} ${input.messages.slice(-3).map((message) => message.body).join(" ")}`.toLocaleLowerCase("ru-RU");
   const stages = relevantStages(input.facts, current);
   const tokens = new Set(current.match(/[\p{L}\p{N}]{3,}/gu) ?? []);
   const ranked = generatedDocumentationChunks
     .map((chunk, index) => ({ chunk, index, score: scoreChunk(chunk, index, stages, tokens, current) }))
-    .filter((item) => item.score > 0 && chunkBelongsToStages(item.chunk, stages))
+    .filter((item) => item.score > 0 && (input.includeCrossStageMatches || chunkBelongsToStages(item.chunk, stages)))
     .sort((left, right) => right.score - left.score || left.index - right.index);
   const limit = input.maxChunks ?? 8;
   const selected: DocumentationChunk[] = [];
@@ -101,6 +102,7 @@ function scoreChunk(chunk: DocumentationChunk, index: number, stages: Documentat
     (/доллар|евро|тенге|рубл|валют|курс/u.test(current) && /^13\.1/u.test(chunk.section) ? 90 : 0) +
     (/семейн|браке|женат|замуж|развод|супруг/u.test(current) && /^5\.15/u.test(chunk.section) ? 90 : 0) +
     (/поручител/u.test(current) && /^5\.16/u.test(chunk.section) ? 90 : 0) +
-    (/пропис|регион|бишкек|чуй|токмок/u.test(current) && /^5\.17/u.test(chunk.section) ? 70 : 0);
+    (/пропис|регион|бишкек|чуй|токмок/u.test(current) && /^5\.17/u.test(chunk.section) ? 70 : 0) +
+    (/(?:датчик|gps|гпс|трекер|маяч)/u.test(current) && chunk.key === "docx_0104" ? 120 : 0);
   return stageScore + keywordScore + targetedSectionScore + Math.max(0, 1 - index / 10_000);
 }

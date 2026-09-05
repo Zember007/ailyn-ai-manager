@@ -24,12 +24,42 @@ describe("selectRelevantDocumentation", () => {
     expect(result.commonKnowledge.find((chunk) => chunk.key === "docx_0234")?.text).toContain("Я Айлин — виртуальный помощник");
   });
 
+  it("always supplies the approved programme-specific interest-rate answer", () => {
+    const result = selectRelevantDocumentation({ facts: {}, currentMessage: "какая процентная ставка", messages: [] });
+
+    const rateAnswer = result.commonKnowledge.find((chunk) => chunk.key === "docx_0327")?.text ?? "";
+    expect(rateAnswer).toContain("ставка 2,4% в месяц");
+    expect(rateAnswer).toContain("ставка определяется индивидуально после осмотра");
+    expect(rateAnswer).toContain("только к ставке");
+    expect(rateAnswer).toContain("до переданного сервером `publicMax`");
+    expect(rateAnswer).not.toContain("сумма до 2 000 000 сом");
+  });
+
+  it("finds the approved GPS answer during a targeted knowledge lookup", () => {
+    const result = selectRelevantDocumentation({ facts: {}, currentMessage: "а вы датчики на машину ставите", messages: [], includeCrossStageMatches: true });
+    expect(result.knowledge.some((chunk) => chunk.key === "docx_0104" && chunk.text.includes("Да, на автомобиль устанавливаем GPS/трекер"))).toBe(true);
+  });
+
   it("does not preload future family or guarantor branches into an application turn", () => {
     const result = selectRelevantDocumentation({ facts: {}, currentMessage: "камри 2009 стоит 2 млн сом", messages: [] });
 
     expect(result.stages).toEqual(["application"]);
     expect(result.knowledge.some((chunk) => chunk.primaryStage === "family_status" || chunk.primaryStage === "guarantor")).toBe(false);
     expect(result.stageInstructions.some((instruction) => instruction.includes("марку отдельно не спрашивайте"))).toBe(true);
+  });
+
+  it("supplies the approved locality reference during residence collection", () => {
+    const result = selectRelevantDocumentation({
+      facts: { vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 1_000_000, requestedAmount: 300_000, requestedProgram: "without_storage" } as any,
+      currentMessage: "я из Токмока",
+      messages: []
+    });
+
+    const instruction = result.stageInstructions.find((item) => item.includes("ЭТАП ПРОПИСКИ")) ?? "";
+    expect(instruction).toContain("КАТЕГОРИЯ BISHKEK_CHUY");
+    expect(instruction).toContain("Токмок, Кант, Кара-Балта");
+    expect(instruction).toContain("Ошская, Джалал-Абадская, Иссык-Кульская");
+    expect(instruction).toContain("официальный справочник СОАТЕ");
   });
 
   it("retrieves currency guidance when the client provides foreign-currency prices", () => {
@@ -56,6 +86,7 @@ describe("selectRelevantDocumentation", () => {
     expect(result.knowledge.some((chunk) => chunk.section === "5.16")).toBe(true);
     expect(result.stageInstructions).toHaveLength(2);
     expect(result.stageInstructions.some((instruction) => instruction.includes("разрешено только в первом объяснении условия"))).toBe(true);
+    expect(result.stageInstructions.some((instruction) => instruction.includes("Возьмите с собой супругу (супруга) для нотариального оформления согласия"))).toBe(true);
   });
 
   it("requires a guarantor for an OTHER_KG without-storage card", () => {

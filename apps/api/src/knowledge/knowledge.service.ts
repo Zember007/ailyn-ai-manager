@@ -165,7 +165,7 @@ const seeds: Omit<KnowledgeItemDto, "id">[] = [
     key: "gps_requirement",
     category: "loan_terms",
     aliases: ["gps", "трекер", "маячок"],
-    answerRu: "Это зависит от суммы займа и состояния автомобиля. Точно ответить сможем после осмотра автомобиля.",
+    answerRu: "Да, на автомобиль устанавливаем GPS/трекер (датчик).",
     priority: 80, status: "approved", version: 1, active: true
   },
   {

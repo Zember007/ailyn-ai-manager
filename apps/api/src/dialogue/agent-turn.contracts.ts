@@ -15,6 +15,8 @@ export const agentTurnResultSchema = z.object({
   // This is a routing signal, not a lead-card fact. It lets the orchestrator
   // pay for money normalization only on turns that actually contain a value.
   hasMoney: z.boolean().default(false),
+  /** Requests one targeted retry with cross-stage approved knowledge. */
+  needsKnowledgeLookup: z.boolean().default(false),
   language: z.enum(["ru", "kg", "mixed", "unknown"]),
   intent: z.string().min(1).max(120),
   leadCardPatch: applicationFactsPatchSchema,

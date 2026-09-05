@@ -39,7 +39,7 @@ export class DialogueOrchestratorService {
     // The dialogue model sees every message first and explicitly signals
     // whether it found a monetary value. Running the specialised normalizer
     // only then removes one model round trip from ordinary answers.
-    const turn = await this.agent.run({
+    let turn = await this.agent.run({
       conversationId: conversation.id,
       messages: turnMessages,
       facts: initialApplication.facts,
@@ -50,7 +50,13 @@ export class DialogueOrchestratorService {
       attachments,
       signal: options.signal
     });
-    const normalizedMoney = turn.result?.hasMoney && this.agent.normalizeMoney
+    if (turn.result?.needsKnowledgeLookup) {
+      turn = await this.agent.run({
+        conversationId: conversation.id, messages: turnMessages, facts: initialApplication.facts, settings, text, currentTurnMessages,
+        pricing: calculateLoanPricing(initialApplication.facts, settings), attachments, signal: options.signal, knowledgeLookup: true
+      });
+    }
+    const normalizedMoney = turn.result?.hasMoney && hasForeignCurrencyMention(text) && this.agent.normalizeMoney
       ? await this.agent.normalizeMoney({ text, facts: initialApplication.facts, messages: turnMessages, signal: options.signal })
       : [];
     throwIfAborted(options.signal);
@@ -134,6 +140,10 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
   if (signal?.aborted) {
     throw new DOMException("Dialogue turn superseded by a newer client message", "AbortError");
   }
+}
+
+function hasForeignCurrencyMention(text: string): boolean {
+  return /(?:\busd\b|\$|доллар|\beur\b|€|евро|\bkzt\b|₸|тенге|\brub\b|₽|руб)/iu.test(text);
 }
 
 /** Keep the conversational order: greeting/introduction first, then the

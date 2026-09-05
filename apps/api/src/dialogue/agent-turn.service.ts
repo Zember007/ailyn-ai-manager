@@ -20,6 +20,8 @@ const PROMPT_VERSION = "single-agent-v3";
 const NEUTRAL_REPLY = "Извините, сейчас не удалось обработать сообщение. Пожалуйста, напишите ещё раз или обратитесь к сотрудникам компании.";
 const MAX_MODEL_ATTEMPTS = 3;
 const MAX_LOG_VALUE_LENGTH = 4000;
+const MAX_CONTEXT_HISTORY_MESSAGES = 12;
+const MAX_AGENT_RESPONSE_TOKENS = 800;
 const unnormalizedMoneyFactKeys = new Set(["vehicleValue", "requestedAmount", "vehicleValueSourceCurrency", "requestedAmountSourceCurrency"]);
 const NORMALIZER_PROMPT = `Вы — технический JSON-нормализатор ответа менеджера.
 Верните только один валидный JSON строго по переданной схеме AgentTurnResult.
@@ -38,6 +40,8 @@ type AgentTurnInput = {
   /** Ordered, uncollapsed client messages from the current batch. */
   currentTurnMessages?: Array<{ index: number; text: string }>;
   pricing?: LoanPricing;
+  /** A first-pass agent identified an atypical/office/FAQ question. */
+  knowledgeLookup?: boolean;
   attachments: InboundAttachment[];
   currencyConversions?: unknown[];
   conversationId?: string;
@@ -90,7 +94,7 @@ export class AgentTurnService {
       // The configured production model (openai/gpt-5.4-mini) can return an
       // empty object for json_schema. JSON mode plus the strict Zod boundary
       // is compatible and lets normal short replies succeed on the first call.
-      model: this.config.routerAiTextModel ?? "routerai-text-model-not-configured", temperature: 0.2, max_tokens: 1600, reasoning: { enabled: false }, response_format: { type: "json_object" as const }
+      model: this.config.routerAiTextModel ?? "routerai-text-model-not-configured", temperature: 0.2, max_tokens: MAX_AGENT_RESPONSE_TOKENS, reasoning: { enabled: false }, response_format: { type: "json_object" as const }
     };
     let lastError = "unknown_model_error";
     let lastRawAgentResponse: string | undefined;
@@ -230,6 +234,7 @@ function localAttachmentRecovery(input: AgentTurnInput): AgentTurnResult {
   return {
     reply,
     hasMoney: false,
+    needsKnowledgeLookup: false,
     language: input.facts.language ?? "ru",
     intent: "attachments_received_pending_recognition",
     leadCardPatch: input.facts,
@@ -252,7 +257,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   // important conversational exception: a short confirmation such as «ок»
   // contains no number for the normalizer, while the main model must still be
   // able to commit the public limit that the client just accepted.
-  const modelPatch = modelMoneyPatchForTurn(parsed.leadCardPatch, input);
+  const modelPatch = modelMoneyPatchForTurn(parsed.leadCardPatch, input, parsed.hasMoney);
   const attachmentFacts = attachmentFactsFromResult(input.facts, parsed.attachments);
   const effectiveFacts = effectiveFactsForTurn({
     previous: input.facts,
@@ -270,9 +275,13 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   };
 }
 
-function modelMoneyPatchForTurn(patch: Partial<ApplicationFacts>, input: Pick<AgentTurnInput, "text" | "pricing">): Partial<ApplicationFacts> {
+function modelMoneyPatchForTurn(patch: Partial<ApplicationFacts>, input: Pick<AgentTurnInput, "text" | "pricing">, hasMoney: boolean): Partial<ApplicationFacts> {
   const result = Object.fromEntries(Object.entries(patch).filter(([key]) => !unnormalizedMoneyFactKeys.has(key))) as Partial<ApplicationFacts>;
-  const currentTextHasAmount = /(?:\d[\d\s.,]*\s*(?:тыс|к|сом|доллар|евро|тенге|руб|млн)|(?:сумм|займ|получ|нужн|надо|стоим)[^\d]{0,30}\d)/iu.test(input.text ?? "");
+  const foreignCurrencyMentioned = /(?:\busd\b|\$|доллар|\beur\b|€|евро|\bkzt\b|₸|тенге|\brub\b|₽|руб)/iu.test(input.text ?? "");
+  // For KGS-only turns the main agent is the fast-path money parser. It
+  // understands conversational spellings and returns the normalized number;
+  // foreign currency remains exclusive to the dedicated converter.
+  const modelOwnsKgsMoney = hasMoney && !foreignCurrencyMentioned;
   const offeredPublicLimits = new Set([
     input.pricing?.withoutStorage.publicMax,
     input.pricing?.parking.publicMax
@@ -281,7 +290,7 @@ function modelMoneyPatchForTurn(patch: Partial<ApplicationFacts>, input: Pick<Ag
     const value = patch[key];
     if (typeof value !== "number" || !Number.isFinite(value)) continue;
     const rounded = roundSomAmount(value);
-    if (currentTextHasAmount || offeredPublicLimits.has(rounded)) result[key] = rounded;
+    if (modelOwnsKgsMoney || offeredPublicLimits.has(rounded)) result[key] = rounded;
   }
   return result;
 }
@@ -319,16 +328,20 @@ function parseAgentJson(value: string | undefined): Record<string, unknown> {
   }
 }
 
-function buildMessage(input: Pick<AgentTurnInput, "messages" | "facts" | "settings" | "text" | "currentTurnMessages" | "pricing" | "attachments" | "currencyConversions">, includeImages = true) {
+function buildMessage(input: Pick<AgentTurnInput, "messages" | "facts" | "settings" | "text" | "currentTurnMessages" | "pricing" | "attachments" | "currencyConversions" | "knowledgeLookup">, includeImages = true) {
   const settings = input.settings as Record<string, unknown>;
   const timezone = typeof settings.timezone === "string" ? settings.timezone : "Asia/Bishkek";
-  const retrieval = selectRelevantDocumentation({ facts: input.facts, currentMessage: input.text, messages: input.messages });
+  const retrieval = selectRelevantDocumentation({ facts: input.facts, currentMessage: input.text, messages: input.messages, includeCrossStageMatches: input.knowledgeLookup, maxChunks: input.knowledgeLookup ? 12 : undefined });
   const now = currentDateTime(timezone);
   // Date arithmetic is not delegated to the language model. The calendar is
   // only attached when a visit is relevant, so ordinary turns stay compact.
   const visitCalendar = retrieval.stages.includes("visit") ? buildVisitCalendar(now) : undefined;
   const currentTurnMessages = input.currentTurnMessages ?? (input.text === undefined ? [] : [{ index: 1, text: input.text }]);
-  const context = { now, timezone, history: input.messages.map(({ author, body, createdAt }) => ({ author, text: body, createdAt })), leadCard: input.facts, settings: input.settings, currentMessage: input.text ?? "", currentTurnMessages, pricing: input.pricing, pricingAuthority: { source: "server calculation from leadCard before currentTurnMessages", instruction: "If pricing is unavailable, do not infer a limit from currentTurnMessages: collect the missing fact. If a program is available, use only that program's publicMax in the client reply; never calculate or expose rawMax." }, currencyConversions: input.currencyConversions ?? [], ...(visitCalendar ? { visitCalendar } : {}), commonKnowledge: retrieval.commonKnowledge, relevantStages: retrieval.stages, stageInstructions: retrieval.stageInstructions, knowledge: retrieval.knowledge };
+  const history = input.messages.slice(-MAX_CONTEXT_HISTORY_MESSAGES).map(({ author, body, createdAt }) => ({ author, text: body, createdAt }));
+  const knownLeadCardFields = Object.entries(input.facts)
+    .filter(([, value]) => value !== undefined && value !== null)
+    .map(([key]) => key);
+  const context = { now, timezone, history, leadCard: input.facts, knownLeadCardFields, settings: input.settings, currentMessage: input.text ?? "", currentTurnMessages, pricing: input.pricing, knowledgeLookupRequired: Boolean(input.knowledgeLookup), pricingAuthority: { source: "server calculation from leadCard before currentTurnMessages", instruction: "If pricing is unavailable, do not infer a limit from currentTurnMessages: collect the missing fact. If a program is available, use only that program's publicMax in the client reply; never calculate or expose rawMax." }, currencyConversions: input.currencyConversions ?? [], ...(visitCalendar ? { visitCalendar } : {}), commonKnowledge: retrieval.commonKnowledge, relevantStages: retrieval.stages, stageInstructions: retrieval.stageInstructions, knowledge: retrieval.knowledge };
   const parts: Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string; detail: "high" } }> = [{ type: "text", text: JSON.stringify(context) }];
   for (const attachment of input.attachments) {
     parts.push({ type: "text", text: JSON.stringify({ attachment: { id: attachment.id, fileName: attachment.fileName, mimeType: attachment.mimeType, textContent: attachment.textContent, metadata: attachment.metadata } }) });
