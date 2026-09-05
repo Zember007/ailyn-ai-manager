@@ -89,6 +89,16 @@ describe("selectRelevantDocumentation", () => {
     });
   });
 
+  it("does not force a previous FAQ answer onto an unrelated current question", () => {
+    const result = selectRelevantDocumentation({
+      facts: {},
+      currentMessage: "А у вас есть пистолеты?",
+      messages: [{ author: "client", body: "Ок а в офисе есть зона ожидания?", createdAt: "now" } as any, { author: "ai", body: "Да, у нас есть зона ожидания, вода и кулер для посетителей.", createdAt: "now" } as any]
+    });
+
+    expect(result.mandatoryAnswer).toBeUndefined();
+  });
+
   it("keeps every relevant FAQ in a multi-question batch", () => {
     const result = selectRelevantDocumentation({
       facts: {},

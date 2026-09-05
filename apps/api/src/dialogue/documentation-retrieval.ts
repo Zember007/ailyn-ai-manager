@@ -88,7 +88,9 @@ export function selectRelevantDocumentation(input: {
     commonKnowledge: [...commonKnowledge],
     knowledge: selected.slice(0, limit),
     stageInstructions: stages.map((stage) => stageInstructionsByStage[stage]).filter((instruction): instruction is string => Boolean(instruction)),
-    mandatoryAnswer: mandatoryApprovedAnswer(ranked, current)
+    // History helps retrieve context, but it must never make an answer to a
+    // previous FAQ mandatory for a new, unrelated client question.
+    mandatoryAnswer: mandatoryApprovedAnswer(ranked, (input.currentMessage ?? "").toLocaleLowerCase("ru-RU"))
   };
 }
 
