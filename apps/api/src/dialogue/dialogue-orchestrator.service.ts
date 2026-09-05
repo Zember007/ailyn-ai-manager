@@ -2,13 +2,14 @@ import { Injectable } from "@nestjs/common";
 import type { ApplicationFacts } from "@ailyn/business-rules";
 import type { NormalizedMoneyValue } from "../ai/ai-provider.interface.js";
 import { AgentTurnService } from "./agent-turn.service.js";
-import { attachmentFactsFromResult, effectiveFactsForTurn } from "./agent-turn-reconciliation.js";
+import { attachmentFactsFromResult, effectiveFactsForTurn, selectedProgramLimit } from "./agent-turn-reconciliation.js";
 import type { InboundMessage } from "../channels/channel.interface.js";
 import { SettingsService } from "../settings/settings.service.js";
 import { BackendLogsService } from "../logs/backend-logs.service.js";
-import { Stage1StoreService, type Stage1Application, type Stage1Conversation } from "./stage1-store.service.js";
+import { Stage1StoreService, type Stage1Application, type Stage1Conversation, type Stage1Message } from "./stage1-store.service.js";
 import { DeferredIntegrationsService } from "./deferred-integrations.service.js";
-import { formatMoney, resolveMoneyFacts, type ForeignMoneyCurrencyCode } from "./money-normalization.js";
+import { formatMoney, formatSomMoney, resolveMoneyFacts, roundSomAmount, type ForeignMoneyCurrencyCode } from "./money-normalization.js";
+import { calculateLoanPricing } from "./loan-pricing.js";
 
 export interface DialogueResult { conversation: Stage1Conversation; application: Stage1Application; reply: string; validation: { passed: boolean; errors: string[] }; routerAiModel: string; promptVersion: string; }
 const managerDeltaFactKeys = new Set(["requestedAmount", "requestedProgram", "visitDate", "visitTime", "vehicleValue", "vehicleMake", "vehicleModel", "vehicleYear", "fullName", "phone"]);
@@ -26,19 +27,37 @@ export class DialogueOrchestratorService {
     const firstMessage = messages[0]!;
     const lastMessage = messages.at(-1)!;
     const { conversation, application: initialApplication } = await this.store.getOrCreateConversation({ externalContactId: firstMessage.externalContactId, externalConversationId: firstMessage.externalConversationId, channel: firstMessage.channel });
-    const inbounds = await Promise.all(messages.map((message) => this.store.addMessage(conversation, { author: "client", body: message.text?.trim() ?? "", attachmentIds: [], attachments: [], metadata: { externalMessageId: message.externalMessageId, channel: message.channel } })));
-    const turnMessages = [...conversation.messages, ...inbounds];
+    // Inbounds must be available to the model before they are stored. A newer
+    // client message can abort this turn; persisting here would make the
+    // batcher retry those same messages and duplicate them in history.
+    const pendingInbounds = messages.map(toPendingInboundMessage);
+    const turnMessages = [...conversation.messages, ...pendingInbounds];
     const text = messages.map((message) => message.text?.trim()).filter((value): value is string => Boolean(value)).join("\n");
+    const currentTurnMessages = messages.map((message, index) => ({ index: index + 1, text: message.text?.trim() ?? "" }));
     const attachments = messages.flatMap((message) => message.attachments);
     const settings = await this.settings.getValues();
     // The dialogue model sees every message first and explicitly signals
     // whether it found a monetary value. Running the specialised normalizer
     // only then removes one model round trip from ordinary answers.
-    const turn = await this.agent.run({ conversationId: conversation.id, messages: turnMessages, facts: initialApplication.facts, settings, text, attachments, signal: options.signal });
+    const turn = await this.agent.run({
+      conversationId: conversation.id,
+      messages: turnMessages,
+      facts: initialApplication.facts,
+      settings,
+      text,
+      currentTurnMessages,
+      pricing: calculateLoanPricing(initialApplication.facts, settings),
+      attachments,
+      signal: options.signal
+    });
     const normalizedMoney = turn.result?.hasMoney && this.agent.normalizeMoney
       ? await this.agent.normalizeMoney({ text, facts: initialApplication.facts, messages: turnMessages, signal: options.signal })
       : [];
     throwIfAborted(options.signal);
+    // Only commit client messages after all cancellable inference succeeded.
+    // Attachments below deliberately use these stored IDs, not the ephemeral
+    // model-context messages above.
+    const inbounds = await Promise.all(messages.map((message) => this.store.addMessage(conversation, { author: "client", body: message.text?.trim() ?? "", attachmentIds: [], attachments: [], metadata: { externalMessageId: message.externalMessageId, channel: message.channel } })));
     const currency = await resolveNormalizedMoneyFacts(normalizedMoney, this.integrations, initialApplication.facts);
     let application = initialApplication;
     let changedFactKeys: string[] = [];
@@ -56,12 +75,13 @@ export class DialogueOrchestratorService {
         ...(attachments.length > 0 ? { documentsProvided: true } : {})
       };
       const effectiveFacts = effectiveFactsForTurn({ previous: initialApplication.facts, modelPatch, explicitFacts: {}, currencyFacts: currency.facts, attachmentFacts });
+      const preliminaryLimit = selectedProgramLimit(effectiveFacts, settings);
       changedFactKeys = await this.store.updateFacts(application, effectiveFacts);
       await this.store.saveAgentState(application, {
         ...turn.result.dialogueState,
         cardSummary: turn.result.cardSummary,
         intent: turn.result.intent,
-        preliminaryLimit: turn.result.preliminaryLimit
+        preliminaryLimit
       });
       application = (await this.store.getApplication(application.id)) ?? application;
       const initial = Boolean(turn.result.targetEvent) && !application.facts.handedToManager;
@@ -96,6 +116,18 @@ export class DialogueOrchestratorService {
     void this.logs.log("dialogue.single-agent", "Processed dialogue turn", { conversationId: conversation.id, metadata: { applicationId: refreshedApplication.id, validModelResult: Boolean(turn.result), model: turn.model } });
     return { conversation: refreshedConversation, application: refreshedApplication, reply, validation, routerAiModel: turn.model, promptVersion: turn.promptVersion };
   }
+}
+
+function toPendingInboundMessage(message: InboundMessage): Stage1Message {
+  return {
+    id: message.externalMessageId,
+    author: "client",
+    body: message.text?.trim() ?? "",
+    attachmentIds: [],
+    attachments: [],
+    createdAt: message.timestamp.toISOString(),
+    metadata: { externalMessageId: message.externalMessageId, channel: message.channel }
+  };
 }
 
 function throwIfAborted(signal: AbortSignal | undefined): void {
@@ -148,9 +180,9 @@ export async function resolveForeignCurrencyFacts(text: string | undefined, curr
     if (!candidate.amount || !candidate.currency || candidate.currency === "KGS" || !isForeignCurrency(candidate.currency)) continue;
     const conversion = await integrations.convertToSom({ amount: candidate.amount, currency: candidate.currency });
     if (!conversion.available) continue;
-    facts[candidate.role] = conversion.value;
+    facts[candidate.role] = roundSomAmount(conversion.value);
     facts[candidate.role === "requestedAmount" ? "requestedAmountSourceCurrency" : "vehicleValueSourceCurrency"] = candidate.currency;
-    conversions.push({ role: candidate.role, amount: candidate.amount, currency: candidate.currency, somValue: conversion.value, effectiveDate: conversion.effectiveDate });
+    conversions.push({ role: candidate.role, amount: candidate.amount, currency: candidate.currency, somValue: roundSomAmount(conversion.value), effectiveDate: conversion.effectiveDate });
   }
   const clientText = formatConversionText(conversions);
   return { facts, conversions, clientText };
@@ -166,7 +198,7 @@ export async function resolveNormalizedMoneyFacts(values: NormalizedMoneyValue[]
     seen.add(value.field);
     if (value.currency === "KGS") {
       if (existingFacts?.[value.field] === Math.round(value.amount)) continue;
-      facts[value.field] = Math.round(value.amount);
+      facts[value.field] = roundSomAmount(value.amount);
       continue;
     }
     if (!integrations) continue;
@@ -175,16 +207,16 @@ export async function resolveNormalizedMoneyFacts(values: NormalizedMoneyValue[]
     // The normalizer can repeat an amount visible in the prior assistant
     // message. Do not turn that into a second public currency block.
     if (existingFacts?.[value.field] === conversion.value) continue;
-    facts[value.field] = conversion.value;
+    facts[value.field] = roundSomAmount(conversion.value);
     facts[value.field === "requestedAmount" ? "requestedAmountSourceCurrency" : "vehicleValueSourceCurrency"] = value.currency;
-    conversions.push({ role: value.field, amount: value.amount, currency: value.currency, somValue: conversion.value, effectiveDate: conversion.effectiveDate });
+    conversions.push({ role: value.field, amount: value.amount, currency: value.currency, somValue: roundSomAmount(conversion.value), effectiveDate: conversion.effectiveDate });
   }
   return { facts, conversions, clientText: formatConversionText(conversions) };
 }
 
 function formatConversionText(conversions: { role: "requestedAmount" | "vehicleValue"; amount: number; currency: ForeignMoneyCurrencyCode; somValue: number }[]): string | undefined {
   if (conversions.length === 0) return undefined;
-  const lines = conversions.map((item) => `• ${item.role === "vehicleValue" ? "Стоимость автомобиля" : "Необходимая сумма займа"}: ${formatForeignMoney(item.amount, item.currency)} — ориентировочно ${formatMoney(item.somValue)} сом.`);
+  const lines = conversions.map((item) => `• ${item.role === "vehicleValue" ? "Стоимость автомобиля" : "Необходимая сумма займа"}: ${formatForeignMoney(item.amount, item.currency)} — ориентировочно ${formatSomMoney(item.somValue)} сом.`);
   return `По текущему курсу НБКР:\n${lines.join("\n")}`;
 }
 

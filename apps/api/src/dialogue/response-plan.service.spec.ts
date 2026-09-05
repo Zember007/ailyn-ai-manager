@@ -179,7 +179,7 @@ describe("ResponsePlanService first contact", () => {
     });
 
     expect(plan.answers.map((answer) => answer.text).join(" ")).toContain("без изъятия предварительно возможная сумма — до 600 000 сом");
-    expect(plan.answers.map((answer) => answer.text).join(" ")).toContain("со стоянкой предварительно возможная сумма — до 874 500 сом");
+    expect(plan.answers.map((answer) => answer.text).join(" ")).toContain("со стоянкой предварительно возможная сумма — до 870 000 сом");
     expect(plan.nextQuestions).toEqual([
       "Если Вам нужна сумма больше лимита без изъятия, можем продолжить по программе с постановкой автомобиля на охраняемую стоянку?"
     ]);

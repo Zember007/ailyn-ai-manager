@@ -8,16 +8,16 @@ type DocumentationStage = DocumentationChunk["primaryStage"];
 const stageInstructionsByStage: Partial<Record<DocumentationStage, string>> = agentStageInstructions;
 
 const requiredDocumentKeys = ["id_front", "id_back", "vehicle_registration_front", "vehicle_registration_back"] as const;
-// This is the only part of the DOCX that is useful on every turn: the global
-// rule for approved answers. Product rules (family, guarantor, documents,
-// visits, etc.) are deliberately *not* here. They arrive only with the stage
-// where they can affect the reply, otherwise they compete for the model's
-// attention and cause it to apply an unrelated branch.
+// These passages are safe to expose on every turn: global answer rules plus
+// short, high-frequency FAQ/redirect answers (including timing and existing
+// contract handling). The remaining product rules arrive only with the stage
+// where they can affect the reply, so unrelated branches do not compete for
+// the model's attention.
 const commonKnowledge = generatedDocumentationChunks.filter((chunk) =>
-  ["docx_0289", "docx_0290", "docx_0334", "docx_0335"].includes(chunk.key)
+  ["docx_0289", "docx_0290", "docx_0334", "docx_0335", "docx_0095", "docx_0293", "docx_0294", "docx_0234"].includes(chunk.key)
 );
 const stageKeywords: Record<DocumentationStage, RegExp> = {
-  application: /автомобил|машин|марка|модель|год|стоимост|цен|сумм|займ|доллар|евро|тенге|рубл|валют|курс|изменил|изменить|дороже|дешевле|изъят|стоян/u,
+  application: /автомобил|машин|марка|модель|год|стоимост|цен|сумм|займ|доллар|евро|тенге|рубл|валют|курс|изменил|изменить|дороже|дешевле|изъят|стоян|долго|длится|сколько\s+времен|оформля|осмотр|оценк/u,
   residence: /пропис|регион|бишкек|чуй|токмок|насел[её]нн/u,
   documents: /документ|паспорт|\bid\b|стс|свидетельств|фото.*документ/u,
   vehicle_photos: /фото.*автомоб|фотограф.*автомоб|нет фот|не могу.*фото/u,

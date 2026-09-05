@@ -9,7 +9,7 @@ type PendingTurn = {
   messages: InboundMessage[];
   waiters: Deferred[];
   timer?: ReturnType<typeof setTimeout>;
-  active?: { controller: AbortController; waiters: Deferred[] };
+  active?: { controller: AbortController; messages: InboundMessage[]; waiters: Deferred[] };
 };
 
 /**
@@ -31,6 +31,7 @@ export class DialogueTurnBatcherService {
       if (pending.active) {
         pending.active.controller.abort();
         // The callers of the superseded request receive the fresh result.
+        pending.messages.unshift(...pending.active.messages);
         pending.waiters.push(...pending.active.waiters);
         pending.active = undefined;
       }
@@ -52,7 +53,7 @@ export class DialogueTurnBatcherService {
     const messages = pending.messages.splice(0);
     const waiters = pending.waiters.splice(0);
     const controller = new AbortController();
-    pending.active = { controller, waiters };
+    pending.active = { controller, messages, waiters };
     try {
       const result = await this.orchestrator.receiveBatch(messages, { signal: controller.signal });
       if (controller.signal.aborted) return;

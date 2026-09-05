@@ -2,7 +2,7 @@ import { Injectable } from "@nestjs/common";
 import type { ApplicationFacts, DecisionResult, DocumentCode } from "@ailyn/business-rules";
 import type { ResponsePlan } from "../ai/ai-provider.interface.js";
 import type { FxConversionTrace, KnowledgeAnswer, ResponsePlanV62 } from "./pipeline.contracts.js";
-import { formatMoney } from "./money-normalization.js";
+import { formatSomMoney as formatMoney } from "./money-normalization.js";
 
 export const PARKING_AFTER_WITHOUT_STORAGE_LIMIT_OFFER =
   "Если Вам нужна сумма больше лимита без изъятия, можем продолжить по программе с постановкой автомобиля на охраняемую стоянку?";

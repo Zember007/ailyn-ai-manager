@@ -12,6 +12,7 @@ import { attachmentFactsFromResult, effectiveFactsForTurn } from "./agent-turn-r
 import { selectRelevantDocumentation } from "./documentation-retrieval.js";
 import { agentTurnResultSchema, type AgentTurnResult } from "./agent-turn.contracts.js";
 import { moneyNormalizationSchema } from "./pipeline.contracts.js";
+import type { LoanPricing } from "./loan-pricing.js";
 import type { Stage1Message } from "./stage1-store.service.js";
 
 const PROMPT_VERSION = "single-agent-v3";
@@ -22,10 +23,25 @@ const unnormalizedMoneyFactKeys = new Set(["vehicleValue", "requestedAmount", "v
 const NORMALIZER_PROMPT = `Вы — технический JSON-нормализатор ответа менеджера.
 Верните только один валидный JSON строго по переданной схеме AgentTurnResult.
 Исправляйте только формат, типы, допустимые имена полей и лишние поля; не меняйте смысл reply и не придумывайте факты.
+Контекст содержит исходный ответ, полную историю, упорядоченные currentTurnMessages и серверный pricing. Используйте его только чтобы не потерять смысл, ранние вопросы и уже известные факты при исправлении формата. Не сокращайте и не заменяйте вопросы из currentTurnMessages.
+pricing рассчитан сервером только по currentFacts до текущего пакета: available=false означает, что лимит пока неизвестен, а при available=true в ответе клиенту допустимо использовать только publicMax соответствующей программы. Не вычисляйте и не подменяйте лимиты самостоятельно.
 Не помещайте preliminaryLimit в leadCardPatch. targetEvent означает только уже достигнутое событие: documents после хотя бы одного вложения на этапе документов, полного комплекта или declinedDocuments=true; visit только после даты и времени; при обычном запросе документов используйте null.
 Не запрашивайте уже полученные документы. Если исходный ответ нельзя безопасно восстановить, верните наиболее консервативный валидный результат без выдуманных фактов.`;
 
-type AgentTurnInput = { messages: Stage1Message[]; facts: ApplicationFacts; settings: object; text?: string; attachments: InboundAttachment[]; currencyConversions?: unknown[]; conversationId?: string; signal?: AbortSignal };
+type AgentTurnInput = {
+  messages: Stage1Message[];
+  facts: ApplicationFacts;
+  settings: object;
+  /** Compatibility view for existing callers and turn-local money parsing. */
+  text?: string;
+  /** Ordered, uncollapsed client messages from the current batch. */
+  currentTurnMessages?: Array<{ index: number; text: string }>;
+  pricing?: LoanPricing;
+  attachments: InboundAttachment[];
+  currencyConversions?: unknown[];
+  conversationId?: string;
+  signal?: AbortSignal;
+};
 
 @Injectable()
 export class AgentTurnService {
@@ -152,7 +168,12 @@ export class AgentTurnService {
             rawAgentResponse: rawResponse.slice(0, 16000),
             currentMessage: input.text ?? "",
             currentFacts: input.facts,
-            history: input.messages.slice(-8).map(({ author, body, createdAt }) => ({ author, text: body, createdAt })),
+            // Preserve the complete ordered batch and history for a
+            // formatting-only repair. A tail slice could omit the first
+            // question in a batched client turn.
+            currentTurnMessages: input.currentTurnMessages ?? (input.text === undefined ? [] : [{ index: 1, text: input.text }]),
+            history: input.messages.map(({ author, body, createdAt }) => ({ author, text: body, createdAt })),
+            pricing: input.pricing,
             attachments: input.attachments.map(({ id, fileName, mimeType, textContent, metadata }) => ({ id, fileName, mimeType, textContent, metadata }))
           }) }
         ]
@@ -226,19 +247,20 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   // mistake an amount mentioned by Ailyn (for example a notary fee) for the
   // client's requested loan amount.
   const modelPatch = withoutUnnormalizedMoney(parsed.leadCardPatch);
+  const attachmentFacts = attachmentFactsFromResult(input.facts, parsed.attachments);
   const effectiveFacts = effectiveFactsForTurn({
     previous: input.facts,
     modelPatch,
     explicitFacts: {},
     currencyFacts: {},
-    attachmentFacts: attachmentFactsFromResult(input.facts, parsed.attachments)
+    attachmentFacts
   });
   return {
     ...parsed,
-    // Keep the cumulative card inventory, while all stage and reply decisions
-    // remain owned by the organizing model.
     leadCardPatch: effectiveFacts,
-    reply: separateQuestions(removeRepeatedGreeting(parsed.reply, input.messages))
+    // Reconciliation belongs to the orchestrator's persistence boundary.
+    // The model is the sole owner of conversational meaning and client prose.
+    reply: parsed.reply
   };
 }
 
@@ -279,22 +301,7 @@ function parseAgentJson(value: string | undefined): Record<string, unknown> {
   }
 }
 
-function removeRepeatedGreeting(reply: string, messages: Stage1Message[]): string {
-  if (!messages.some((message) => message.author === "ai")) return reply;
-  const withoutGreeting = reply
-    .replace(/^\s*(?:здравствуйте|добрый\s+(?:день|вечер)|салам(?:атсызбы)?)[!,.]?\s*/iu, "")
-    .replace(/^\s*(?:(?:меня\s+зовут|я)\s+айлин)[^.!?\n]*[.!?]?\s*/iu, "")
-    .trim();
-  return withoutGreeting || reply;
-}
-
-function separateQuestions(reply: string): string {
-  // Keep the model's wording, but make a standalone question visually
-  // distinct when it follows an explanation in the same paragraph.
-  return reply.replace(/([.!?])\s+(?=[А-ЯЁA-Z][^.!?\n]{0,160}\?)/gu, "$1\n\n").trim();
-}
-
-function buildMessage(input: { messages: Stage1Message[]; facts: ApplicationFacts; settings: object; text?: string; attachments: InboundAttachment[]; currencyConversions?: unknown[] }, includeImages = true) {
+function buildMessage(input: Pick<AgentTurnInput, "messages" | "facts" | "settings" | "text" | "currentTurnMessages" | "pricing" | "attachments" | "currencyConversions">, includeImages = true) {
   const settings = input.settings as Record<string, unknown>;
   const timezone = typeof settings.timezone === "string" ? settings.timezone : "Asia/Bishkek";
   const retrieval = selectRelevantDocumentation({ facts: input.facts, currentMessage: input.text, messages: input.messages });
@@ -302,7 +309,8 @@ function buildMessage(input: { messages: Stage1Message[]; facts: ApplicationFact
   // Date arithmetic is not delegated to the language model. The calendar is
   // only attached when a visit is relevant, so ordinary turns stay compact.
   const visitCalendar = retrieval.stages.includes("visit") ? buildVisitCalendar(now) : undefined;
-  const context = { now, timezone, history: input.messages.map(({ author, body, createdAt }) => ({ author, text: body, createdAt })), leadCard: input.facts, settings: input.settings, currentMessage: input.text ?? "", currencyConversions: input.currencyConversions ?? [], ...(visitCalendar ? { visitCalendar } : {}), commonKnowledge: retrieval.commonKnowledge, relevantStages: retrieval.stages, stageInstructions: retrieval.stageInstructions, knowledge: retrieval.knowledge };
+  const currentTurnMessages = input.currentTurnMessages ?? (input.text === undefined ? [] : [{ index: 1, text: input.text }]);
+  const context = { now, timezone, history: input.messages.map(({ author, body, createdAt }) => ({ author, text: body, createdAt })), leadCard: input.facts, settings: input.settings, currentMessage: input.text ?? "", currentTurnMessages, pricing: input.pricing, pricingAuthority: { source: "server calculation from leadCard before currentTurnMessages", instruction: "If pricing is unavailable, do not infer a limit from currentTurnMessages: collect the missing fact. If a program is available, use only that program's publicMax in the client reply; never calculate or expose rawMax." }, currencyConversions: input.currencyConversions ?? [], ...(visitCalendar ? { visitCalendar } : {}), commonKnowledge: retrieval.commonKnowledge, relevantStages: retrieval.stages, stageInstructions: retrieval.stageInstructions, knowledge: retrieval.knowledge };
   const parts: Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string; detail: "high" } }> = [{ type: "text", text: JSON.stringify(context) }];
   for (const attachment of input.attachments) {
     parts.push({ type: "text", text: JSON.stringify({ attachment: { id: attachment.id, fileName: attachment.fileName, mimeType: attachment.mimeType, textContent: attachment.textContent, metadata: attachment.metadata } }) });

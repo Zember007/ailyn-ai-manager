@@ -12,6 +12,18 @@ describe("selectRelevantDocumentation", () => {
     expect(result.stageInstructions.some((instruction) => instruction.includes("марку отдельно не спрашивайте"))).toBe(true);
   });
 
+  it("includes approved duration FAQ for a general timing question", () => {
+    const result = selectRelevantDocumentation({ facts: {}, currentMessage: "а долго оформлять", messages: [] });
+    expect(result.commonKnowledge.some((chunk) => chunk.key === "docx_0095" || chunk.key === "docx_0293" || chunk.key === "docx_0294")).toBe(true);
+    expect([...result.commonKnowledge, ...result.knowledge].some((chunk) => /5 минут|около 1 часа/u.test(chunk.text))).toBe(true);
+  });
+
+  it("includes the exact approved redirect for an existing contract", () => {
+    const result = selectRelevantDocumentation({ facts: { existingContractQuestion: true }, currentMessage: "сколько я должен по текущему займу", messages: [] });
+    expect(result.commonKnowledge.some((chunk) => chunk.key === "docx_0234")).toBe(true);
+    expect(result.commonKnowledge.find((chunk) => chunk.key === "docx_0234")?.text).toContain("Я Айлин — виртуальный помощник");
+  });
+
   it("does not preload future family or guarantor branches into an application turn", () => {
     const result = selectRelevantDocumentation({ facts: {}, currentMessage: "камри 2009 стоит 2 млн сом", messages: [] });
 

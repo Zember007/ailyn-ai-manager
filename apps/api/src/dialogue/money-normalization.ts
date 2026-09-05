@@ -140,6 +140,16 @@ export function formatMoney(value: number): string {
   return new Intl.NumberFormat("ru-RU").format(value).replace(/\u00a0/g, " ");
 }
 
+/** Public and persisted som amounts are always rounded down to 10,000. */
+export function roundSomAmount(value: number): number {
+  if (!Number.isFinite(value)) return value;
+  return Math.floor(value / 10_000) * 10_000;
+}
+
+export function formatSomMoney(value: number): string {
+  return formatMoney(roundSomAmount(value));
+}
+
 function chooseMoneyMention(
   role: Extract<MoneyRoleCandidate, "requestedAmount" | "vehicleValue">,
   mentions: MoneyMention[],
