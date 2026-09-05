@@ -36,9 +36,9 @@ export class DialogueOrchestratorService {
     const currentTurnMessages = messages.map((message, index) => ({ index: index + 1, text: message.text?.trim() ?? "" }));
     const attachments = messages.flatMap((message) => message.attachments);
     const settings = await this.settings.getValues();
-    // The dialogue model sees every message first and explicitly signals
-    // whether it found a monetary value. Running the specialised normalizer
-    // only then removes one model round trip from ordinary answers.
+    // KGS-only messages use the main model fast path. An explicit foreign
+    // currency is an objective signal in the client text, so never let an
+    // incorrect hasMoney=false suppress the authoritative conversion.
     let turn = await this.agent.run({
       conversationId: conversation.id,
       messages: turnMessages,
@@ -56,7 +56,7 @@ export class DialogueOrchestratorService {
         pricing: calculateLoanPricing(initialApplication.facts, settings), attachments, signal: options.signal, knowledgeLookup: true
       });
     }
-    const normalizedMoney = turn.result?.hasMoney && hasForeignCurrencyMention(text) && this.agent.normalizeMoney
+    const normalizedMoney = turn.result && hasForeignCurrencyMention(text) && this.agent.normalizeMoney
       ? await this.agent.normalizeMoney({ text, facts: initialApplication.facts, messages: turnMessages, signal: options.signal })
       : [];
     throwIfAborted(options.signal);

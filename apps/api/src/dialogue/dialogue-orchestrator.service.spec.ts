@@ -192,12 +192,12 @@ describe("single-agent dialogue", () => {
     expect(store.addMessage).toHaveBeenLastCalledWith(conversation, expect.objectContaining({ author: "ai", body: modelResult.reply }));
   });
 
-  it("runs money normalization only after the agent explicitly detected money", async () => {
+  it("runs foreign-currency normalization even when the agent misses hasMoney", async () => {
     const application = { id: "app", facts: {}, contactId: "contact", stage: "NEW", status: "need_more_data" } as any;
     const conversation = { id: "conversation", messages: [], application, channel: "web-test" } as any;
     const store = { getOrCreateConversation: vi.fn().mockResolvedValue({ conversation, application }), addMessage: vi.fn().mockResolvedValue({ id: "inbound", author: "client", body: "нужно 6к долларов", createdAt: "now" }), updateFacts: vi.fn().mockResolvedValue(["requestedAmount"]), saveAgentState: vi.fn(), getApplication: vi.fn().mockResolvedValue(application), getConversation: vi.fn().mockResolvedValue(conversation), addAttachment: vi.fn(), createManagerNotification: vi.fn() } as any;
     const agent = {
-      run: vi.fn().mockResolvedValue({ result: { ...validResult, hasMoney: true, leadCardPatch: {} }, reply: "Подскажите стоимость автомобиля.", model: "one", promptVersion: "v1" }),
+      run: vi.fn().mockResolvedValue({ result: { ...validResult, hasMoney: false, leadCardPatch: {} }, reply: "Подскажите стоимость автомобиля.", model: "one", promptVersion: "v1" }),
       normalizeMoney: vi.fn().mockResolvedValue([{ field: "requestedAmount", amount: 6_000, currency: "USD", confidence: 0.99 }])
     } as any;
     const integrations = { convertToSom: vi.fn().mockResolvedValue({ available: true, value: 524_700, currency: "USD", rate: 87.45, nominal: 1, source: "NBKR", effectiveDate: "2026-09-04" }) } as any;
@@ -208,6 +208,49 @@ describe("single-agent dialogue", () => {
     expect(agent.run).toHaveBeenCalledTimes(1);
     expect(agent.normalizeMoney).toHaveBeenCalledTimes(1);
     expect(store.updateFacts).toHaveBeenCalledWith(application, expect.objectContaining({ requestedAmount: 520_000, requestedAmountSourceCurrency: "USD" }));
+  });
+
+  it.each([
+    ["долларов", "USD"],
+    ["евро", "EUR"],
+    ["тенге", "KZT"],
+    ["рублей", "RUB"]
+  ] as const)("normalizes every supported non-KGS currency: %s", async (currencyWord, currency) => {
+    const application = { id: "app", facts: {}, contactId: "contact", stage: "NEW", status: "need_more_data" } as any;
+    const conversation = { id: "conversation", messages: [], application, channel: "web-test" } as any;
+    const store = { getOrCreateConversation: vi.fn().mockResolvedValue({ conversation, application }), addMessage: vi.fn().mockResolvedValue({ id: "inbound", author: "client", body: `нужно 6к ${currencyWord}`, createdAt: "now" }), updateFacts: vi.fn().mockResolvedValue(["requestedAmount"]), saveAgentState: vi.fn(), getApplication: vi.fn().mockResolvedValue(application), getConversation: vi.fn().mockResolvedValue(conversation), addAttachment: vi.fn(), createManagerNotification: vi.fn() } as any;
+    const agent = {
+      run: vi.fn().mockResolvedValue({ result: { ...validResult, hasMoney: false, leadCardPatch: {} }, reply: "Подскажите стоимость автомобиля.", model: "one", promptVersion: "v1" }),
+      normalizeMoney: vi.fn().mockResolvedValue([{ field: "requestedAmount", amount: 6_000, currency, confidence: 0.99 }])
+    } as any;
+    const integrations = { convertToSom: vi.fn().mockResolvedValue({ available: true, value: 524_700, currency, rate: 87.45, nominal: 1, source: "NBKR", effectiveDate: "2026-09-04" }) } as any;
+
+    await new DialogueOrchestratorService(agent, store, { getValues: vi.fn().mockResolvedValue({}) } as any, { log: vi.fn() } as any, integrations)
+      .receive({ externalMessageId: "m", channel: "web-test", externalContactId: "c", text: `нужно 6к ${currencyWord}`, attachments: [], timestamp: new Date() });
+
+    expect(agent.normalizeMoney).toHaveBeenCalledTimes(1);
+    expect(integrations.convertToSom).toHaveBeenCalledWith({ amount: 6_000, currency });
+    expect(store.updateFacts).toHaveBeenCalledWith(application, expect.objectContaining({ requestedAmount: 520_000, requestedAmountSourceCurrency: currency }));
+  });
+
+  it("persists both foreign-currency prices even when hasMoney is false", async () => {
+    const application = { id: "app", facts: {}, contactId: "contact", stage: "NEW", status: "need_more_data" } as any;
+    const conversation = { id: "conversation", messages: [], application, channel: "web-test" } as any;
+    const store = { getOrCreateConversation: vi.fn().mockResolvedValue({ conversation, application }), addMessage: vi.fn().mockResolvedValue({ id: "inbound", author: "client", body: "камри стоит 20к долларов, нужно 100к сом", createdAt: "now" }), updateFacts: vi.fn().mockResolvedValue(["vehicleValue", "requestedAmount"]), saveAgentState: vi.fn(), getApplication: vi.fn().mockResolvedValue(application), getConversation: vi.fn().mockResolvedValue(conversation), addAttachment: vi.fn(), createManagerNotification: vi.fn() } as any;
+    const agent = {
+      run: vi.fn().mockResolvedValue({ result: { ...validResult, hasMoney: false, leadCardPatch: { vehicleModel: "Camry" } }, reply: "Выберите программу.", model: "one", promptVersion: "v1" }),
+      normalizeMoney: vi.fn().mockResolvedValue([
+        { field: "vehicleValue", amount: 20_000, currency: "USD", confidence: 0.99 },
+        { field: "requestedAmount", amount: 100_000, currency: "KGS", confidence: 0.99 }
+      ])
+    } as any;
+    const integrations = { convertToSom: vi.fn().mockResolvedValue({ available: true, value: 1_748_000, currency: "USD", rate: 87.4, nominal: 1, source: "NBKR", effectiveDate: "2026-09-05" }) } as any;
+
+    await new DialogueOrchestratorService(agent, store, { getValues: vi.fn().mockResolvedValue({}) } as any, { log: vi.fn() } as any, integrations)
+      .receive({ externalMessageId: "m", channel: "web-test", externalContactId: "c", text: "камри стоит 20к долларов, нужно 100к сом", attachments: [], timestamp: new Date() });
+
+    expect(agent.normalizeMoney).toHaveBeenCalledTimes(1);
+    expect(store.updateFacts).toHaveBeenCalledWith(application, expect.objectContaining({ vehicleValue: 1_740_000, requestedAmount: 100_000, vehicleValueSourceCurrency: "USD" }));
   });
 
   it("does not normalize money after an ordinary agent turn", async () => {
