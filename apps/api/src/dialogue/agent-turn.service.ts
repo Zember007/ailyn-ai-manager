@@ -262,6 +262,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   // able to commit the public limit that the client just accepted.
   const rawModelPatch = {
     ...modelMoneyPatchForTurn(parsed.leadCardPatch, input, parsed.hasMoney),
+    ...residencePatchFromExplicitClientText(input.text, parsed.leadCardPatch),
     ...(isClearCarPhotoRefusal(input) ? { declinedCarPhoto: true } : {})
   };
   const region10PolicyQuestion = isRegion10PolicyQuestion(input);
@@ -291,10 +292,39 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     // Reconciliation belongs to the orchestrator's persistence boundary.
     // The model is the sole owner of conversational meaning and client prose.
     reply: appendContinuationAfterRegion10PolicyQuestion(
-      replaceUnsupportedFallbackWithApprovedAnswer(parsed.reply, mandatoryKnowledgeAnswer, input),
+      enrichVisitQuestionWithOfficeHours(enforceFirstContactGreeting(replaceUnsupportedFallbackWithApprovedAnswer(parsed.reply, mandatoryKnowledgeAnswer, input), input)),
       input,
       effectiveFacts
     )
+  };
+}
+
+function enforceFirstContactGreeting(reply: string, input: Pick<AgentTurnInput, "messages">): string {
+  if (input.messages.some((message) => message.author === "ai")) return reply;
+  const officialGreeting = "Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой».";
+  // Preserve exact FAQ answers that correctly omit a greeting. This only
+  // repairs a model-generated greeting that shortened the approved intro.
+  if (!/^\s*здравствуйте[!,.]?/iu.test(reply)) return reply;
+  const rest = reply.replace(/^\s*здравствуйте[!,.]?\s*(?:(?:меня\s+зовут|я)\s+Айлин[^.!?]*[.!?]\s*)?(?:я\s+менеджер\s+по\s+оформлению\s+новых\s+займов\s+автоломбарда\s+«Молодой»[.!?]\s*)*/iu, "").trim();
+  return [officialGreeting, rest].filter(Boolean).join(" ");
+}
+
+function enrichVisitQuestionWithOfficeHours(reply: string): string {
+  const asksForVisit = /на\s+какой\s+день\s+и\s+время\s+вам\s+удобно\s+(?:подъехать|приехать)/iu.test(reply);
+  const alreadyExplainsHours = /(?:понедельник|будн).{0,100}(?:11:00|11\s*час).{0,100}(?:19:00|19\s*час)|(?:11:00|11\s*час).{0,100}(?:19:00|19\s*час)/iu.test(reply);
+  if (!asksForVisit || alreadyExplainsHours) return reply;
+  return `Офис работает с понедельника по пятницу с 11:00 до 19:00. Для оформления нужно приехать не позднее 18:00. ${reply}`;
+}
+
+function residencePatchFromExplicitClientText(text: string | undefined, patch: Partial<ApplicationFacts>): Partial<ApplicationFacts> {
+  if (patch.residenceRegion || patch.residenceCategory || !/(?:прописан|прописка|регистрац(?:ия|ии)|живу)/iu.test(text ?? "")) return {};
+  const locality = resolveKyrgyzstanLocality(text);
+  if (!locality) return {};
+  return {
+    residenceText: text?.trim(),
+    residenceRegion: locality.residenceRegion,
+    residenceCategory: locality.category,
+    residenceNeedsClarification: false
   };
 }
 

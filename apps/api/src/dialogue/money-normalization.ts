@@ -106,7 +106,7 @@ export function detectMoneyMentions(text: string): MoneyMention[] {
     });
   }
 
-  // A client often shortens the second value in one clause: "стоит 20 тыс
+  // A client can shorten the second value in one clause: "стоит 20 тыс
   // долларов, надо 10". Inherit currency and multiplier only from the
   // immediately preceding explicit amount in that same clause; never across
   // sentences/messages or from a bare number without a role cue.
@@ -121,16 +121,24 @@ export function detectMoneyMentions(text: string): MoneyMention[] {
     const inherited = prior.at(-1);
     if (!inherited || currencies.size !== 1 || !/(?:тыс|тыщ|\d\s*[кk](?=\s|$))/iu.test(inherited.sourceText)) continue;
     const amount = Number(rawNumber) * 1_000;
-    mentions.push({
-      sourceText: rawNumber,
-      amount,
-      normalizedAmount: amount,
-      currency: inherited.currency,
-      roleCandidate: "requestedAmount",
-      confidence: 0.9,
-      start,
-      end: start + rawNumber.length
-    });
+    mentions.push({ sourceText: rawNumber, amount, normalizedAmount: amount, currency: inherited.currency, roleCandidate: "requestedAmount", confidence: 0.9, start, end: start + rawNumber.length });
+  }
+
+  // The same shorthand can occur in reverse order: "нужно 5к долларов,
+  // машина стоит 20". Here the second, vehicle-price role inherits only the
+  // unambiguous currency and multiplier from that same sentence.
+  for (const match of source.matchAll(/(?:стоит|стоимость|цена)\s+(\d{1,3})(?![\d\s]*(?:тыс|тыщ|млн|к\b))/giu)) {
+    const rawNumber = match[1];
+    if (!rawNumber || match.index === undefined) continue;
+    const start = match.index + match[0].lastIndexOf(rawNumber);
+    if (mentions.some((mention) => mention.start === start)) continue;
+    const clauseStart = Math.max(source.lastIndexOf(".", start - 1), source.lastIndexOf(";", start - 1)) + 1;
+    const prior = mentions.filter((mention) => (mention.start ?? -1) >= clauseStart && (mention.end ?? 0) <= start && mention.currency);
+    const currencies = new Set(prior.map((mention) => mention.currency));
+    const inherited = prior.at(-1);
+    if (!inherited || currencies.size !== 1 || !/(?:тыс|тыщ|\d\s*[кk](?=\s|$))/iu.test(inherited.sourceText)) continue;
+    const amount = Number(rawNumber) * 1_000;
+    mentions.push({ sourceText: rawNumber, amount, normalizedAmount: amount, currency: inherited.currency, roleCandidate: "vehicleValue", confidence: 0.9, start, end: start + rawNumber.length });
   }
 
   return dedupeMentions(mentions);

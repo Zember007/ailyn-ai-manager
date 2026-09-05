@@ -679,6 +679,30 @@ describe("single-agent dialogue", () => {
     expect(output.result?.reply).toBe(output.reply);
   });
 
+  it("repairs a shortened first-contact introduction to the approved greeting", async () => {
+    const shortenedGreeting = { ...validResult, reply: "Здравствуйте! Я Айлин, помогу с оформлением нового займа. Подскажите модель автомобиля." };
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify(shortenedGreeting) } }] }) } as any;
+    const output = await new AgentTurnService(client).run({ messages: [], facts: {}, settings: {}, text: "здравствуйте", attachments: [] });
+
+    expect(output.reply).toBe("Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Подскажите модель автомобиля.");
+  });
+
+  it("keeps the approved first-contact introduction once when the model repeats its title", async () => {
+    const duplicatedGreeting = { ...validResult, reply: "Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Я менеджер по оформлению новых займов автоломбарда «Молодой». Подскажите модель автомобиля." };
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify(duplicatedGreeting) } }] }) } as any;
+    const output = await new AgentTurnService(client).run({ messages: [], facts: {}, settings: {}, text: "здравствуйте", attachments: [] });
+
+    expect(output.reply).toBe("Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Подскажите модель автомобиля.");
+  });
+
+  it("adds office hours before asking the client for a visit day and time", async () => {
+    const visitQuestion = { ...validResult, reply: "Хорошо, оформим согласие при визите. На какой день и время Вам удобно подъехать?" };
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify(visitQuestion) } }] }) } as any;
+    const output = await new AgentTurnService(client).run({ messages: [{ author: "ai", body: "Предыдущий этап завершён", createdAt: "2026-09-02" } as any], facts: {}, settings: {}, text: "да", attachments: [] });
+
+    expect(output.reply).toBe("Офис работает с понедельника по пятницу с 11:00 до 19:00. Для оформления нужно приехать не позднее 18:00. Хорошо, оформим согласие при визите. На какой день и время Вам удобно подъехать?");
+  });
+
   it("replaces a model no-information fallback with an exact approved FAQ answer", async () => {
     const genericFallback = {
       ...validResult,
@@ -761,6 +785,12 @@ describe("single-agent dialogue", () => {
     const currency = "По официальному курсу НБКР: 6 000 долларов США — ориентировочно 524 700 сом.";
     const reply = composeReply(`Здравствуйте! Я Айлин, менеджер. ${currency}\n\nПодскажите год автомобиля. ${currency}`, currency);
     expect(reply).toBe("Здравствуйте! Я Айлин, менеджер.\n\nПо официальному курсу НБКР: 6 000 долларов США — ориентировочно 524 700 сом.\n\nПодскажите год автомобиля.");
+  });
+
+  it("places the currency explanation after the complete approved introduction", () => {
+    const greeting = "Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой».";
+    const currency = "По текущему курсу НБКР: • Стоимость автомобиля: 20 000 долларов США — ориентировочно 1 740 000 сом.";
+    expect(composeReply(`${greeting} Подскажите программу.`, currency)).toBe(`${greeting}\n\n${currency}\n\nПодскажите программу.`);
   });
 
   it("removes reformulated currency echoes from the model reply", () => {

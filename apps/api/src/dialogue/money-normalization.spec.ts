@@ -116,6 +116,18 @@ describe("money normalization", () => {
     expect(ambiguous.requestedAmount).toBeUndefined();
   });
 
+  it("inherits a linked foreign price for the other money role in one sentence", () => {
+    const result = resolveMoneyFacts({
+      text: "Нужен займ на 5к долларов, машина стоит 20",
+      currentFacts: {}
+    });
+
+    expect(result.requestedAmount).toBe(5_000);
+    expect(result.requestedAmountCurrency).toBe("USD");
+    expect(result.vehicleValue).toBe(20_000);
+    expect(result.vehicleValueCurrency).toBe("USD");
+  });
+
   it("assigns a standalone approximate price to the only pending money field", () => {
     const result = resolveMoneyFacts({
       text: "примерно 200000 сом",
