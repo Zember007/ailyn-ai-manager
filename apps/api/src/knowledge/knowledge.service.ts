@@ -17,7 +17,7 @@ export interface KnowledgeItemDto {
   active: boolean;
 }
 
-const seeds: Omit<KnowledgeItemDto, "id">[] = [
+export const approvedKnowledgeSeeds: Omit<KnowledgeItemDto, "id">[] = [
   {
     key: "documents_required",
     category: "documents",
@@ -74,6 +74,16 @@ const seeds: Omit<KnowledgeItemDto, "id">[] = [
     aliases: ["лично приезжать", "по доверенности", "нужно присутствие собственника"],
     answerRu: "Нет, собственник автомобиля должен лично присутствовать при осмотре автомобиля и выдаче займа.",
     priority: 90,
+    status: "approved",
+    version: 1,
+    active: true
+  },
+  {
+    key: "power_of_attorney",
+    category: "documents",
+    aliases: ["доверенность", "доверенность надо", "нужно оформить доверенность", "оформлять доверенность", "доверенность на машину"],
+    answerRu: "Если речь об оформлении займа по доверенности, то нет: собственник автомобиля должен лично присутствовать при осмотре и выдаче займа. Если речь о нотариальной доверенности на автоломбард или сотрудника компании, её оформление может быть одним из условий выдачи займа — порядок уточнит менеджер при визите. Если Вы имеете в виду супруга или супругу, требуется нотариальное согласие супруга (супруги), а не доверенность.",
+    priority: 100,
     status: "approved",
     version: 1,
     active: true
@@ -164,7 +174,7 @@ const seeds: Omit<KnowledgeItemDto, "id">[] = [
   {
     key: "gps_requirement",
     category: "loan_terms",
-    aliases: ["gps", "трекер", "маячок"],
+    aliases: ["gps", "трекер", "маячок", "датчик", "датчики", "датчик на машину"],
     answerRu: "Это зависит от суммы займа и состояния автомобиля. Точно ответить сможем после осмотра автомобиля.",
     priority: 80, status: "approved", version: 1, active: true
   },
@@ -188,6 +198,13 @@ const seeds: Omit<KnowledgeItemDto, "id">[] = [
     aliases: ["как проходит осмотр", "нужна сто", "сколько длится оценка", "оценка платная"],
     answerRu: "Проводятся внешний осмотр автомобиля и проверка документов. СТО не требуется, осмотр обычно занимает около 5 минут. Окончательная оценка проводится при визите в офис.",
     priority: 80, status: "approved", version: 1, active: true
+  },
+  {
+    key: "vehicle_evaluation_fee",
+    category: "process",
+    aliases: ["нужно платить за оценку", "платить за оценку", "оценка платная", "оценка бесплатно", "платный осмотр"],
+    answerRu: "Нет, оценка автомобиля бесплатна.",
+    priority: 100, status: "approved", version: 1, active: true
   },
   {
     key: "registration_original_required",
@@ -220,7 +237,7 @@ const seeds: Omit<KnowledgeItemDto, "id">[] = [
   {
     key: "temporary_residence",
     category: "eligibility",
-    aliases: ["временная прописка", "временная регистрация"],
+    aliases: ["временная прописка", "временная регистрация", "временной регистрации", "временная рега"],
     answerRu: "Да, оформление по временной прописке возможно.",
     priority: 90, status: "approved", version: 1, active: true
   },
@@ -427,7 +444,7 @@ export class KnowledgeService {
   }
 
   private async ensureSeeds(): Promise<void> {
-    for (const seed of seeds) {
+    for (const seed of approvedKnowledgeSeeds) {
       const existing = await this.prisma.knowledgeItem.findUnique({ where: { key: seed.key } });
       if (!existing) {
         await this.createKnowledgeItem({

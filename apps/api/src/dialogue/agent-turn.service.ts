@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadAppConfig } from "@ailyn/config";
-import type { ApplicationFacts } from "@ailyn/business-rules";
+import { resolveKyrgyzstanLocality, type ApplicationFacts } from "@ailyn/business-rules";
 import type { NormalizedMoneyValue } from "../ai/ai-provider.interface.js";
 import { RouterAiClient } from "../ai/router-ai/router-ai.client.js";
 import type { InboundAttachment } from "../channels/channel.interface.js";
@@ -12,7 +12,7 @@ import { attachmentFactsFromResult, effectiveFactsForTurn } from "./agent-turn-r
 import { selectRelevantDocumentation } from "./documentation-retrieval.js";
 import { agentTurnResultSchema, type AgentTurnResult } from "./agent-turn.contracts.js";
 import { moneyNormalizationSchema } from "./pipeline.contracts.js";
-import type { LoanPricing } from "./loan-pricing.js";
+import { calculateLoanPricing, type LoanPricing, type LoanPricingSettings } from "./loan-pricing.js";
 import { roundSomAmount } from "./money-normalization.js";
 import type { Stage1Message } from "./stage1-store.service.js";
 
@@ -20,8 +20,11 @@ const PROMPT_VERSION = "single-agent-v3";
 const NEUTRAL_REPLY = "Извините, сейчас не удалось обработать сообщение. Пожалуйста, напишите ещё раз или обратитесь к сотрудникам компании.";
 const MAX_MODEL_ATTEMPTS = 3;
 const MAX_LOG_VALUE_LENGTH = 4000;
-const MAX_CONTEXT_HISTORY_MESSAGES = 12;
-const MAX_AGENT_RESPONSE_TOKENS = 800;
+// The complete lead card keeps durable facts, while a compact recent tail is
+// enough to resolve conversational references. Keeping this bounded is one of
+// the few latency levers that does not weaken application validation.
+const MAX_CONTEXT_HISTORY_MESSAGES = 8;
+const MAX_AGENT_RESPONSE_TOKENS = 500;
 const unnormalizedMoneyFactKeys = new Set(["vehicleValue", "requestedAmount", "vehicleValueSourceCurrency", "requestedAmountSourceCurrency"]);
 const NORMALIZER_PROMPT = `Вы — технический JSON-нормализатор ответа менеджера.
 Верните только один валидный JSON строго по переданной схеме AgentTurnResult.
@@ -257,7 +260,14 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   // important conversational exception: a short confirmation such as «ок»
   // contains no number for the normalizer, while the main model must still be
   // able to commit the public limit that the client just accepted.
-  const modelPatch = modelMoneyPatchForTurn(parsed.leadCardPatch, input, parsed.hasMoney);
+  const rawModelPatch = {
+    ...modelMoneyPatchForTurn(parsed.leadCardPatch, input, parsed.hasMoney),
+    ...(isClearCarPhotoRefusal(input) ? { declinedCarPhoto: true } : {})
+  };
+  const region10PolicyQuestion = isRegion10PolicyQuestion(input);
+  const modelPatch = region10PolicyQuestion
+    ? Object.fromEntries(Object.entries(rawModelPatch).filter(([key]) => key !== "vehicleRegistrationRegion")) as Partial<ApplicationFacts>
+    : rawModelPatch;
   const attachmentFacts = attachmentFactsFromResult(input.facts, parsed.attachments);
   const effectiveFacts = effectiveFactsForTurn({
     previous: input.facts,
@@ -266,13 +276,60 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     currencyFacts: {},
     attachmentFacts
   });
+  const mandatoryKnowledgeAnswer = selectRelevantDocumentation({
+    facts: input.facts,
+    currentMessage: input.text,
+    messages: input.messages,
+    includeCrossStageMatches: input.knowledgeLookup
+  }).mandatoryAnswer;
   return {
     ...parsed,
     leadCardPatch: effectiveFacts,
+    dialogueState: region10PolicyQuestion && !input.facts.vehicleRegistrationRegion && parsed.dialogueState.stage === "REFUSED"
+      ? { stage: "COLLECTING_VEHICLE", status: "need_more_data", nextAction: "continue_application" }
+      : parsed.dialogueState,
     // Reconciliation belongs to the orchestrator's persistence boundary.
     // The model is the sole owner of conversational meaning and client prose.
-    reply: parsed.reply
+    reply: appendContinuationAfterRegion10PolicyQuestion(
+      replaceUnsupportedFallbackWithApprovedAnswer(parsed.reply, mandatoryKnowledgeAnswer, input),
+      input,
+      effectiveFacts
+    )
   };
+}
+
+function isRegion10PolicyQuestion(input: Pick<AgentTurnInput, "text" | "currentTurnMessages">): boolean {
+  const text = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "").toLocaleLowerCase("ru-RU");
+  return /почему[^.!?]{0,80}(?:под\s*)?(?:10\s*)?регион|(?:10\s*)?регион[^.!?]{0,80}почему/u.test(text);
+}
+
+function appendContinuationAfterRegion10PolicyQuestion(reply: string, input: Pick<AgentTurnInput, "text" | "currentTurnMessages">, facts: ApplicationFacts): string {
+  const messages = input.currentTurnMessages ?? (input.text === undefined ? [] : [{ index: 1, text: input.text }]);
+  const exactPolicyAnswer = "Автомобили с регионом 10 у нас не принимаются в залог по правилам компании.";
+  if (messages.filter((message) => message.text.trim()).length < 2 || !isRegion10PolicyQuestion(input) || reply.trim() !== exactPolicyAnswer) return reply;
+  if (!facts.vehicleModel || !facts.vehicleYear || !facts.vehicleValue || !facts.requestedAmount || facts.requestedProgram) return reply;
+  const over15 = new Date().getFullYear() - facts.vehicleYear > 15;
+  const ageNotice = over15
+    ? " По автомобилю: ему больше 15 лет, поэтому по общему правилу принимаем в залог только на стоянку, а без изъятия можем рассмотреть индивидуально."
+    : "";
+  return `${exactPolicyAnswer}${ageNotice} Подскажите, пожалуйста, Вас интересует займ без изъятия автомобиля или с постановкой автомобиля на охраняемую стоянку?`;
+}
+
+function replaceUnsupportedFallbackWithApprovedAnswer(reply: string, mandatoryAnswer: string | undefined, input: Pick<AgentTurnInput, "text" | "currentTurnMessages">): string {
+  // A precise FAQ match must not be lost merely because the model ignored a
+  // supplied chunk and emitted the generic no-information template. Limit the
+  // replacement to a single client message so a batched turn cannot lose an
+  // answer to another question.
+  const messages = input.currentTurnMessages ?? (input.text === undefined ? [] : [{ index: 1, text: input.text }]);
+  const hasFallback = /к сожалению,?\s+у меня нет достоверной информации|когда вы приедете, сотрудники|свяжитесь с нашими сотрудниками[\s\S]{0,180}(?:телефон|whatsapp)|напишите менеджеру/iu.test(reply);
+  return mandatoryAnswer && messages.length === 1 && hasFallback ? mandatoryAnswer : reply;
+}
+
+function isClearCarPhotoRefusal(input: Pick<AgentTurnInput, "text" | "messages">): boolean {
+  const text = input.text?.trim().toLocaleLowerCase("ru-RU") ?? "";
+  if (!/^(?:нет|неа|не буду|не хочу|не могу|не получится)[.!\s]*$/u.test(text)) return false;
+  const lastAssistant = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
+  return /(?:2\s*[–-]\s*3|несколько)\s+фотограф(?:и|ий).{0,80}автомоб|фотограф(?:и|ий).{0,80}автомоб/u.test(lastAssistant);
 }
 
 function modelMoneyPatchForTurn(patch: Partial<ApplicationFacts>, input: Pick<AgentTurnInput, "text" | "pricing">, hasMoney: boolean): Partial<ApplicationFacts> {
@@ -331,6 +388,14 @@ function parseAgentJson(value: string | undefined): Record<string, unknown> {
 function buildMessage(input: Pick<AgentTurnInput, "messages" | "facts" | "settings" | "text" | "currentTurnMessages" | "pricing" | "attachments" | "currencyConversions" | "knowledgeLookup">, includeImages = true) {
   const settings = input.settings as Record<string, unknown>;
   const timezone = typeof settings.timezone === "string" ? settings.timezone : "Asia/Bishkek";
+  const currentLocality = resolveKyrgyzstanLocality(input.text);
+  // The orchestrator calculates pricing before the model processes this turn.
+  // A direct locality reply (for example «Токмок») is deterministic enough to
+  // make that calculation current immediately, rather than forcing a vague
+  // follow-up turn after the client already supplied the missing residence.
+  const pricing = currentLocality
+    ? calculateLoanPricing({ ...input.facts, residenceText: input.text, residenceRegion: currentLocality.residenceRegion, residenceCategory: currentLocality.category }, input.settings as LoanPricingSettings)
+    : input.pricing;
   const retrieval = selectRelevantDocumentation({ facts: input.facts, currentMessage: input.text, messages: input.messages, includeCrossStageMatches: input.knowledgeLookup, maxChunks: input.knowledgeLookup ? 12 : undefined });
   const now = currentDateTime(timezone);
   // Date arithmetic is not delegated to the language model. The calendar is
@@ -342,7 +407,7 @@ function buildMessage(input: Pick<AgentTurnInput, "messages" | "facts" | "settin
     .filter(([, value]) => value !== undefined && value !== null)
     .map(([key]) => key);
   const guarantorRequirement = guarantorRequirementFor(input.facts);
-  const context = { now, timezone, history, leadCard: input.facts, knownLeadCardFields, settings: input.settings, currentMessage: input.text ?? "", currentTurnMessages, pricing: input.pricing, guarantorRequirement, knowledgeLookupRequired: Boolean(input.knowledgeLookup), pricingAuthority: { source: "server calculation from leadCard before currentTurnMessages", instruction: "If pricing is unavailable, do not infer a limit from currentTurnMessages: collect the missing fact. If a program is available, use only that program's publicMax in the client reply; never calculate or expose rawMax." }, currencyConversions: input.currencyConversions ?? [], ...(visitCalendar ? { visitCalendar } : {}), commonKnowledge: retrieval.commonKnowledge, relevantStages: retrieval.stages, stageInstructions: retrieval.stageInstructions, knowledge: retrieval.knowledge };
+  const context = { now, timezone, history, leadCard: input.facts, knownLeadCardFields, settings: input.settings, currentMessage: input.text ?? "", currentTurnMessages, pricing, guarantorRequirement, knowledgeLookupRequired: Boolean(input.knowledgeLookup), pricingAuthority: { source: "server calculation from leadCard and a directly recognised locality in currentTurnMessages", instruction: "If pricing is unavailable, do not infer a limit from currentTurnMessages: collect the missing fact. If a program is available, use only that program's publicMax in the client reply; never calculate or expose rawMax." }, currencyConversions: input.currencyConversions ?? [], ...(visitCalendar ? { visitCalendar } : {}), commonKnowledge: retrieval.commonKnowledge, mandatoryKnowledgeAnswer: currentTurnMessages.length === 1 ? retrieval.mandatoryAnswer : undefined, relevantStages: retrieval.stages, stageInstructions: retrieval.stageInstructions, knowledge: retrieval.knowledge };
   const parts: Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string; detail: "high" } }> = [{ type: "text", text: JSON.stringify(context) }];
   for (const attachment of input.attachments) {
     parts.push({ type: "text", text: JSON.stringify({ attachment: { id: attachment.id, fileName: attachment.fileName, mimeType: attachment.mimeType, textContent: attachment.textContent, metadata: attachment.metadata } }) });
@@ -408,6 +473,12 @@ function loadPrompt(name: string) {
 const permittedLeadCardKeys = new Set(Object.keys(agentTurnResultSchema.shape.leadCardPatch.shape));
 
 function normalizeAgentPayload(payload: Record<string, unknown>, currentFacts: ApplicationFacts = {}): Record<string, unknown> {
+  if (typeof payload.preliminaryLimit === "string") {
+    // A numeric string is a formatting defect, not a reason to discard an
+    // otherwise complete multi-question answer after three expensive retries.
+    const value = Number(payload.preliminaryLimit.replace(/[\s_]/g, "").replace(",", "."));
+    if (Number.isFinite(value)) payload.preliminaryLimit = value;
+  }
   const leadCardPatch = payload.leadCardPatch;
   if (leadCardPatch && typeof leadCardPatch === "object" && !Array.isArray(leadCardPatch)) {
     const carriedFacts = Object.fromEntries(Object.entries(currentFacts).filter(([key, value]) => permittedLeadCardKeys.has(key) && value !== undefined));

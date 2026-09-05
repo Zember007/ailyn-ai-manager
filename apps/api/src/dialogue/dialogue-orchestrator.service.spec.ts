@@ -294,8 +294,8 @@ describe("single-agent dialogue", () => {
     await new AgentTurnService(client).run({ messages: history, facts: {}, settings: {}, text: "новое сообщение", attachments: [] });
 
     const context = JSON.parse(client.createChatCompletion.mock.calls[0][0].messages[1].content[0].text);
-    expect(context.history).toHaveLength(12);
-    expect(context.history[0].text).toBe("сообщение 4");
+    expect(context.history).toHaveLength(8);
+    expect(context.history[0].text).toBe("сообщение 8");
     expect(context.history.at(-1).text).toBe("сообщение 15");
   });
 
@@ -311,6 +311,9 @@ describe("single-agent dialogue", () => {
     const context = JSON.parse(client.createChatCompletion.mock.calls[0][0].messages[1].content[0].text);
     expect(context.knownLeadCardFields).toContain("requestedProgram");
     expect(context.stageInstructions.some((instruction: string) => instruction.includes("вопрос «без изъятия или со стоянкой?» на этом этапе абсолютно запрещён"))).toBe(true);
+    expect(context.stageInstructions.some((instruction: string) => instruction.includes("Запрещены любые мета-вопросы"))).toBe(true);
+    expect(context.pricing.withoutStorage).toMatchObject({ available: true, publicMax: 400_000 });
+    expect(context.pricing.residence).toEqual({ category: "BISHKEK_CHUY", residenceRegion: "Чуйская область" });
   });
 
   it("does not accept an invented foreign currency for a compact thousand amount", async () => {
@@ -616,11 +619,72 @@ describe("single-agent dialogue", () => {
     expect(output.result?.reply).toBe(output.reply);
   });
 
+  it("replaces a model no-information fallback with an exact approved FAQ answer", async () => {
+    const genericFallback = {
+      ...validResult,
+      reply: "К сожалению, у меня нет достоверной информации по этому вопросу. Когда Вы приедете, сотрудники с удовольствием подскажут Вам."
+    };
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify(genericFallback) } }] }) } as any;
+    const output = await new AgentTurnService(client).run({ messages: [], facts: {}, settings: {}, text: "Нужно платить за оценку автомобиля?", attachments: [] });
+    expect(output.reply).toBe("Нет, оценка автомобиля бесплатна.");
+  });
+
+  it("replaces a fallback with a direct question-answer pair from the DOCX", async () => {
+    const genericFallback = {
+      ...validResult,
+      reply: "Пожалуйста, свяжитесь с нашими сотрудниками по телефону +996 502 108 108 или напишите менеджеру в WhatsApp +996 776 108 108."
+    };
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify(genericFallback) } }] }) } as any;
+    const output = await new AgentTurnService(client).run({ messages: [], facts: {}, settings: {}, text: "Можно приехать на такси?", attachments: [] });
+    expect(output.reply).toBe("Да, конечно.");
+  });
+
+  it("does not turn a question about region 10 into a region-10 refusal", async () => {
+    const mistakenRefusal = {
+      ...validResult,
+      reply: "Автомобили с регионом 10 у нас не принимаются в залог по правилам компании.",
+      leadCardPatch: { vehicleRegistrationRegion: "10" },
+      dialogueState: { stage: "REFUSED", status: "refuse", nextAction: "refuse" }
+    };
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify(mistakenRefusal) } }] }) } as any;
+    const output = await new AgentTurnService(client).run({
+      messages: [], facts: { vehicleModel: "Omoda", vehicleYear: 2010, vehicleValue: 4_000_000, requestedAmount: 700_000 }, settings: {},
+      text: "а почему под 10 регион не даете", attachments: []
+    });
+    expect(output.result?.leadCardPatch.vehicleRegistrationRegion).toBeUndefined();
+    expect(output.result?.dialogueState).toMatchObject({ stage: "COLLECTING_VEHICLE", status: "need_more_data" });
+  });
+
+  it("continues processing other messages when a region-10 policy question is in the same batch", async () => {
+    const incompleteBatchReply = {
+      ...validResult,
+      reply: "Автомобили с регионом 10 у нас не принимаются в залог по правилам компании.",
+      hasMoney: true,
+      leadCardPatch: { vehicleModel: "Omoda", vehicleYear: 2010, vehicleValue: 4_000_000, requestedAmount: 700_000 }
+    };
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify(incompleteBatchReply) } }] }) } as any;
+    const output = await new AgentTurnService(client).run({
+      messages: [], facts: {}, settings: {}, text: "а почему под 10 регион не даете\nомода 2010 года стоит 4 млн сом нужно 700 тыс",
+      currentTurnMessages: [{ index: 1, text: "а почему под 10 регион не даете" }, { index: 2, text: "омода 2010 года стоит 4 млн сом нужно 700 тыс" }], attachments: []
+    });
+    expect(output.reply).toContain("По автомобилю: ему больше 15 лет");
+    expect(output.reply).toContain("Вас интересует займ без изъятия автомобиля или с постановкой автомобиля на охраняемую стоянку?");
+    expect(output.result?.leadCardPatch).toMatchObject({ vehicleModel: "Omoda", vehicleYear: 2010, vehicleValue: 4_000_000, requestedAmount: 700_000 });
+  });
+
   it("parses a valid model JSON without applying the log truncation limit", async () => {
     const long = { ...validResult, reply: "а".repeat(4000), cardSummary: "б".repeat(1000) };
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify(long) } }] }) } as any;
     const output = await new AgentTurnService(client).run({ messages: [], facts: {}, settings: {}, text: "test", attachments: [] });
     expect(output.result?.reply).toHaveLength(4000);
+    expect(client.createChatCompletion).toHaveBeenCalledTimes(1);
+  });
+
+  it("accepts a numeric preliminary limit returned as a JSON string without retrying", async () => {
+    const response = { ...validResult, preliminaryLimit: "600000" as any };
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify(response) } }] }) } as any;
+    const output = await new AgentTurnService(client).run({ messages: [], facts: {}, settings: {}, text: "датчик", attachments: [] });
+    expect(output.result?.preliminaryLimit).toBe(600_000);
     expect(client.createChatCompletion).toHaveBeenCalledTimes(1);
   });
 

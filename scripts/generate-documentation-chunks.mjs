@@ -67,6 +67,9 @@ for (const group of groups) {
         responsePolicy: "verbatim",
         ...(record.approvedQuestion ? { approvedQuestion: record.approvedQuestion } : {}),
         ...(override?.answer ?? record.approvedAnswer ? { approvedAnswer: override?.answer ?? record.approvedAnswer } : {})
+      } : record.retrievalQuestion ? {
+        retrievalQuestion: record.retrievalQuestion,
+        retrievalAnswer: record.retrievalAnswer
       } : {}),
       primaryStage: primaryStageForSection(group.sourceSection, text),
       stages: stagesForSection(group.sourceSection, text),
@@ -87,11 +90,22 @@ function splitDocumentIntoGroups(sourceParagraphs) {
       if (heading) {
         if (current.paragraphs.length > 0) groups.push({ ...current, text: current.paragraphs.join(" ") });
         current = { sourceSection: heading, parentContext: contextForSection(heading, part), paragraphs: [part] };
+      } else if (isQuestionParagraph(part) && current.paragraphs.length > 0) {
+        // The source document stores most FAQ entries as a question paragraph
+        // followed by one or more answer paragraphs under one broad heading.
+        // Keep every pair together; otherwise a 1,200-character chunk can
+        // merge many unrelated questions and retrieval becomes ambiguous.
+        groups.push({ ...current, text: current.paragraphs.join(" ") });
+        current = { sourceSection: current.sourceSection, parentContext: current.parentContext, paragraphs: [part] };
       } else current.paragraphs.push(part);
     }
   }
   if (current.paragraphs.length > 0) groups.push({ ...current, text: current.paragraphs.join(" ") });
   return groups;
+}
+
+function isQuestionParagraph(text) {
+  return text.includes("?") && text.trim().endsWith("?");
 }
 
 function contextForSection(section, text) {
@@ -108,13 +122,22 @@ function splitWithOverlap(text, maximumLength = 1_200) {
     const trimmed = sentence.trim();
     if (!trimmed) continue;
     if (current && current.length + trimmed.length + 1 > maximumLength) {
-      records.push({ text: current.trim(), ...(overlapFromPrevious ? { overlapFromPrevious } : {}) });
+      records.push(withRetrievalQuestionAnswer(current.trim(), overlapFromPrevious));
       overlapFromPrevious = tailSentences(current, 2, 320);
       current = `${overlapFromPrevious} ${trimmed}`;
     } else current = `${current} ${trimmed}`.trim();
   }
-  if (current) records.push({ text: current, ...(overlapFromPrevious ? { overlapFromPrevious } : {}) });
+  if (current) records.push(withRetrievalQuestionAnswer(current, overlapFromPrevious));
   return records;
+}
+
+function withRetrievalQuestionAnswer(text, overlapFromPrevious) {
+  const match = text.match(/^([^?.!]{3,}\?)\s+([\s\S]+)$/u);
+  return {
+    text,
+    ...(overlapFromPrevious ? { overlapFromPrevious } : {}),
+    ...(match ? { retrievalQuestion: match[1].trim(), retrievalAnswer: match[2].trim() } : {})
+  };
 }
 
 function tailSentences(text, count, maximumLength) {

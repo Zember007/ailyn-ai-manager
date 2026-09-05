@@ -2,6 +2,7 @@ import type { ApplicationFacts } from "@ailyn/business-rules";
 import { generatedDocumentationChunks } from "./documentation-chunks.generated.js";
 import { agentStageInstructions } from "./agent-stage-instructions.js";
 import type { Stage1Message } from "./stage1-store.service.js";
+import { approvedKnowledgeSeeds } from "../knowledge/knowledge.service.js";
 
 type DocumentationChunk = (typeof generatedDocumentationChunks)[number];
 type DocumentationStage = DocumentationChunk["primaryStage"];
@@ -20,6 +21,23 @@ const commonKnowledge = [
   findChunk((chunk) => /осмотр.*5 минут|5 минут.*осмотр/u.test(chunk.text)),
   findChunk((chunk) => chunk.section === "5.23.1")
 ].filter((chunk): chunk is DocumentationChunk => Boolean(chunk));
+const approvedFaqChunks = approvedKnowledgeSeeds
+  .filter((item) => item.active && item.status === "approved" && item.key !== "unknown_fallback")
+  .map((item) => ({
+    key: `faq_${item.key}`,
+    keywords: [...new Set(item.aliases.flatMap((alias) => alias.toLocaleLowerCase("ru-RU").match(/[\p{L}\p{N}]{3,}/gu) ?? []))],
+    section: "approved_faq",
+    sourceSection: "approved_faq",
+    parentContext: `Утверждённый FAQ: ${item.category}`,
+    chunkIndex: 0,
+    responsePolicy: "verbatim",
+    aliases: item.aliases,
+    approvedQuestion: item.aliases.join(" ") || item.key,
+    approvedAnswer: item.answerRu,
+    primaryStage: "application",
+    stages: ["application"],
+    text: item.answerRu
+  }));
 const stageKeywords: Record<DocumentationStage, RegExp> = {
   application: /автомобил|машин|марка|модель|год|стоимост|цен|сумм|займ|доллар|евро|тенге|рубл|валют|курс|изменил|изменить|дороже|дешевле|изъят|стоян|долго|длится|сколько\s+времен|оформля|осмотр|оценк/u,
   residence: /пропис|регион|бишкек|чуй|токмок|насел[её]нн/u,
@@ -40,11 +58,12 @@ export function selectRelevantDocumentation(input: {
   messages: Stage1Message[];
   maxChunks?: number;
   includeCrossStageMatches?: boolean;
-}): { stages: DocumentationStage[]; commonKnowledge: DocumentationChunk[]; knowledge: DocumentationChunk[]; stageInstructions: string[] } {
+}): { stages: DocumentationStage[]; commonKnowledge: DocumentationChunk[]; knowledge: DocumentationChunk[]; stageInstructions: string[]; mandatoryAnswer?: string } {
   const current = `${input.currentMessage ?? ""} ${input.messages.slice(-3).map((message) => message.body).join(" ")}`.toLocaleLowerCase("ru-RU");
   const stages = relevantStages(input.facts, current);
   const tokens = new Set(current.match(/[\p{L}\p{N}]{3,}/gu) ?? []);
-  const ranked = generatedDocumentationChunks
+  const candidates = [...generatedDocumentationChunks, ...approvedFaqChunks] as DocumentationChunk[];
+  const ranked = candidates
     .map((chunk, index) => ({ chunk, index, score: scoreChunk(chunk, index, stages, tokens, current) }))
     .filter((item) => item.score > 0 && (input.includeCrossStageMatches || chunkBelongsToStages(item.chunk, stages) || matchesApprovedQuestion(item.chunk, tokens)))
     .sort((left, right) => right.score - left.score || left.index - right.index);
@@ -68,7 +87,8 @@ export function selectRelevantDocumentation(input: {
     stages,
     commonKnowledge: [...commonKnowledge],
     knowledge: selected.slice(0, limit),
-    stageInstructions: stages.map((stage) => stageInstructionsByStage[stage]).filter((instruction): instruction is string => Boolean(instruction))
+    stageInstructions: stages.map((stage) => stageInstructionsByStage[stage]).filter((instruction): instruction is string => Boolean(instruction)),
+    mandatoryAnswer: mandatoryApprovedAnswer(ranked, current)
   };
 }
 
@@ -109,6 +129,8 @@ function scoreChunk(chunk: DocumentationChunk, index: number, stages: Documentat
     (/пропис|регион|бишкек|чуй|токмок/u.test(current) && /^5\.17/u.test(chunk.section) ? 70 : 0) +
     (/(?:датчик|gps|гпс|трекер|маяч)/u.test(current) && /ставится.*gps|gps.*трекер/u.test(approvedQuestionOf(chunk) ?? "") ? 120 : 0) +
     (/(?:карт|безнал|деньг.*перевод|перевод.*деньг)/u.test(current) && /банковскую карту/u.test(approvedQuestionOf(chunk) ?? "") ? 120 : 0) +
+    (chunk.key.startsWith("faq_") ? approvedFaqScore(chunk, tokens, current) : 0) +
+    (matchesDirectQuestion(chunk, current) ? 600 : 0) +
     approvedQuestionScore(chunk, tokens);
   return stageScore + keywordScore + targetedSectionScore + Math.max(0, 1 - index / 10_000);
 }
@@ -121,6 +143,25 @@ function approvedQuestionOf(chunk: DocumentationChunk): string | undefined {
   return "approvedQuestion" in chunk && typeof chunk.approvedQuestion === "string" ? chunk.approvedQuestion : undefined;
 }
 
+function approvedAnswerOf(chunk: DocumentationChunk): string | undefined {
+  return "approvedAnswer" in chunk && typeof chunk.approvedAnswer === "string" ? chunk.approvedAnswer : undefined;
+}
+
+function retrievalQuestionOf(chunk: DocumentationChunk): string | undefined {
+  return "retrievalQuestion" in chunk && typeof chunk.retrievalQuestion === "string" ? chunk.retrievalQuestion : undefined;
+}
+
+function retrievalAnswerOf(chunk: DocumentationChunk): string | undefined {
+  return "retrievalAnswer" in chunk && typeof chunk.retrievalAnswer === "string" ? chunk.retrievalAnswer : undefined;
+}
+
+function mandatoryApprovedAnswer(ranked: Array<{ chunk: DocumentationChunk }>, current: string): string | undefined {
+  const match = ranked.find(({ chunk }) =>
+    (chunk.key.startsWith("faq_") && hasExactApprovedFaqAlias(chunk, current)) || matchesDirectQuestion(chunk, current)
+  );
+  return match ? approvedAnswerOf(match.chunk) ?? retrievalAnswerOf(match.chunk) : undefined;
+}
+
 function approvedQuestionScore(chunk: DocumentationChunk, tokens: Set<string>): number {
   const question = approvedQuestionOf(chunk);
   if (!question || !("responsePolicy" in chunk) || chunk.responsePolicy !== "verbatim") return 0;
@@ -130,4 +171,28 @@ function approvedQuestionScore(chunk: DocumentationChunk, tokens: Set<string>): 
 
 function matchesApprovedQuestion(chunk: DocumentationChunk, tokens: Set<string>): boolean {
   return approvedQuestionScore(chunk, tokens) > 0;
+}
+
+function approvedFaqScore(chunk: DocumentationChunk, tokens: Set<string>, current: string): number {
+  const aliasMatches = chunk.keywords.filter((keyword) => tokens.has(keyword)).length;
+  const phraseMatch = hasExactApprovedFaqAlias(chunk, current);
+  return approvedQuestionScore(chunk, tokens) * 2 + aliasMatches * 40 + (phraseMatch ? 500 : 0);
+}
+
+function hasExactApprovedFaqAlias(chunk: DocumentationChunk, current: string): boolean {
+  const aliases = "aliases" in chunk && Array.isArray(chunk.aliases) ? chunk.aliases : [];
+  return aliases.some(
+    (alias): alias is string => typeof alias === "string" && alias.trim().length >= 5 && current.includes(alias.toLocaleLowerCase("ru-RU"))
+  );
+}
+
+function matchesDirectQuestion(chunk: DocumentationChunk, current: string): boolean {
+  const question = retrievalQuestionOf(chunk);
+  if (!question) return false;
+  const normalizedQuestion = normalizeForQuestionMatch(question);
+  return normalizedQuestion.length >= 8 && normalizeForQuestionMatch(current).includes(normalizedQuestion);
+}
+
+function normalizeForQuestionMatch(text: string): string {
+  return text.toLocaleLowerCase("ru-RU").replace(/[^\p{L}\p{N}]+/gu, " ").trim().replace(/\s+/gu, " ");
 }

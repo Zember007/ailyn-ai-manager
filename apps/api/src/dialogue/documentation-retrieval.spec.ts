@@ -58,6 +58,49 @@ describe("selectRelevantDocumentation", () => {
     });
   });
 
+  it("retrieves the approved temporary-registration FAQ for a semantic wording", () => {
+    const result = selectRelevantDocumentation({ facts: {}, currentMessage: "Можно оформить займ по временной регистрации?", messages: [] });
+    expect(result.knowledge[0]).toMatchObject({
+      key: "faq_temporary_residence",
+      approvedAnswer: "Да, оформление по временной прописке возможно."
+    });
+  });
+
+  it("retrieves the approved GPS FAQ for the colloquial word датчики", () => {
+    const result = selectRelevantDocumentation({ facts: {}, currentMessage: "датчики ставите?", messages: [] });
+    expect(result.knowledge[0]).toMatchObject({
+      key: "faq_gps_requirement",
+      approvedAnswer: "Это зависит от суммы займа и состояния автомобиля. Точно ответить сможем после осмотра автомобиля."
+    });
+  });
+
+  it("retrieves the free-evaluation answer instead of an unrelated application chunk", () => {
+    const result = selectRelevantDocumentation({ facts: {}, currentMessage: "Нужно платить за оценку автомобиля?", messages: [] });
+    expect(result.mandatoryAnswer).toBe("Нет, оценка автомобиля бесплатна.");
+    expect(result.knowledge[0]).toMatchObject({ key: "faq_vehicle_evaluation_fee" });
+  });
+
+  it("retrieves a direct question-answer pair from the DOCX FAQ", () => {
+    const result = selectRelevantDocumentation({ facts: {}, currentMessage: "Можно приехать на такси?", messages: [] });
+    expect(result.mandatoryAnswer).toBe("Да, конечно.");
+    expect(result.knowledge[0]).toMatchObject({
+      retrievalQuestion: "Можно приехать на такси?",
+      retrievalAnswer: "Да, конечно."
+    });
+  });
+
+  it("keeps every relevant FAQ in a multi-question batch", () => {
+    const result = selectRelevantDocumentation({
+      facts: {},
+      currentMessage: "датчик\nи сколько мне по максимуму можно получить под мою машину\nа вы датчики на машину ставите\nа доверенность надо оформлять",
+      messages: []
+    });
+    expect(result.knowledge).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: "faq_gps_requirement" }),
+      expect.objectContaining({ key: "faq_power_of_attorney" })
+    ]));
+  });
+
   it("does not preload future family or guarantor branches into an application turn", () => {
     const result = selectRelevantDocumentation({ facts: {}, currentMessage: "камри 2009 стоит 2 млн сом", messages: [] });
 
@@ -136,6 +179,20 @@ describe("selectRelevantDocumentation", () => {
     expect(result.stages).not.toContain("guarantor");
     expect(result.stageInstructions.some((instruction) => instruction.includes("ЭТАП ПОРУЧИТЕЛЯ"))).toBe(false);
     expect(result.knowledge.some((chunk) => /^5\.16/u.test(chunk.section))).toBe(false);
+  });
+
+  it("closes the car-photo stage after a client declines photos", () => {
+    const result = selectRelevantDocumentation({
+      facts: {
+        vehicleMake: "Toyota", vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 1_000_000, requestedAmount: 300_000,
+        requestedProgram: "parking", residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY",
+        documentsProvided: true, declinedCarPhoto: true
+      } as any,
+      currentMessage: "нет",
+      messages: []
+    });
+
+    expect(result.stages).not.toContain("vehicle_photos");
   });
 
   it("brings back application guidance when a client changes an earlier price", () => {

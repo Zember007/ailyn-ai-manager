@@ -351,7 +351,7 @@ function localExtract(input: ExtractionInput): ExtractionResult {
     facts.push({ key: "residenceText", value: input.text?.trim() ?? text, confidence: 0.75 });
     facts.push({ key: "residenceNeedsClarification", value: true, confidence: 0.75 });
   }
-  if (text.includes("регион 10")) facts.push({ key: "vehicleRegistrationRegion", value: "10", confidence: 0.9 });
+  if (explicitlyStatesVehicleRegistrationRegion10(text)) facts.push({ key: "vehicleRegistrationRegion", value: "10", confidence: 0.9 });
   if ((text.includes("зарегистр") || text.includes("учет")) && (text.includes("казахстан") || text.includes("казахстанд"))) {
     facts.push({ key: "vehicleRegistrationCountry", value: "KZ", confidence: 0.9 });
   }
@@ -437,6 +437,13 @@ function localExtract(input: ExtractionInput): ExtractionResult {
     promptInjectionDetected: text.includes("ignore previous") || text.includes("забудь инструкции"),
     clarificationNeeded: false
   };
+}
+
+function explicitlyStatesVehicleRegistrationRegion10(text: string): boolean {
+  // A policy question such as «почему под 10 регион не даёте?» must never be
+  // mistaken for a client fact. Require an ownership/registration cue next to
+  // the number before this refusal-driving field may be extracted.
+  return /(?:у\s+меня|моя|мой|авто|автомобил|машин|госномер|номер|зарегистрир)[^.!?]{0,40}(?:регион\s*)?10\b|(?:регион\s*)?10\b[^.!?]{0,40}(?:у\s+меня|моя|мой|авто|автомобил|машин|госномер|номер|зарегистрир)/iu.test(text);
 }
 
 function parseVisitDate(text: string): string | undefined {
