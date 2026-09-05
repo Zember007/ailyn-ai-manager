@@ -341,13 +341,21 @@ function buildMessage(input: Pick<AgentTurnInput, "messages" | "facts" | "settin
   const knownLeadCardFields = Object.entries(input.facts)
     .filter(([, value]) => value !== undefined && value !== null)
     .map(([key]) => key);
-  const context = { now, timezone, history, leadCard: input.facts, knownLeadCardFields, settings: input.settings, currentMessage: input.text ?? "", currentTurnMessages, pricing: input.pricing, knowledgeLookupRequired: Boolean(input.knowledgeLookup), pricingAuthority: { source: "server calculation from leadCard before currentTurnMessages", instruction: "If pricing is unavailable, do not infer a limit from currentTurnMessages: collect the missing fact. If a program is available, use only that program's publicMax in the client reply; never calculate or expose rawMax." }, currencyConversions: input.currencyConversions ?? [], ...(visitCalendar ? { visitCalendar } : {}), commonKnowledge: retrieval.commonKnowledge, relevantStages: retrieval.stages, stageInstructions: retrieval.stageInstructions, knowledge: retrieval.knowledge };
+  const guarantorRequirement = guarantorRequirementFor(input.facts);
+  const context = { now, timezone, history, leadCard: input.facts, knownLeadCardFields, settings: input.settings, currentMessage: input.text ?? "", currentTurnMessages, pricing: input.pricing, guarantorRequirement, knowledgeLookupRequired: Boolean(input.knowledgeLookup), pricingAuthority: { source: "server calculation from leadCard before currentTurnMessages", instruction: "If pricing is unavailable, do not infer a limit from currentTurnMessages: collect the missing fact. If a program is available, use only that program's publicMax in the client reply; never calculate or expose rawMax." }, currencyConversions: input.currencyConversions ?? [], ...(visitCalendar ? { visitCalendar } : {}), commonKnowledge: retrieval.commonKnowledge, relevantStages: retrieval.stages, stageInstructions: retrieval.stageInstructions, knowledge: retrieval.knowledge };
   const parts: Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string; detail: "high" } }> = [{ type: "text", text: JSON.stringify(context) }];
   for (const attachment of input.attachments) {
     parts.push({ type: "text", text: JSON.stringify({ attachment: { id: attachment.id, fileName: attachment.fileName, mimeType: attachment.mimeType, textContent: attachment.textContent, metadata: attachment.metadata } }) });
     if (includeImages && attachment.contentBase64 && /^image\/(jpeg|png|webp|gif)$/i.test(attachment.mimeType ?? "")) parts.push({ type: "image_url", image_url: { url: `data:${attachment.mimeType};base64,${attachment.contentBase64}`, detail: "high" } });
   }
   return parts;
+}
+
+function guarantorRequirementFor(facts: ApplicationFacts) {
+  const required = facts.requestedProgram === "without_storage" && facts.residenceCategory === "OTHER_KG" && facts.guarantorAvailable === undefined;
+  return required
+    ? { required: true, reason: "without_storage_outside_bishkek_chuy" }
+    : { required: false, reason: facts.residenceCategory === "BISHKEK_CHUY" ? "bishkek_or_chuy" : "not_applicable" };
 }
 
 function currentDateTime(timezone: string) {

@@ -14,20 +14,18 @@ describe("selectRelevantDocumentation", () => {
 
   it("includes approved duration FAQ for a general timing question", () => {
     const result = selectRelevantDocumentation({ facts: {}, currentMessage: "а долго оформлять", messages: [] });
-    expect(result.commonKnowledge.some((chunk) => chunk.key === "docx_0095" || chunk.key === "docx_0293" || chunk.key === "docx_0294")).toBe(true);
     expect([...result.commonKnowledge, ...result.knowledge].some((chunk) => /5 минут|около 1 часа/u.test(chunk.text))).toBe(true);
   });
 
   it("includes the exact approved redirect for an existing contract", () => {
     const result = selectRelevantDocumentation({ facts: { existingContractQuestion: true }, currentMessage: "сколько я должен по текущему займу", messages: [] });
-    expect(result.commonKnowledge.some((chunk) => chunk.key === "docx_0234")).toBe(true);
-    expect(result.commonKnowledge.find((chunk) => chunk.key === "docx_0234")?.text).toContain("Я Айлин — виртуальный помощник");
+    expect(result.commonKnowledge.some((chunk) => chunk.text.includes("Я Айлин — виртуальный помощник"))).toBe(true);
   });
 
   it("always supplies the approved programme-specific interest-rate answer", () => {
     const result = selectRelevantDocumentation({ facts: {}, currentMessage: "какая процентная ставка", messages: [] });
 
-    const rateAnswer = result.commonKnowledge.find((chunk) => chunk.key === "docx_0327")?.text ?? "";
+    const rateAnswer = result.commonKnowledge.find((chunk) => chunk.section === "5.23.1")?.text ?? "";
     expect(rateAnswer).toContain("ставка 2,4% в месяц");
     expect(rateAnswer).toContain("ставка определяется индивидуально после осмотра");
     expect(rateAnswer).toContain("только к ставке");
@@ -37,7 +35,27 @@ describe("selectRelevantDocumentation", () => {
 
   it("finds the approved GPS answer during a targeted knowledge lookup", () => {
     const result = selectRelevantDocumentation({ facts: {}, currentMessage: "а вы датчики на машину ставите", messages: [], includeCrossStageMatches: true });
-    expect(result.knowledge.some((chunk) => chunk.key === "docx_0104" && chunk.text.includes("Да, на автомобиль устанавливаем GPS/трекер"))).toBe(true);
+    const gps = result.knowledge.find((chunk) => "approvedQuestion" in chunk && chunk.approvedQuestion?.includes("GPS/трекер"));
+    expect(gps).toMatchObject({
+      responsePolicy: "verbatim",
+      approvedAnswer: "Это зависит от суммы займа и состояния автомобиля. Точно ответить сможем после осмотра автомобиля."
+    });
+  });
+
+  it("marks the approved card-disbursement answer as verbatim", () => {
+    const result = selectRelevantDocumentation({ facts: {}, currentMessage: "Можно деньги на карту?", messages: [], includeCrossStageMatches: true });
+    expect(result.knowledge.find((chunk) => "approvedQuestion" in chunk && chunk.approvedQuestion?.includes("банковскую карту"))).toMatchObject({
+      responsePolicy: "verbatim",
+      approvedAnswer: "К сожалению только наличными"
+    });
+  });
+
+  it("ranks an approved question-answer pair above neighbouring FAQ context", () => {
+    const result = selectRelevantDocumentation({ facts: {}, currentMessage: "Можно деньги на карту?", messages: [] });
+    expect(result.knowledge[0]).toMatchObject({
+      responsePolicy: "verbatim",
+      approvedAnswer: "К сожалению только наличными"
+    });
   });
 
   it("does not preload future family or guarantor branches into an application turn", () => {
@@ -103,6 +121,21 @@ describe("selectRelevantDocumentation", () => {
     expect(result.stageInstructions.some((instruction) => instruction.includes("Сначала рассчитайте и сообщите предварительный лимит без изъятия"))).toBe(true);
     expect(result.stageInstructions.some((instruction) => instruction.includes("вопрос поручителя пока ЗАПРЕЩЁН"))).toBe(true);
     expect(result.stageInstructions.some((instruction) => instruction.includes("ЖЁСТКОЕ ПРАВИЛО"))).toBe(true);
+  });
+
+  it("does not activate or supply guarantor guidance for a Chuy without-storage card", () => {
+    const result = selectRelevantDocumentation({
+      facts: {
+        vehicleMake: "Toyota", vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 1_000_000, requestedAmount: 300_000,
+        requestedProgram: "without_storage", residenceRegion: "Чуйская область", residenceCategory: "BISHKEK_CHUY"
+      } as any,
+      currentMessage: "прописка Чуйская область",
+      messages: []
+    });
+
+    expect(result.stages).not.toContain("guarantor");
+    expect(result.stageInstructions.some((instruction) => instruction.includes("ЭТАП ПОРУЧИТЕЛЯ"))).toBe(false);
+    expect(result.knowledge.some((chunk) => /^5\.16/u.test(chunk.section))).toBe(false);
   });
 
   it("brings back application guidance when a client changes an earlier price", () => {

@@ -2,6 +2,20 @@ import { describe, expect, it } from "vitest";
 import { generatedDocumentationChunks } from "./documentation-chunks.generated.js";
 
 describe("generated documentation chunk quality", () => {
+  it("preserves source-section boundaries and bounded continuity overlap", () => {
+    expect(generatedDocumentationChunks.some((chunk) => chunk.sourceSection === "20.4")).toBe(true);
+    expect(generatedDocumentationChunks.every((chunk) => chunk.parentContext.length > 0)).toBe(true);
+    expect(generatedDocumentationChunks.filter((chunk) => chunk.sourceSection === "20.4").every((chunk) => chunk.parentContext.startsWith("20.4"))).toBe(true);
+    const continuation = generatedDocumentationChunks.find((chunk) => chunk.overlapFromPrevious && chunk.overlapFromPrevious.length > 0);
+    expect(continuation?.overlapFromPrevious.length).toBeLessThanOrEqual(320);
+  });
+
+  it("keeps verbatim approved answers isolated from neighbouring context", () => {
+    const approved = generatedDocumentationChunks.filter((chunk) => chunk.responsePolicy === "verbatim");
+    expect(approved.length).toBeGreaterThan(0);
+    expect(approved.every((chunk) => chunk.overlapFromPrevious === undefined)).toBe(true);
+  });
+
   it("keeps spouse section 5.15 separate from guarantor section 5.16", () => {
     const spouse = generatedDocumentationChunks.filter((chunk) => chunk.section === "5.15");
     const guarantor = generatedDocumentationChunks.filter((chunk) => chunk.section === "5.16");

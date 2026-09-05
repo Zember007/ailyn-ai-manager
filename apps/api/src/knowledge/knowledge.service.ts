@@ -137,7 +137,7 @@ const seeds: Omit<KnowledgeItemDto, "id">[] = [
     key: "cash_only",
     category: "finance",
     aliases: ["на карту", "безнал", "наличными", "способ выдачи"],
-    answerRu: "Займ выдаётся только наличными в кыргызских сомах. На банковскую карту займ не выдаётся.",
+    answerRu: "К сожалению только наличными",
     priority: 90, status: "approved", version: 1, active: true
   },
   {
@@ -165,7 +165,7 @@ const seeds: Omit<KnowledgeItemDto, "id">[] = [
     key: "gps_requirement",
     category: "loan_terms",
     aliases: ["gps", "трекер", "маячок"],
-    answerRu: "Да, на автомобиль устанавливаем GPS/трекер (датчик).",
+    answerRu: "Это зависит от суммы займа и состояния автомобиля. Точно ответить сможем после осмотра автомобиля.",
     priority: 80, status: "approved", version: 1, active: true
   },
   {

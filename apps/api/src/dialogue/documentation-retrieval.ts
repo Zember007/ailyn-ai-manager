@@ -13,9 +13,13 @@ const requiredDocumentKeys = ["id_front", "id_back", "vehicle_registration_front
 // contract handling). The remaining product rules arrive only with the stage
 // where they can affect the reply, so unrelated branches do not compete for
 // the model's attention.
-const commonKnowledge = generatedDocumentationChunks.filter((chunk) =>
-  ["docx_0289", "docx_0290", "docx_0334", "docx_0335", "docx_0095", "docx_0293", "docx_0294", "docx_0234", "docx_0327"].includes(chunk.key)
-);
+const commonKnowledge = [
+  findChunk((chunk) => chunk.section === "5.1"),
+  findChunk((chunk) => chunk.section === "5.25"),
+  findChunk((chunk) => chunk.text.includes("Я Айлин — виртуальный помощник")),
+  findChunk((chunk) => /осмотр.*5 минут|5 минут.*осмотр/u.test(chunk.text)),
+  findChunk((chunk) => chunk.section === "5.23.1")
+].filter((chunk): chunk is DocumentationChunk => Boolean(chunk));
 const stageKeywords: Record<DocumentationStage, RegExp> = {
   application: /автомобил|машин|марка|модель|год|стоимост|цен|сумм|займ|доллар|евро|тенге|рубл|валют|курс|изменил|изменить|дороже|дешевле|изъят|стоян|долго|длится|сколько\s+времен|оформля|осмотр|оценк/u,
   residence: /пропис|регион|бишкек|чуй|токмок|насел[её]нн/u,
@@ -42,7 +46,7 @@ export function selectRelevantDocumentation(input: {
   const tokens = new Set(current.match(/[\p{L}\p{N}]{3,}/gu) ?? []);
   const ranked = generatedDocumentationChunks
     .map((chunk, index) => ({ chunk, index, score: scoreChunk(chunk, index, stages, tokens, current) }))
-    .filter((item) => item.score > 0 && (input.includeCrossStageMatches || chunkBelongsToStages(item.chunk, stages)))
+    .filter((item) => item.score > 0 && (input.includeCrossStageMatches || chunkBelongsToStages(item.chunk, stages) || matchesApprovedQuestion(item.chunk, tokens)))
     .sort((left, right) => right.score - left.score || left.index - right.index);
   const limit = input.maxChunks ?? 8;
   const selected: DocumentationChunk[] = [];
@@ -103,6 +107,27 @@ function scoreChunk(chunk: DocumentationChunk, index: number, stages: Documentat
     (/семейн|браке|женат|замуж|развод|супруг/u.test(current) && /^5\.15/u.test(chunk.section) ? 90 : 0) +
     (/поручител/u.test(current) && /^5\.16/u.test(chunk.section) ? 90 : 0) +
     (/пропис|регион|бишкек|чуй|токмок/u.test(current) && /^5\.17/u.test(chunk.section) ? 70 : 0) +
-    (/(?:датчик|gps|гпс|трекер|маяч)/u.test(current) && chunk.key === "docx_0104" ? 120 : 0);
+    (/(?:датчик|gps|гпс|трекер|маяч)/u.test(current) && /ставится.*gps|gps.*трекер/u.test(approvedQuestionOf(chunk) ?? "") ? 120 : 0) +
+    (/(?:карт|безнал|деньг.*перевод|перевод.*деньг)/u.test(current) && /банковскую карту/u.test(approvedQuestionOf(chunk) ?? "") ? 120 : 0) +
+    approvedQuestionScore(chunk, tokens);
   return stageScore + keywordScore + targetedSectionScore + Math.max(0, 1 - index / 10_000);
+}
+
+function findChunk(predicate: (chunk: DocumentationChunk) => boolean): DocumentationChunk | undefined {
+  return generatedDocumentationChunks.find(predicate);
+}
+
+function approvedQuestionOf(chunk: DocumentationChunk): string | undefined {
+  return "approvedQuestion" in chunk && typeof chunk.approvedQuestion === "string" ? chunk.approvedQuestion : undefined;
+}
+
+function approvedQuestionScore(chunk: DocumentationChunk, tokens: Set<string>): number {
+  const question = approvedQuestionOf(chunk);
+  if (!question || !("responsePolicy" in chunk) || chunk.responsePolicy !== "verbatim") return 0;
+  const questionTokens = new Set(question.toLocaleLowerCase("ru-RU").match(/[\p{L}\p{N}]{3,}/gu) ?? []);
+  return [...tokens].filter((token) => questionTokens.has(token)).length * 30;
+}
+
+function matchesApprovedQuestion(chunk: DocumentationChunk, tokens: Set<string>): boolean {
+  return approvedQuestionScore(chunk, tokens) > 0;
 }
