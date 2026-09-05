@@ -703,6 +703,14 @@ describe("single-agent dialogue", () => {
     expect(output.reply).toBe("Офис работает с понедельника по пятницу с 11:00 до 19:00. Для оформления нужно приехать не позднее 18:00. Хорошо, оформим согласие при визите. На какой день и время Вам удобно подъехать?");
   });
 
+  it("does not repeat the residence question after residence is stored in the lead", async () => {
+    const repeatedResidenceQuestion = { ...validResult, reply: "Хорошо, продолжаем по программе без изъятия. Подскажите, пожалуйста, Ваша прописка — Бишкек, Чуйская область или другой регион Кыргызстана?" };
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify(repeatedResidenceQuestion) } }] }) } as any;
+    const output = await new AgentTurnService(client).run({ messages: [{ author: "ai", body: "Выберите программу", createdAt: "2026-09-02" } as any], facts: { residenceRegion: "Другой регион Кыргызстана", residenceCategory: "OTHER_KG", requestedProgram: "without_storage" }, settings: {}, text: "без изъятия", attachments: [] });
+
+    expect(output.reply).toBe("Хорошо, продолжаем по программе без изъятия.");
+  });
+
   it("replaces a model no-information fallback with an exact approved FAQ answer", async () => {
     const genericFallback = {
       ...validResult,

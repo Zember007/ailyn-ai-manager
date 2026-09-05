@@ -292,11 +292,22 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     // Reconciliation belongs to the orchestrator's persistence boundary.
     // The model is the sole owner of conversational meaning and client prose.
     reply: appendContinuationAfterRegion10PolicyQuestion(
-      enrichVisitQuestionWithOfficeHours(enforceFirstContactGreeting(replaceUnsupportedFallbackWithApprovedAnswer(parsed.reply, mandatoryKnowledgeAnswer, input), input)),
+      removeQuestionsForKnownLeadFacts(enrichVisitQuestionWithOfficeHours(enforceFirstContactGreeting(replaceUnsupportedFallbackWithApprovedAnswer(parsed.reply, mandatoryKnowledgeAnswer, input), input)), effectiveFacts),
       input,
       effectiveFacts
     )
   };
+}
+
+function removeQuestionsForKnownLeadFacts(reply: string, facts: ApplicationFacts): string {
+  if (!facts.residenceRegion && !facts.residenceCategory) return reply;
+  // The lead card is authoritative: a state-machine stage can never reopen a
+  // residence question already answered by the client and persisted earlier.
+  return reply
+    .replace(/\s*подскажите,?\s+пожалуйста,?\s+ваша\s+прописка\s*[—:-]\s*бишкек,?\s*чуйская\s+область\s+или\s+другой\s+регион\s+кыргызстана[?!.]?/iu, "")
+    .replace(/\s*подскажите,?\s+пожалуйста,?\s+вы\s+прописаны\s+(?:в\s+)?(?:бишкеке|чуйской\s+области|другом\s+регионе)[?!.]?/iu, "")
+    .replace(/[ \t]{2,}/gu, " ")
+    .trim();
 }
 
 function enforceFirstContactGreeting(reply: string, input: Pick<AgentTurnInput, "messages">): string {
