@@ -36,9 +36,10 @@ export class DialogueOrchestratorService {
     const currentTurnMessages = messages.map((message, index) => ({ index: index + 1, text: message.text?.trim() ?? "" }));
     const attachments = messages.flatMap((message) => message.attachments);
     const settings = await this.settings.getValues();
-    // KGS-only messages use the main model fast path. An explicit foreign
-    // currency is an objective signal in the client text, so never let an
-    // incorrect hasMoney=false suppress the authoritative conversion.
+    // `hasMoney` is the normal path for every client-provided price: the
+    // dedicated normalizer assigns both roles and currency before persistence.
+    // An explicit foreign currency is an additional fail-safe, so a model typo
+    // in hasMoney cannot suppress an authoritative FX conversion.
     let turn = await this.agent.run({
       conversationId: conversation.id,
       messages: turnMessages,
@@ -56,9 +57,14 @@ export class DialogueOrchestratorService {
         pricing: calculateLoanPricing(initialApplication.facts, settings), attachments, signal: options.signal, knowledgeLookup: true
       });
     }
-    const normalizedMoney = turn.result && hasForeignCurrencyMention(text) && this.agent.normalizeMoney
+    const modelNormalizedMoney = turn.result && (turn.result.hasMoney || hasForeignCurrencyMention(text)) && this.agent.normalizeMoney
       ? await this.agent.normalizeMoney({ text, facts: initialApplication.facts, messages: turnMessages, signal: options.signal })
       : [];
+    // The LLM normalizer is the primary path, but its empty or partial JSON
+    // response must not discard a clearly written client price. Supplement it
+    // with the deterministic, turn-local parser; never overwrite a value that
+    // the normalizer returned for the same card field.
+    const normalizedMoney = supplementNormalizedMoney(modelNormalizedMoney, text, initialApplication.facts);
     throwIfAborted(options.signal);
     // Only commit client messages after all cancellable inference succeeded.
     // Attachments below deliberately use these stored IDs, not the ephemeral
@@ -144,6 +150,20 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
 
 function hasForeignCurrencyMention(text: string): boolean {
   return /(?:\busd\b|\$|доллар|\beur\b|€|евро|\bkzt\b|₸|тенге|\brub\b|₽|руб)/iu.test(text);
+}
+
+function supplementNormalizedMoney(values: NormalizedMoneyValue[], text: string, facts: ApplicationFacts): NormalizedMoneyValue[] {
+  const result = [...values];
+  const present = new Set(result.map((value) => value.field));
+  const resolved = resolveMoneyFacts({ text, currentFacts: facts });
+  for (const [field, amount, currency] of [
+    ["vehicleValue", resolved.vehicleValue, resolved.vehicleValueCurrency],
+    ["requestedAmount", resolved.requestedAmount, resolved.requestedAmountCurrency]
+  ] as const) {
+    if (present.has(field) || amount === undefined) continue;
+    result.push({ field, amount, currency: currency ?? "KGS", confidence: 0.99 });
+  }
+  return result;
 }
 
 /** Keep the conversational order: greeting/introduction first, then the
