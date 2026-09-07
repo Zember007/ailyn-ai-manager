@@ -1126,6 +1126,39 @@ describe("single-agent dialogue", () => {
     expect(output.reply).not.toContain("нельзя");
   });
 
+  it("binds a short inability to find files to the current car-photo request, not closed documents", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult,
+      reply: "Поняла, не нашли документы — продолжаем без них.",
+      leadCardPatch: {}
+    }) } }] }) } as any;
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "Пожалуйста, отправьте 2–3 фотографии автомобиля.", createdAt: "now" } as any],
+      facts: { documentsProvided: true, declinedDocuments: true } as any,
+      settings: {}, text: "не найду", attachments: []
+    });
+
+    expect(output.result?.leadCardPatch.declinedCarPhoto).toBe(true);
+    expect(output.reply).toContain("фотографии автомобиля можно отправить позже");
+    expect(output.reply).not.toContain("не нашли документы");
+  });
+
+  it("does not treat a family-status reply as a second refusal of already-declined car photos", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult,
+      reply: "Хорошо, фотографии автомобиля можно отправить позже. Поняла.",
+      leadCardPatch: { familyStatus: "single" }
+    }) } }] }) } as any;
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "Хорошо, фотографии автомобиля можно отправить позже. Подскажите, пожалуйста, Ваше семейное положение — Вы в браке, в разводе или не в браке.", createdAt: "now" } as any],
+      facts: { documentsProvided: true, declinedDocuments: true, declinedCarPhoto: true } as any,
+      settings: {}, text: "неа", attachments: []
+    });
+
+    expect(output.result?.leadCardPatch.familyStatus).toBe("single");
+    expect(output.reply).not.toContain("фотографии автомобиля можно отправить позже");
+  });
+
   it("does not repeat marital status after a client says they are married", async () => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
       ...validResult, reply: "Поняла, спасибо.", leadCardPatch: { familyStatus: "married" }
@@ -1455,6 +1488,24 @@ describe("single-agent dialogue", () => {
     expect(output.result).toMatchObject({ reply: `${withFirstContactGreeting("Спасибо.")}\n\n${vehicleStageQuestion}`, preliminaryLimit: 2_000_000, leadCardPatch: { requestedProgram: "without_storage" } });
   });
 
+  it("uses a semantic keep-car choice even when the model placed its routing field in leadCardPatch", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult,
+      reply: "Поняла, тогда продолжим без изъятия.",
+      leadCardPatch: { requestedProgram: "without_storage", limitChoice: "keep_car" }
+    }) } }] }) } as any;
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "По программе без изъятия доступно до 600 000 сом. Сумма 700 000 сом по этой программе не проходит. Со стоянкой доступно до 2 000 000 сом. Могу продолжить либо на сумму до 600 000 сом без изъятия, либо перейти на программу со стоянкой.", createdAt: "now" } as any],
+      facts: { requestedProgram: "without_storage", requestedAmount: 700_000 } as any,
+      pricing: { minimumLoan: 50_000, clientFacingMaximumField: "publicMax", withoutStorage: { available: true, rawMax: 600_000, publicMax: 600_000 }, parking: { available: true, rawMax: 2_000_000, publicMax: 2_000_000 } },
+      settings: {}, text: "мне нужна машина", attachments: []
+    });
+
+    expect(output.result?.leadCardPatch).toMatchObject({ requestedProgram: "without_storage", requestedAmount: 600_000 });
+    expect(output.reply).toMatch(/продолжим по программе без изъятия на сумму 600 000 сом\./iu);
+    expect(output.reply).not.toContain("Могу продолжить либо");
+  });
+
   it("uses the model's semantic interpretation for flexible registration, guarantor and family answers", async () => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn()
       .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ ...validResult, reply: "Продолжаем оформление, пришлите документы.", leadCardPatch: { requestedProgram: "without_storage", residenceText: "я не из бишкека и не из чуя", residenceRegion: "Другой регион Кыргызстана", residenceCategory: "OTHER_KG", residenceNeedsClarification: false }, dialogueState: { stage: "COLLECTING_DOCUMENTS", status: "need_more_data", nextAction: "collect_documents" } }) } }] })
@@ -1766,6 +1817,23 @@ describe("single-agent dialogue", () => {
     expect(output.reply).toContain("2–3 фотографии автомобиля");
     expect(output.reply).not.toContain("фото ID");
     expect(output.reply).not.toContain("всё ещё актуальна");
+  });
+
+  it("unconditionally accepts uploads and continues to the next stage without promising a re-check", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult,
+      reply: "Фотографии получили. Если какой-то снимок окажется неразборчивым, я уточню нужную сторону.",
+      leadCardPatch: {}
+    }) } }] }) } as any;
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "Пожалуйста, отправьте фото ID и свидетельства о регистрации автомобиля с обеих сторон.", createdAt: "now" } as any],
+      facts: { vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 1_000_000, requestedAmount: 400_000, requestedProgram: "parking", residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY" } as any,
+      settings: {}, text: "", attachments: [{ id: "unexpected-photo", mimeType: "image/jpeg" }]
+    });
+
+    expect(output.result?.leadCardPatch.documentsProvided).toBe(true);
+    expect(output.reply).toBe("Фотографии получены. Продолжаем оформление.\n\nПожалуйста, отправьте 2–3 фотографии автомобиля.");
+    expect(output.reply).not.toMatch(/уточн|неразборчив|пересн|дослать/iu);
   });
 
   it("keeps accepted STS sides when ID photos arrive in the next message", async () => {

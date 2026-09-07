@@ -24,6 +24,8 @@ export const agentTurnResultSchema = z.object({
   needsKnowledgeLookup: z.boolean().default(false),
   language: z.enum(["ru", "kg", "mixed", "unknown"]),
   intent: z.string().min(1).max(120),
+  /** Semantic choice from an amount-limit alternative; never persisted directly. */
+  limitChoice: z.enum(["keep_car", "parking", "undecided"]).optional(),
   leadCardPatch: applicationFactsPatchSchema,
   cardSummary: z.string().max(2000),
   preliminaryLimit: z.number().nonnegative().max(10_000_000).nullable().optional(),

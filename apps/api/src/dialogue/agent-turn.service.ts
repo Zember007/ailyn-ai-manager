@@ -413,7 +413,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     ...modelMoneyPatchForTurn(leadCardFacts, input, parsed.hasMoney),
     ...residencePatchFromExplicitClientText(input.text, leadCardFacts, input.facts),
     ...guarantorPatchFromClearReply(input, input.facts),
-    ...limitChoicePatch(input, input.facts),
+    ...limitChoicePatch(parsed.limitChoice, input, input.facts),
     ...familyPatchFromClearReply(input, input.facts, leadCardFacts),
     ...visitPatchFromClearReply(input, input.facts),
     ...(isClearDocumentsRefusal(input) ? { declinedDocuments: true } : {}),
@@ -471,6 +471,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   const vehicleNeedClarification = ambiguousVehicleNeedReply(input, effectiveFacts);
   const familyNotice = familyTransitionNotice(input, input.facts, effectiveFacts);
   const visitNotice = visitConfirmationNotice(input, input.facts, effectiveFacts);
+  const attachmentAcceptanceNotice = input.attachments.length > 0 ? "Фотографии получены. Продолжаем оформление." : undefined;
   const acceptedLimitNotice = acceptedLimitChoiceNotice(input.facts, effectiveFacts);
   const olderVehicleNotice = olderVehicleProgramNotice(input, effectiveFacts);
   const region10Answer = isRegion10PolicyQuestion(input) ? "Автомобили с регионом 10 у нас не принимаются в залог по правилам компании." : undefined;
@@ -478,7 +479,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   // workflow. It may answer a direct question (or ask for KB routing); this
   // boundary supplies the one and only next application question.
   const workflowFollowUp = serverWorkflowFollowUp(effectiveFacts, stageCompletion, requestedAmountLimit, selectedLimitNotice);
-  const directAnswer = visitNotice ?? acceptedLimitNotice ?? (region10Answer ? [region10Answer, olderVehicleNotice].filter(Boolean).join("\n\n") : undefined) ?? olderVehicleNotice ?? spouseVisitAnswer(input) ?? familyNotice ?? maximumLoanInputReply ?? maximumLoanReply;
+  const directAnswer = attachmentAcceptanceNotice ?? visitNotice ?? acceptedLimitNotice ?? (region10Answer ? [region10Answer, olderVehicleNotice].filter(Boolean).join("\n\n") : undefined) ?? olderVehicleNotice ?? spouseVisitAnswer(input) ?? familyNotice ?? maximumLoanInputReply ?? maximumLoanReply;
   const answerBeforeWorkflow = directAnswer ?? replaceUnsupportedFallbackWithApprovedAnswer(guardedModelReply, mandatoryKnowledgeAnswer, input);
   // Limits and eligibility are calculated by the server. If an amount is
   // over the selected programme's limit, preserve a normal acknowledgement or
@@ -487,7 +488,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   const serverSafeAnswer = requestedAmountLimit ? removeModelLimitClaim(answerBeforeWorkflow) : answerBeforeWorkflow;
   const modelReply = appendRequiredWorkflowFollowUp(
     appendContinuationAfterRegion10PolicyQuestion(
-      removeModelWorkflowQuestion(removeQuestionsForKnownLeadFacts(removeRepeatedProgramExplanation(enforceFirstContactGreeting(serverSafeAnswer, input), effectiveFacts, input), effectiveFacts)),
+      removeModelWorkflowQuestion(removeQuestionsForKnownLeadFacts(removeRepeatedProgramExplanation(enforceFirstContactGreeting(serverSafeAnswer, input), effectiveFacts, input), effectiveFacts, input.facts)),
       input,
       effectiveFacts
     ),
@@ -530,15 +531,14 @@ function visitPatchFromClearReply(input: Pick<AgentTurnInput, "text" | "currentT
   return { visitRequested: true, visitDate: currentDateTime(timezone).slice(0, 10), visitTime: `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}` };
 }
 
-function limitChoicePatch(input: Pick<AgentTurnInput, "text" | "currentTurnMessages" | "messages" | "pricing">, facts: ApplicationFacts): Partial<ApplicationFacts> {
+function limitChoicePatch(choice: AgentTurnResult["limitChoice"], input: Pick<AgentTurnInput, "text" | "currentTurnMessages" | "messages" | "pricing">, facts: ApplicationFacts): Partial<ApplicationFacts> {
   if (facts.requestedProgram !== "without_storage" || facts.requestedAmount === undefined) return {};
   const lastAssistant = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
   if (!/могу\s+продолжить\s+либо[\s\S]{0,500}(?:перейти|стоянк)/iu.test(lastAssistant)) return {};
-  const text = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "").trim().toLocaleLowerCase("ru-RU");
   const withoutLimit = input.pricing?.withoutStorage.publicMax;
   const parkingLimit = input.pricing?.parking.publicMax;
-  if (clearNegation(text) && typeof withoutLimit === "number") return { requestedAmount: withoutLimit };
-  if (clearAffirmation(text) && typeof parkingLimit === "number") return {
+  if (choice === "keep_car" && typeof withoutLimit === "number") return { requestedAmount: withoutLimit };
+  if (choice === "parking" && typeof parkingLimit === "number") return {
     requestedProgram: "parking",
     requestedAmount: Math.min(facts.requestedAmount, parkingLimit)
   };
@@ -749,11 +749,14 @@ function selectedProgramLimitNotice(previous: ApplicationFacts, current: Applica
   return `По программе ${programName} доступно до ${formatSomMoney(selectedPricing.publicMax)} сом.`;
 }
 
-function removeQuestionsForKnownLeadFacts(reply: string, facts: ApplicationFacts): string {
-  if (facts.declinedCarPhoto || facts.documents?.car_photo === "received") {
+function removeQuestionsForKnownLeadFacts(reply: string, facts: ApplicationFacts, previousFacts: ApplicationFacts = {}): string {
+  // An acknowledgement is useful exactly once: in the turn that closes an
+  // optional stage. On subsequent turns it is stale model context and must
+  // never survive into a reply to a different question or stage.
+  if (facts.declinedCarPhoto && previousFacts.declinedCarPhoto) {
     reply = reply.replace(/\s*(?:хорошо,?\s*)?фотографи\p{L}*\s+автомобил\p{L}*\s+можно\s+отправить\s+позже[.!]?/iu, "").trim();
   }
-  if (facts.declinedDocuments || facts.documentsProvided) {
+  if (facts.declinedDocuments && previousFacts.declinedDocuments) {
     reply = reply.replace(/\s*(?:хорошо,?\s*)?документ\p{L}*\s+можно\s+отправить\s+позже[.!]?/iu, "").trim();
   }
   if (facts.documentsProvided) {
@@ -1153,22 +1156,35 @@ function replaceUnsupportedFallbackWithApprovedAnswer(reply: string, mandatoryAn
   return mandatoryAnswer && messages.length === 1 && hasFallback ? mandatoryAnswer : reply;
 }
 
-function isClearDocumentsRefusal(input: Pick<AgentTurnInput, "text" | "messages">): boolean {
+function isClearDocumentsRefusal(input: Pick<AgentTurnInput, "text" | "messages" | "attachments">): boolean {
   return isClearOptionalStageRefusal(input, /(?:отправьте|пришлите).{0,140}(?:(?:фото\s*)?(?:id|паспорт)|свидетельств\p{L}*\s+о\s+регистрац|\bстс\b)/iu);
 }
 
-function isClearCarPhotoRefusal(input: Pick<AgentTurnInput, "text" | "messages">): boolean {
+function isClearCarPhotoRefusal(input: Pick<AgentTurnInput, "text" | "messages" | "attachments">): boolean {
   return isClearOptionalStageRefusal(input, /(?:2\s*[–-]\s*3|несколько)\s+фотограф(?:и|ий).{0,80}автомоб|фотограф(?:и|ий).{0,80}автомоб/iu);
 }
 
-function isClearOptionalStageRefusal(input: Pick<AgentTurnInput, "text" | "messages">, stageQuestion: RegExp): boolean {
+function isClearOptionalStageRefusal(input: Pick<AgentTurnInput, "text" | "messages" | "attachments">, stageQuestion: RegExp): boolean {
   const text = input.text?.trim().toLocaleLowerCase("ru-RU") ?? "";
-  if (!/^(?:нет|неа|нету|их\s+нет|нет\s+с\s+собой|не\s+буду|не\s+хочу|не\s+могу|не\s+получится|не\s+получится\s+сейчас)[.!\s]*$/u.test(text)) return false;
+  if (!text || input.attachments.length > 0) return false;
   const lastAssistant = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
-  return stageQuestion.test(lastAssistant);
+  const stagePrompt = [...lastAssistant.matchAll(new RegExp(stageQuestion.source, stageQuestion.flags.includes("g") ? stageQuestion.flags : `${stageQuestion.flags}g`))]
+    .find((match) => {
+      const afterPrompt = lastAssistant.slice((match.index ?? 0) + match[0].length);
+      return !/[?？]/u.test(afterPrompt)
+        && !/(?:подскажите|у\s+вас\s+есть|на\s+какой\s+день|когда\s+вам\s+удобно|состоите\s+ли)/iu.test(afterPrompt);
+    });
+  if (!stagePrompt) return false;
+
+  // The document and vehicle-photo stages are optional. A short declarative
+  // answer to the current upload request defers that current stage, even if
+  // the client uses words previously associated with documents. This derives
+  // the meaning from the last server question instead of a fixed word list.
+  return /^(?:нет|неа|нету|их\s+нет|нет\s+с\s+собой|не\s+буду|не\s+хочу|не\s+могу|не\s+получится|не\s+получится\s+сейчас)[.!\s]*$/u.test(text)
+    || (text.length <= 120 && !/[?？]/u.test(text) && !/^(?:зачем|почему|как|какие|какой|где|когда|можно|нужно|а\s+можно)\b/iu.test(text));
 }
 
-function enforceOptionalStageRefusalMessage(reply: string, input: Pick<AgentTurnInput, "text" | "messages">): string {
+function enforceOptionalStageRefusalMessage(reply: string, input: Pick<AgentTurnInput, "text" | "messages" | "attachments">): string {
   if (isClearDocumentsRefusal(input)) return "Хорошо, документы можно отправить позже.";
   if (isClearCarPhotoRefusal(input)) return "Хорошо, фотографии автомобиля можно отправить позже.";
   return reply;
@@ -1344,6 +1360,13 @@ function normalizeAgentPayload(payload: Record<string, unknown>, currentFacts: A
   if (leadCardPatch && typeof leadCardPatch === "object" && !Array.isArray(leadCardPatch)) {
     const carriedFacts = Object.fromEntries(Object.entries(currentFacts).filter(([key, value]) => permittedLeadCardKeys.has(key) && value !== undefined));
     const rawPatch = leadCardPatch as Record<string, unknown>;
+    // `limitChoice` is transient routing metadata, not a lead fact. Some
+    // otherwise correct model replies put it next to the chosen program in
+    // leadCardPatch. Lift that value before filtering the persisted patch so a
+    // semantic choice to keep the car can actually apply the public limit.
+    if (payload.limitChoice === undefined && ["keep_car", "parking", "undecided"].includes(String(rawPatch.limitChoice))) {
+      payload.limitChoice = rawPatch.limitChoice;
+    }
     // The model sometimes mirrors derived/top-level fields (for example
     // preliminaryLimit) inside leadCardPatch. They are not application facts,
     // so drop them instead of rejecting an otherwise usable turn.
