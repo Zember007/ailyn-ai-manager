@@ -731,6 +731,54 @@ describe("single-agent dialogue", () => {
     expect(output.reply).toBe("Без изъятия: от 50 000 сом до 200 000 сом\nСо стоянкой: от 50 000 сом до 1 310 000 сом");
   });
 
+  it.each([
+    ["parking", "Программа со стоянкой (авто на парковке): ставка 2,4% в месяц + стоимость парковки 130 сом/сутки; сумма до 2 000 000 сом."],
+    ["without_storage", "Программа БЕЗ ИЗЪЯТИЯ (авто остаётся у клиента): ставка определяется индивидуально после осмотра; сумма до 600 000 сом."]
+  ] as const)("returns the approved rate answer for %s without adding a visit question", async (requestedProgram, expectedReply) => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult,
+      reply: "Ставка без изъятия 2% в месяц. На какой день Вам удобно приехать?",
+      leadCardPatch: {}
+    }) } }] }) } as any;
+
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "Предыдущий ответ", createdAt: "now" } as any],
+      facts: {
+        vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 2_000_000,
+        requestedAmount: 500_000, requestedProgram,
+        residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY",
+        documentsProvided: true, declinedCarPhoto: true, familyStatus: "single"
+      } as any,
+      settings: {}, text: "А какие проценты?", attachments: []
+    });
+
+    expect(output.reply).toBe(expectedReply);
+  });
+
+  it("accepts tomorrow at 6 as the final 18:00 visit slot without repeating office hours", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult,
+      reply: "Завтра в 6 не получится. Офис работает с понедельника по пятницу с 11:00 до 19:00.",
+      leadCardPatch: {}
+    }) } }] }) } as any;
+    const visitPrompt = "Офис работает с понедельника по пятницу с 11:00 до 19:00. Для оформления нужно приехать не позднее 18:00. На какой день и время Вам удобно подъехать?";
+
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: visitPrompt, createdAt: "now" } as any],
+      facts: {
+        vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 2_000_000,
+        requestedAmount: 500_000, requestedProgram: "parking",
+        residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY",
+        documentsProvided: true, declinedCarPhoto: true, familyStatus: "single"
+      } as any,
+      settings: { timezone: "Asia/Bishkek" }, text: "завтра в 6", attachments: []
+    });
+
+    expect(output.result?.leadCardPatch).toMatchObject({ visitRequested: true, visitTime: "18:00" });
+    expect(output.reply).toContain("в 18:00");
+    expect(output.reply).not.toContain("Офис работает");
+  });
+
   it("answers a maximum-loan question without appending a missing-vehicle prompt", async () => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
       ...validResult,

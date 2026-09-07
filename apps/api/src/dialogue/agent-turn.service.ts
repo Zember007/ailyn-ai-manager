@@ -466,6 +466,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   const pricing = pricingForEffectiveFacts(input, effectiveFacts);
   const maximumLoanInputReply = maximumLoanInputExplanation(input, effectiveFacts);
   const maximumLoanReply = maximumLoanRangeReply({ ...input, pricing }, effectiveFacts);
+  const loanRateReply = loanRateReplyForProgram(input.text, effectiveFacts);
   const requestedAmountLimit = requestedAmountLimitReply(pricing, effectiveFacts);
   const selectedLimitNotice = selectedProgramLimitNotice(input.facts, effectiveFacts, pricing);
   const vehicleNeedClarification = ambiguousVehicleNeedReply(input, effectiveFacts);
@@ -479,7 +480,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   // workflow. It may answer a direct question (or ask for KB routing); this
   // boundary supplies the one and only next application question.
   const workflowFollowUp = serverWorkflowFollowUp(input.text, effectiveFacts, stageCompletion, requestedAmountLimit, selectedLimitNotice);
-  const directAnswer = attachmentAcceptanceNotice ?? visitNotice ?? acceptedLimitNotice ?? (region10Answer ? [region10Answer, olderVehicleNotice].filter(Boolean).join("\n\n") : undefined) ?? olderVehicleNotice ?? spouseVisitAnswer(input) ?? familyNotice ?? maximumLoanInputReply ?? maximumLoanReply;
+  const directAnswer = attachmentAcceptanceNotice ?? visitNotice ?? acceptedLimitNotice ?? (region10Answer ? [region10Answer, olderVehicleNotice].filter(Boolean).join("\n\n") : undefined) ?? olderVehicleNotice ?? spouseVisitAnswer(input) ?? familyNotice ?? loanRateReply ?? maximumLoanInputReply ?? maximumLoanReply;
   const answerBeforeWorkflow = directAnswer ?? replaceUnsupportedFallbackWithApprovedAnswer(guardedModelReply, mandatoryKnowledgeAnswer, input);
   // Limits and eligibility are calculated by the server. If an amount is
   // over the selected programme's limit, preserve a normal acknowledgement or
@@ -525,10 +526,21 @@ function visitPatchFromClearReply(input: Pick<AgentTurnInput, "text" | "currentT
   // During the working-day visit window, colloquial «в 5» means 17:00.
   if (hour >= 1 && hour <= 8) hour += 12;
   if (hour < 11 || hour > 18 || minute > 59) return {};
-  if (!/сегодня/iu.test(text)) return {};
   const settings = input.settings as Record<string, unknown>;
   const timezone = typeof settings.timezone === "string" ? settings.timezone : "Asia/Bishkek";
-  return { visitRequested: true, visitDate: currentDateTime(timezone).slice(0, 10), visitTime: `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}` };
+  const visitDate = relativeVisitDate(text, timezone);
+  if (!visitDate) return {};
+  return { visitRequested: true, visitDate, visitTime: `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}` };
+}
+
+function relativeVisitDate(text: string, timezone: string): string | undefined {
+  const offset = /сегодня/iu.test(text) ? 0 : /завтра/iu.test(text) ? 1 : undefined;
+  if (offset === undefined) return undefined;
+  const date = new Date(`${currentDateTime(timezone).slice(0, 10)}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + offset);
+  // The office accepts visits Monday through Friday only.
+  if (date.getUTCDay() === 0 || date.getUTCDay() === 6) return undefined;
+  return date.toISOString().slice(0, 10);
 }
 
 function limitChoicePatch(choice: AgentTurnResult["limitChoice"], input: Pick<AgentTurnInput, "text" | "currentTurnMessages" | "messages" | "pricing">, facts: ApplicationFacts): Partial<ApplicationFacts> {
@@ -667,6 +679,19 @@ function nextFamilyStageQuestion(facts: ApplicationFacts): string {
 
 function asksMaximumLoan(text: string | undefined): boolean {
   return /(?:сколько[^.!?]{0,40}(?:денег|дадут|дадите)|максим|лимит|доступн[^.!?]{0,30}сумм|\d[^.!?]{0,24}дадите)/iu.test(text ?? "");
+}
+
+function asksLoanRate(text: string | undefined): boolean {
+  return /(?:процент|ставк)/iu.test(text ?? "");
+}
+
+function loanRateReplyForProgram(text: string | undefined, facts: ApplicationFacts): string | undefined {
+  if (!asksLoanRate(text)) return undefined;
+  const parking = "Программа со стоянкой (авто на парковке): ставка 2,4% в месяц + стоимость парковки 130 сом/сутки; сумма до 2 000 000 сом.";
+  const withoutStorage = "Программа БЕЗ ИЗЪЯТИЯ (авто остаётся у клиента): ставка определяется индивидуально после осмотра; сумма до 600 000 сом.";
+  if (facts.requestedProgram === "parking") return parking;
+  if (facts.requestedProgram === "without_storage") return withoutStorage;
+  return `${parking}\n${withoutStorage}`;
 }
 
 function maximumLoanInputExplanation(input: Pick<AgentTurnInput, "text">, facts: ApplicationFacts): string | undefined {
@@ -834,10 +859,11 @@ function removeQuestionsForKnownLeadFacts(reply: string, facts: ApplicationFacts
  * application prompt here too, so the model cannot advance, reorder, or
  * reopen a stage with a differently worded question.
  */
-function serverWorkflowFollowUp(text: string, facts: ApplicationFacts, completion: StageCompletion, amountLimitReply: string | undefined, selectedLimitNotice: string | undefined): string | undefined {
+function serverWorkflowFollowUp(text: string | undefined, facts: ApplicationFacts, completion: StageCompletion, amountLimitReply: string | undefined, selectedLimitNotice: string | undefined): string | undefined {
   // A question about the maximum is answered by the calculation above. Do not
   // turn that answer into a repeated request for the amount the client needs.
   if (asksMaximumLoan(text)) return amountLimitReply;
+  if (asksLoanRate(text)) return undefined;
   if (amountLimitReply) return amountLimitReply;
   return [selectedLimitNotice, nextRequiredStageQuestion(facts, completion)].filter(Boolean).join("\n\n") || undefined;
 }
