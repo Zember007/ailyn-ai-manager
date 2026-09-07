@@ -27,6 +27,9 @@ function normalize(value: string): string {
     .replace(/\b(?:г(?:ород)?|с(?:ело)?|пгт|аил|айыл)\.?\s*/gu, "")
     .replace(/[^\p{L}\p{N}]+/gu, " ")
     .trim()
+    // Client replies commonly begin with a preposition: «в Чолпон-Ате».
+    // It is not part of a locality name and must not disable typo matching.
+    .replace(/^(?:в|из|на)\s+/u, "")
     .replace(/\s+/gu, " ");
 }
 

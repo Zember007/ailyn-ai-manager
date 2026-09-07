@@ -31,11 +31,13 @@ export interface ResolvedMoneyFacts {
 // Emergency fallback and numeric post-processing only. Do not expand this into
 // a natural-language understanding layer; RouterAI owns flexible wording.
 const moneyPattern =
-  /(?:(\$|€|₸|₽|usd|eur|kzt|kgs?\.?|rub|доллар(?:ов|а|ы)?|евро|тенге|сом(?:а|ов)?|руб(?:ль|ля|лей)?)\s*)?(\d{1,3}(?:[ \u00a0.,]\d{3})+|\d+(?:[.,]\d+)?)(?:\s*)(млн|миллион(?:а|ов)?|тыс(?:яч[аи]?)?|тыщ|[kк])?(?:\s*)(\$|€|₸|₽|usd|eur|kzt|kgs?\.?|rub|доллар(?:ов|а|ы)?|евро|тенге|сом(?:а|ов)?|руб(?:ль|ля|лей)?)?/giu;
-const requestedCuePattern = /(нужн|надо|сумм|займ|получить|оформить|хочу|хотел(?:ось)?|надобно|требуется|дайте|выдайте)/i;
-const vehicleCuePattern = /(стоит|стоимость|цена|оцен|машина|авто|автомобил|рыночн)/i;
+  /(?:(\$|€|₸|₽|usd|eur(?:o)?s?|kzt|kgs?\.?|rub|dollars?|доллар(?:ов|а|ы)?|евро|тенге|сом(?:а|ов)?|руб(?:ль|ля|лей)?)\s*)?(\d{1,3}(?:[ \u00a0.,]\d{3})+|\d+(?:[.,]\d+)?)(?:\s*)(млн|миллион(?:а|ов)?|тыс(?:яч[аи]?)?|тыщ|[kк])?(?:\s*)(\$|€|₸|₽|usd|eur(?:o)?s?|kzt|kgs?\.?|rub|dollars?|доллар(?:ов|а|ы)?|евро|тенге|сом(?:а|ов)?|руб(?:ль|ля|лей)?)?/giu;
+// A request such as "1 млн дадите?" is a requested loan, never an implied
+// vehicle value merely because the message also names a car and its year.
+const requestedCuePattern = /(нужн|надо|сумм|займ|получить|оформить|хочу|хотел(?:ось)?|надобно|требуется|дайте|выдайте|дадите)/i;
+const vehicleCuePattern = /(стоит|сто[ий]мост|цена|оцен|машина|авто|автомобил|рыночн)/i;
 const requestedCorrectionPattern = /(?:уже|теперь|нет|не\s+так|точнее|лучше|надо\s+больше|нужно\s+больше|хочу\s+больше)[^.!?]{0,40}(?:нужн|надо|сумм|займ|получить|хочу)?/i;
-const vehicleCorrectionPattern = /(?:уже|теперь|нет|не\s+так|точнее|ошиб(?:ся|лась)|сто(?:ит|имость)|цен[ауы])[^.!?]{0,40}(?:сто(?:ит|имость)|цен[ауы]|оцен)/i;
+const vehicleCorrectionPattern = /(?:уже|теперь|нет|не\s+так|точнее|ошиб(?:ся|лась)|перепутал(?:ся|ась)?|сто(?:ит|[ий]мост)|цен[ауы])[^.!?]{0,40}(?:сто(?:ит|[ий]мост)|цен[ауы]|оцен|доллар|евро|тенге|руб)/i;
 
 export function resolveMoneyFacts(input: {
   text?: string;
@@ -212,7 +214,7 @@ function normalizeCurrency(value: string | undefined): MoneyCurrencyCode | undef
   if (!value) return undefined;
   const normalized = value.toLocaleLowerCase("ru-RU").replace(/\./g, "");
   if (normalized === "$" || normalized === "usd" || normalized.startsWith("доллар")) return "USD";
-  if (normalized === "€" || normalized === "eur" || normalized === "евро") return "EUR";
+  if (normalized === "€" || normalized === "eur" || normalized === "euro" || normalized === "euros" || normalized === "евро") return "EUR";
   if (normalized === "₸" || normalized === "kzt" || normalized === "тенге") return "KZT";
   if (normalized === "₽" || normalized === "rub" || normalized.startsWith("руб")) return "RUB";
   if (normalized.startsWith("сом") || normalized === "kgs" || normalized === "kgs") return "KGS";

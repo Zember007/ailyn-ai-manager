@@ -14,12 +14,11 @@ const requiredDocumentKeys = ["id_front", "id_back", "vehicle_registration_front
 // contract handling). The remaining product rules arrive only with the stage
 // where they can affect the reply, so unrelated branches do not compete for
 // the model's attention.
-const commonKnowledge = [
+const baseCommonKnowledge = [
   findChunk((chunk) => chunk.section === "5.1"),
   findChunk((chunk) => chunk.section === "5.25"),
   findChunk((chunk) => chunk.text.includes("Я Айлин — виртуальный помощник")),
-  findChunk((chunk) => /осмотр.*5 минут|5 минут.*осмотр/u.test(chunk.text)),
-  findChunk((chunk) => chunk.section === "5.23.1")
+  findChunk((chunk) => /осмотр.*5 минут|5 минут.*осмотр/u.test(chunk.text))
 ].filter((chunk): chunk is DocumentationChunk => Boolean(chunk));
 const approvedFaqChunks = approvedKnowledgeSeeds
   .filter((item) => item.active && item.status === "approved" && item.key !== "unknown_fallback")
@@ -38,6 +37,11 @@ const approvedFaqChunks = approvedKnowledgeSeeds
     stages: ["application"],
     text: item.answerRu
   }));
+
+/** Full approved corpus reserved for the dedicated knowledge-answer model. */
+export function allApprovedKnowledge(): DocumentationChunk[] {
+  return [...generatedDocumentationChunks, ...approvedFaqChunks] as DocumentationChunk[];
+}
 const stageKeywords: Record<DocumentationStage, RegExp> = {
   application: /автомобил|машин|марка|модель|год|стоимост|цен|сумм|займ|доллар|евро|тенге|рубл|валют|курс|изменил|изменить|дороже|дешевле|изъят|стоян|долго|длится|сколько\s+времен|оформля|осмотр|оценк/u,
   residence: /пропис|регион|бишкек|чуй|токмок|насел[её]нн/u,
@@ -60,6 +64,13 @@ export function selectRelevantDocumentation(input: {
   includeCrossStageMatches?: boolean;
 }): { stages: DocumentationStage[]; commonKnowledge: DocumentationChunk[]; knowledge: DocumentationChunk[]; stageInstructions: string[]; mandatoryAnswer?: string } {
   const current = `${input.currentMessage ?? ""} ${input.messages.slice(-3).map((message) => message.body).join(" ")}`.toLocaleLowerCase("ru-RU");
+  // Rates are not general conversation context: exposing them on every turn
+  // makes the model answer a maximum-loan question with percentages.
+  const asksInterestRate = /(?:процент|ставк)/iu.test(input.currentMessage ?? "");
+  const commonKnowledge = [
+    ...baseCommonKnowledge,
+    ...(asksInterestRate ? [findChunk((chunk) => chunk.section === "5.23.1")] : [])
+  ].filter((chunk): chunk is DocumentationChunk => Boolean(chunk));
   const stages = relevantStages(input.facts, current);
   const tokens = new Set(current.match(/[\p{L}\p{N}]{3,}/gu) ?? []);
   const candidates = [...generatedDocumentationChunks, ...approvedFaqChunks] as DocumentationChunk[];

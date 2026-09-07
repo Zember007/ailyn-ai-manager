@@ -35,6 +35,12 @@ describe("money normalization", () => {
     ]));
   });
 
+  it("recognizes English plural currency words in keyboard-layout-mixed text", () => {
+    expect(detectMoneyMentions("z levf. ult-nj 15k euros")).toEqual(expect.arrayContaining([
+      expect.objectContaining({ sourceText: "15k euros", normalizedAmount: 15_000, currency: "EUR" })
+    ]));
+  });
+
   it("falls back to larger-as-value smaller-as-requested for two ambiguous amounts", () => {
     const result = resolveMoneyFacts({
       text: "500 тыс и 1.2 млн",
@@ -71,6 +77,19 @@ describe("money normalization", () => {
     expect(result.requestedAmountCurrency).toBe("USD");
     expect(result.vehicleValue).toBeUndefined();
     expect(result.vehicleValueCurrency).toBeUndefined();
+  });
+
+  it("assigns one amount with a 'дадите' cue only to the requested loan", () => {
+    const result = resolveMoneyFacts({
+      text: "камри 2022 г 1 млн дадите?",
+      currentFacts: {}
+    });
+
+    expect(result.requestedAmount).toBe(1_000_000);
+    expect(result.vehicleValue).toBeUndefined();
+    expect(result.mentions).toEqual([
+      expect.objectContaining({ normalizedAmount: 1_000_000, roleCandidate: "requestedAmount" })
+    ]);
   });
 
   it("uses pending facts and correction cues instead of freezing the first saved amount", () => {

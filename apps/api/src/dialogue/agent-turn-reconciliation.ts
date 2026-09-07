@@ -1,4 +1,4 @@
-import { resolveKyrgyzstanLocality, type ApplicationFacts } from "@ailyn/business-rules";
+import { resolveKyrgyzstanLocality, type ApplicationFacts, type StageCompletion } from "@ailyn/business-rules";
 import type { AgentTurnResult } from "./agent-turn.contracts.js";
 import { calculateLoanPricing, type LoanPricingSettings } from "./loan-pricing.js";
 import { roundSomAmount } from "./money-normalization.js";
@@ -42,6 +42,21 @@ export function effectiveFactsForTurn(input: {
     if (typeof result[key] === "number") result[key] = roundSomAmount(result[key]);
   }
   return result;
+}
+
+export function deriveStageCompletion(facts: ApplicationFacts): StageCompletion {
+  const vehicle = Boolean(facts.vehicleModel && facts.vehicleYear && facts.vehicleValue !== undefined);
+  const requestedAmount = vehicle && facts.requestedAmount !== undefined;
+  const program = requestedAmount && facts.requestedProgram !== undefined;
+  const residence = program && Boolean(facts.residenceRegion && facts.residenceCategory) && !facts.residenceNeedsClarification;
+  const guarantorRequired = residence && facts.requestedProgram === "without_storage" && facts.residenceCategory === "OTHER_KG" && (facts.vehicleValue ?? 0) >= 1_000_000;
+  const guarantor = residence && (!guarantorRequired || facts.guarantorAvailable === true);
+  const documents = guarantor && (facts.documentsProvided === true || facts.declinedDocuments === true);
+  const carPhoto = documents && (facts.documents?.car_photo === "received" || facts.declinedCarPhoto === true);
+  const family = carPhoto && Boolean(facts.familyStatus && facts.familyStatus !== "unknown") && (facts.familyStatus !== "married" || facts.spouseConsentReady === true || facts.spouseConsentAtOffice !== undefined) && (facts.familyStatus !== "divorced" || facts.vehicleBoughtDuringMarriage !== undefined);
+  const readyForVisit = family;
+  const visit = readyForVisit && Boolean(facts.visitDate && facts.visitTime);
+  return { vehicle, requestedAmount, program, residence, guarantor, documents, carPhoto, family, readyForVisit, visit };
 }
 
 export function attachmentFactsFromResult(previous: ApplicationFacts, attachments: AgentTurnResult["attachments"]): Partial<ApplicationFacts> {

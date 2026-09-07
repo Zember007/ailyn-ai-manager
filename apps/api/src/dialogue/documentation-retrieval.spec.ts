@@ -22,7 +22,7 @@ describe("selectRelevantDocumentation", () => {
     expect(result.commonKnowledge.some((chunk) => chunk.text.includes("Я Айлин — виртуальный помощник"))).toBe(true);
   });
 
-  it("always supplies the approved programme-specific interest-rate answer", () => {
+  it("supplies the approved programme-specific interest-rate answer only for a direct rate question", () => {
     const result = selectRelevantDocumentation({ facts: {}, currentMessage: "какая процентная ставка", messages: [] });
 
     const rateAnswer = result.commonKnowledge.find((chunk) => chunk.section === "5.23.1")?.text ?? "";
@@ -31,6 +31,9 @@ describe("selectRelevantDocumentation", () => {
     expect(rateAnswer).toContain("только к ставке");
     expect(rateAnswer).toContain("до переданного сервером `publicMax`");
     expect(rateAnswer).not.toContain("сумма до 2 000 000 сом");
+
+    const maximum = selectRelevantDocumentation({ facts: {}, currentMessage: "сколько денег по максимуму дадите", messages: [] });
+    expect(maximum.commonKnowledge.some((chunk) => chunk.section === "5.23.1")).toBe(false);
   });
 
   it("finds the approved GPS answer during a targeted knowledge lookup", () => {
@@ -116,7 +119,9 @@ describe("selectRelevantDocumentation", () => {
 
     expect(result.stages).toEqual(["application"]);
     expect(result.knowledge.some((chunk) => chunk.primaryStage === "family_status" || chunk.primaryStage === "guarantor")).toBe(false);
-    expect(result.stageInstructions.some((instruction) => instruction.includes("марку отдельно не спрашивайте"))).toBe(true);
+    const instruction = result.stageInstructions.find((item) => item.includes("марку отдельно не спрашивайте")) ?? "";
+    expect(instruction).toContain("марку отдельно не спрашивайте");
+    expect(instruction).toContain("До клиентского лимита");
   });
 
   it("supplies the approved locality reference during residence collection", () => {

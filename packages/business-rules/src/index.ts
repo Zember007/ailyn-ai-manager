@@ -31,6 +31,21 @@ export type NextActionCode =
 
 export type ResidenceCategory = LoanResidenceCategory | "FOREIGN";
 
+/** Server-derived progress markers. They are computed from facts and never
+ * accepted as a client or model assertion. */
+export interface StageCompletion {
+  vehicle: boolean;
+  requestedAmount: boolean;
+  program: boolean;
+  residence: boolean;
+  guarantor: boolean;
+  documents: boolean;
+  carPhoto: boolean;
+  family: boolean;
+  readyForVisit: boolean;
+  visit: boolean;
+}
+
 export type ApplicationStage =
   | "NEW"
   | "COLLECTING_VEHICLE"
@@ -89,8 +104,12 @@ export interface ApplicationFacts {
   familyStatus?: "married" | "single" | "divorced" | "unknown";
   vehicleBoughtDuringMarriage?: boolean;
   spouseConsentReady?: boolean;
+  /** Whether the client plans to arrange notarised spousal consent at the office. */
+  spouseConsentAtOffice?: boolean;
   spouseAway?: boolean;
   guarantorAvailable?: boolean;
+  /** Client declined the parking alternative after reporting no guarantor. */
+  guarantorAlternativeDeclined?: boolean;
   documents?: Partial<Record<DocumentCode, DocumentStatus>>;
   visitRequested?: boolean;
   visitDate?: string;
@@ -111,6 +130,7 @@ export interface ApplicationFacts {
   handedToManager?: boolean;
   onTheWay?: boolean;
   arrivedAtOffice?: boolean;
+  stageCompletion?: StageCompletion;
 }
 
 export type DocumentCode =
@@ -361,7 +381,7 @@ export function evaluateApplication(
     return needMore("COLLECTING_FAMILY_STATUS", "collect_family_status", [facts.borrowerIsOwner === false ? "ownerFamilyStatus" : "familyStatus"], rulesApplied, eligiblePrograms, calculatedLimits, flowStatements, forbiddenStatements, blockedRules, documentsTarget);
   }
 
-  if (effectiveFamilyStatus === "married" && facts.spouseConsentReady !== true) {
+  if (effectiveFamilyStatus === "married" && facts.spouseConsentReady !== true && facts.spouseConsentAtOffice === undefined) {
     rulesApplied.push("spouse_consent_required");
     return needMore("COLLECTING_FAMILY_STATUS", "collect_family_status", ["spouseConsentReady"], rulesApplied, eligiblePrograms, calculatedLimits, [
       ...flowStatements,
@@ -378,14 +398,6 @@ export function evaluateApplication(
 
   if (effectiveFamilyStatus === "divorced" && facts.vehicleBoughtDuringMarriage === undefined) {
     return needMore("COLLECTING_FAMILY_STATUS", "collect_family_status", ["vehicleBoughtDuringMarriage"], rulesApplied, eligiblePrograms, calculatedLimits, flowStatements, forbiddenStatements, blockedRules, documentsTarget);
-  }
-
-  if (effectiveFamilyStatus === "divorced" && facts.vehicleBoughtDuringMarriage && facts.divorceCertificateReady !== true) {
-    rulesApplied.push("divorce_certificate_required");
-    return needMore("COLLECTING_FAMILY_STATUS", "collect_family_status", ["divorceCertificateReady"], rulesApplied, eligiblePrograms, calculatedLimits, [
-      ...flowStatements,
-      "Для визита потребуется оригинал свидетельства о разводе."
-    ], forbiddenStatements, blockedRules, documentsTarget);
   }
 
   if (missingDocuments.length > 0 && facts.declinedDocuments && !facts.documentsProvided && !facts.visitRequested) {

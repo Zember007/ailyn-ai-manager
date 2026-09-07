@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { effectiveFactsForTurn, selectedProgramLimit } from "./agent-turn-reconciliation.js";
+import { deriveStageCompletion, effectiveFactsForTurn, selectedProgramLimit } from "./agent-turn-reconciliation.js";
 
 describe("agent turn reconciliation pricing", () => {
   it("keeps the exact parking maximum for selected-program state", () => {
@@ -35,6 +35,54 @@ describe("agent turn reconciliation pricing", () => {
       residenceRegion: "Чуйская область",
       residenceCategory: "BISHKEK_CHUY",
       residenceNeedsClarification: false
+    });
+  });
+
+  it("normalizes a misspelled Cholpon-Ata residence into the other-Kyrgyzstan category", () => {
+    const facts = effectiveFactsForTurn({
+      previous: {},
+      modelPatch: { residenceText: "чтолпон ата" },
+      explicitFacts: {},
+      currencyFacts: {},
+      attachmentFacts: {}
+    });
+
+    expect(facts).toMatchObject({
+      residenceText: "чтолпон ата",
+      residenceRegion: "Другой регион Кыргызстана",
+      residenceCategory: "OTHER_KG",
+      residenceNeedsClarification: false
+    });
+  });
+
+  it("normalizes a preposition-prefixed misspelled Cholpon-Ata residence", () => {
+    const facts = effectiveFactsForTurn({
+      previous: {},
+      modelPatch: { residenceText: "В чтолпон ата" },
+      explicitFacts: {}, currencyFacts: {}, attachmentFacts: {}
+    });
+
+    expect(facts).toMatchObject({
+      residenceRegion: "Другой регион Кыргызстана",
+      residenceCategory: "OTHER_KG",
+      residenceNeedsClarification: false
+    });
+  });
+
+  it("derives progress flags from facts instead of accepting a model-declared stage", () => {
+    const facts = effectiveFactsForTurn({
+      previous: {},
+      modelPatch: {
+        vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 2_000_000,
+        requestedAmount: 500_000, requestedProgram: "parking",
+        residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY"
+      },
+      explicitFacts: {}, currencyFacts: {}, attachmentFacts: {}
+    });
+
+    expect(deriveStageCompletion(facts)).toMatchObject({
+      vehicle: true, requestedAmount: true, program: true, residence: true,
+      guarantor: true, documents: false, readyForVisit: false, visit: false
     });
   });
 });

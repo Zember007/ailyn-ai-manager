@@ -11,6 +11,7 @@ export interface AppConfig {
   aiProvider: "routerai";
   routerAiApiKey?: string;
   routerAiTextModel?: string;
+  routerAiKnowledgeModel?: string;
   routerAiVisionModel?: string;
   routerAiEvalModel?: string;
   routerAiNormalizerModel?: string;
@@ -50,6 +51,7 @@ export function loadAppConfig(): AppConfig {
     aiProvider: "routerai",
     routerAiApiKey: optionalEnv("ROUTERAI_API_KEY"),
     routerAiTextModel: optionalEnv("ROUTERAI_TEXT_MODEL"),
+    routerAiKnowledgeModel: optionalEnv("ROUTERAI_KNOWLEDGE_MODEL"),
     routerAiVisionModel: optionalEnv("ROUTERAI_VISION_MODEL"),
     routerAiEvalModel: optionalEnv("ROUTERAI_EVAL_MODEL"),
     routerAiNormalizerModel: optionalEnv("ROUTERAI_NORMALIZER_MODEL"),
