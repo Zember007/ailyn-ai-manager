@@ -478,7 +478,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   // The model interprets the client, but it never owns the application
   // workflow. It may answer a direct question (or ask for KB routing); this
   // boundary supplies the one and only next application question.
-  const workflowFollowUp = serverWorkflowFollowUp(effectiveFacts, stageCompletion, requestedAmountLimit, selectedLimitNotice);
+  const workflowFollowUp = serverWorkflowFollowUp(input.text, effectiveFacts, stageCompletion, requestedAmountLimit, selectedLimitNotice);
   const directAnswer = attachmentAcceptanceNotice ?? visitNotice ?? acceptedLimitNotice ?? (region10Answer ? [region10Answer, olderVehicleNotice].filter(Boolean).join("\n\n") : undefined) ?? olderVehicleNotice ?? spouseVisitAnswer(input) ?? familyNotice ?? maximumLoanInputReply ?? maximumLoanReply;
   const answerBeforeWorkflow = directAnswer ?? replaceUnsupportedFallbackWithApprovedAnswer(guardedModelReply, mandatoryKnowledgeAnswer, input);
   // Limits and eligibility are calculated by the server. If an amount is
@@ -834,7 +834,10 @@ function removeQuestionsForKnownLeadFacts(reply: string, facts: ApplicationFacts
  * application prompt here too, so the model cannot advance, reorder, or
  * reopen a stage with a differently worded question.
  */
-function serverWorkflowFollowUp(facts: ApplicationFacts, completion: StageCompletion, amountLimitReply: string | undefined, selectedLimitNotice: string | undefined): string | undefined {
+function serverWorkflowFollowUp(text: string, facts: ApplicationFacts, completion: StageCompletion, amountLimitReply: string | undefined, selectedLimitNotice: string | undefined): string | undefined {
+  // A question about the maximum is answered by the calculation above. Do not
+  // turn that answer into a repeated request for the amount the client needs.
+  if (asksMaximumLoan(text)) return amountLimitReply;
   if (amountLimitReply) return amountLimitReply;
   return [selectedLimitNotice, nextRequiredStageQuestion(facts, completion)].filter(Boolean).join("\n\n") || undefined;
 }

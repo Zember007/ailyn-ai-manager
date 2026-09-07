@@ -728,10 +728,10 @@ describe("single-agent dialogue", () => {
       settings: {}, text: "сколько денег по максимуму дадитеэ", pricing, attachments: []
     });
 
-    expect(output.reply).toBe("Без изъятия: от 50 000 сом до 200 000 сом\nСо стоянкой: от 50 000 сом до 1 310 000 сом\n\nКакая сумма займа Вам необходима?");
+    expect(output.reply).toBe("Без изъятия: от 50 000 сом до 200 000 сом\nСо стоянкой: от 50 000 сом до 1 310 000 сом");
   });
 
-  it("asks only for the earliest missing vehicle fact before a maximum-loan calculation", async () => {
+  it("answers a maximum-loan question without appending a missing-vehicle prompt", async () => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
       ...validResult,
       hasMoney: true,
@@ -744,7 +744,7 @@ describe("single-agent dialogue", () => {
       facts: {}, settings: {}, text: "камри 2022 г 1 млн дадите?", attachments: []
     });
 
-    expect(output.reply).toBe("Максимальная сумма зависит от автомобиля, выбранной программы и прописки.\n\nПодскажите, пожалуйста, ориентировочную стоимость автомобиля.");
+    expect(output.reply).toBe("Максимальная сумма зависит от автомобиля, выбранной программы и прописки.");
   });
 
   it("blocks the next stage when the selected programme does not cover the requested amount", async () => {
