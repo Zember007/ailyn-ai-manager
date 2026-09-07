@@ -413,6 +413,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     ...modelMoneyPatchForTurn(leadCardFacts, input, parsed.hasMoney),
     ...residencePatchFromExplicitClientText(input.text, leadCardFacts, input.facts),
     ...guarantorPatchFromClearReply(input, input.facts),
+    ...limitChoicePatch(input, input.facts),
     ...familyPatchFromClearReply(input, input.facts, leadCardFacts),
     ...visitPatchFromClearReply(input, input.facts),
     ...(isClearDocumentsRefusal(input) ? { declinedDocuments: true } : {}),
@@ -454,10 +455,10 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     messages: input.messages,
     includeCrossStageMatches: input.knowledgeLookup
   }).mandatoryAnswer;
-  const guardedModelReply = enforceOptionalStageRefusalMessage(enforceGuarantorQuestionRequirements(enforceIdentityAnswer(
+  const guardedModelReply = removeUnaskedCurrencyProse(removeUnaskedLimitProse(enforceOptionalStageRefusalMessage(enforceGuarantorQuestionRequirements(enforceIdentityAnswer(
     guardWorkflowStageOrder(replacePrematureVisitQuestion(deduplicateRepeatedGuarantorBlock(parsed.reply), effectiveFacts, stageCompletion), effectiveFacts, stageCompletion),
     input
-  ), effectiveFacts), input);
+  ), effectiveFacts), input), input), input);
   // `input.pricing` was calculated before this turn. Recalculate it whenever
   // the client has just changed a fact that affects a limit; otherwise a
   // residence correction (for example Cholpon-Ata -> Tokmok) would still use
@@ -470,11 +471,14 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   const vehicleNeedClarification = ambiguousVehicleNeedReply(input, effectiveFacts);
   const familyNotice = familyTransitionNotice(input, input.facts, effectiveFacts);
   const visitNotice = visitConfirmationNotice(input, input.facts, effectiveFacts);
+  const acceptedLimitNotice = acceptedLimitChoiceNotice(input.facts, effectiveFacts);
+  const olderVehicleNotice = olderVehicleProgramNotice(input, effectiveFacts);
+  const region10Answer = isRegion10PolicyQuestion(input) ? "Автомобили с регионом 10 у нас не принимаются в залог по правилам компании." : undefined;
   // The model interprets the client, but it never owns the application
   // workflow. It may answer a direct question (or ask for KB routing); this
   // boundary supplies the one and only next application question.
   const workflowFollowUp = serverWorkflowFollowUp(effectiveFacts, stageCompletion, requestedAmountLimit, selectedLimitNotice);
-  const directAnswer = visitNotice ?? spouseVisitAnswer(input) ?? familyNotice ?? maximumLoanInputReply ?? maximumLoanReply;
+  const directAnswer = visitNotice ?? acceptedLimitNotice ?? (region10Answer ? [region10Answer, olderVehicleNotice].filter(Boolean).join("\n\n") : undefined) ?? olderVehicleNotice ?? spouseVisitAnswer(input) ?? familyNotice ?? maximumLoanInputReply ?? maximumLoanReply;
   const answerBeforeWorkflow = directAnswer ?? replaceUnsupportedFallbackWithApprovedAnswer(guardedModelReply, mandatoryKnowledgeAnswer, input);
   // Limits and eligibility are calculated by the server. If an amount is
   // over the selected programme's limit, preserve a normal acknowledgement or
@@ -524,6 +528,51 @@ function visitPatchFromClearReply(input: Pick<AgentTurnInput, "text" | "currentT
   const settings = input.settings as Record<string, unknown>;
   const timezone = typeof settings.timezone === "string" ? settings.timezone : "Asia/Bishkek";
   return { visitRequested: true, visitDate: currentDateTime(timezone).slice(0, 10), visitTime: `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}` };
+}
+
+function limitChoicePatch(input: Pick<AgentTurnInput, "text" | "currentTurnMessages" | "messages" | "pricing">, facts: ApplicationFacts): Partial<ApplicationFacts> {
+  if (facts.requestedProgram !== "without_storage" || facts.requestedAmount === undefined) return {};
+  const lastAssistant = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
+  if (!/могу\s+продолжить\s+либо[\s\S]{0,500}(?:перейти|стоянк)/iu.test(lastAssistant)) return {};
+  const text = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "").trim().toLocaleLowerCase("ru-RU");
+  const withoutLimit = input.pricing?.withoutStorage.publicMax;
+  const parkingLimit = input.pricing?.parking.publicMax;
+  if (clearNegation(text) && typeof withoutLimit === "number") return { requestedAmount: withoutLimit };
+  if (clearAffirmation(text) && typeof parkingLimit === "number") return {
+    requestedProgram: "parking",
+    requestedAmount: Math.min(facts.requestedAmount, parkingLimit)
+  };
+  return {};
+}
+
+function acceptedLimitChoiceNotice(previous: ApplicationFacts, current: ApplicationFacts): string | undefined {
+  if (previous.requestedAmount === current.requestedAmount || current.requestedAmount === undefined || !current.requestedProgram) return undefined;
+  const program = current.requestedProgram === "parking" ? "со стоянкой" : "без изъятия";
+  return `Поняла, продолжим по программе ${program} на сумму ${formatSomMoney(current.requestedAmount)} сом.`;
+}
+
+function removeUnaskedLimitProse(reply: string, input: Pick<AgentTurnInput, "text" | "currentTurnMessages">): string {
+  const text = input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "";
+  if (asksMaximumLoan(text)) return reply;
+  return reply
+    .replace(/\s*По\s+авто[^.!?]*сумм[^.!?]*максимальн[^.!?]*[.!?]/iu, "")
+    .replace(/\s*Если\s+нужен\s+займ\s+свыше[^.!?]*[.!?]/iu, "")
+    .replace(/[ \t]{2,}/gu, " ").trim();
+}
+
+function removeUnaskedCurrencyProse(reply: string, input: Pick<AgentTurnInput, "currencyConversions">): string {
+  if (input.currencyConversions?.length) return reply;
+  return reply
+    .replace(/\s*По\s+(?:текущему|официальному)\s+курсу[^.!?\n]*[.!?]/giu, "")
+    .replace(/\s*это\s+ориентировочно\s+[\d\s ]+сом[.!?]?/giu, "")
+    .replace(/[ \t]{2,}/gu, " ").trim();
+}
+
+function olderVehicleProgramNotice(input: Pick<AgentTurnInput, "messages" | "settings">, facts: ApplicationFacts): string | undefined {
+  if (!facts.vehicleYear || new Date().getFullYear() - facts.vehicleYear <= 15) return undefined;
+  const notice = "По общему правилу мы принимаем в залог автомобили старше 15 лет только на стоянку, но если вы планируете получить займ без изъятия, то мы готовы рассмотреть вашу заявку индивидуально.";
+  const alreadyExplained = input.messages.some((message) => message.author === "ai" && /автомобил\p{L}*\s+старше\s+15\s+лет[\s\S]{0,180}(?:только\s+на\s+стоянк|индивидуально)/iu.test(message.body));
+  return alreadyExplained ? undefined : notice;
 }
 
 function visitConfirmationNotice(input: Pick<AgentTurnInput, "settings">, previous: ApplicationFacts, current: ApplicationFacts): string | undefined {
@@ -701,6 +750,12 @@ function selectedProgramLimitNotice(previous: ApplicationFacts, current: Applica
 }
 
 function removeQuestionsForKnownLeadFacts(reply: string, facts: ApplicationFacts): string {
+  if (facts.declinedCarPhoto || facts.documents?.car_photo === "received") {
+    reply = reply.replace(/\s*(?:хорошо,?\s*)?фотографи\p{L}*\s+автомобил\p{L}*\s+можно\s+отправить\s+позже[.!]?/iu, "").trim();
+  }
+  if (facts.declinedDocuments || facts.documentsProvided) {
+    reply = reply.replace(/\s*(?:хорошо,?\s*)?документ\p{L}*\s+можно\s+отправить\s+позже[.!]?/iu, "").trim();
+  }
   if (facts.documentsProvided) {
     reply = reply
       .replace(/\s*(?:пожалуйста,?\s*)?(?:отправьте|пришлите)[^.!?\n]{0,180}(?:\bid\b|паспорт|свидетельств|стс)[^.!?\n]*[?!.]?/iu, "")
