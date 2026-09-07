@@ -1506,6 +1506,25 @@ describe("single-agent dialogue", () => {
     expect(output.reply).not.toContain("Могу продолжить либо");
   });
 
+  it("treats a bare refusal after the parking alternative as keeping the car at the without-storage limit", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult,
+      reply: "Поняла.",
+      limitChoice: "undecided",
+      leadCardPatch: {}
+    }) } }] }) } as any;
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "По программе без изъятия доступно до 600 000 сом. Сумма 870 000 сом по этой программе не проходит. Со стоянкой доступно до 1 310 000 сом. Могу продолжить либо на сумму до 600 000 сом без изъятия, либо перейти на программу со стоянкой.", createdAt: "now" } as any],
+      facts: { requestedProgram: "without_storage", requestedAmount: 870_000 } as any,
+      pricing: { minimumLoan: 50_000, clientFacingMaximumField: "publicMax", withoutStorage: { available: true, rawMax: 600_000, publicMax: 600_000 }, parking: { available: true, rawMax: 1_310_000, publicMax: 1_310_000 } },
+      settings: {}, text: "нет", attachments: []
+    });
+
+    expect(output.result?.leadCardPatch).toMatchObject({ requestedProgram: "without_storage", requestedAmount: 600_000 });
+    expect(output.reply).toMatch(/продолжим по программе без изъятия на сумму 600 000 сом\./iu);
+    expect(output.reply).not.toContain("Могу продолжить либо");
+  });
+
   it("uses the model's semantic interpretation for flexible registration, guarantor and family answers", async () => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn()
       .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ ...validResult, reply: "Продолжаем оформление, пришлите документы.", leadCardPatch: { requestedProgram: "without_storage", residenceText: "я не из бишкека и не из чуя", residenceRegion: "Другой регион Кыргызстана", residenceCategory: "OTHER_KG", residenceNeedsClarification: false }, dialogueState: { stage: "COLLECTING_DOCUMENTS", status: "need_more_data", nextAction: "collect_documents" } }) } }] })

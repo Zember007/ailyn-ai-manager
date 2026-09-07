@@ -537,12 +537,23 @@ function limitChoicePatch(choice: AgentTurnResult["limitChoice"], input: Pick<Ag
   if (!/могу\s+продолжить\s+либо[\s\S]{0,500}(?:перейти|стоянк)/iu.test(lastAssistant)) return {};
   const withoutLimit = input.pricing?.withoutStorage.publicMax;
   const parkingLimit = input.pricing?.parking.publicMax;
-  if (choice === "keep_car" && typeof withoutLimit === "number") return { requestedAmount: withoutLimit };
-  if (choice === "parking" && typeof parkingLimit === "number") return {
+  // The server made a two-option offer: retain the car with a lower amount,
+  // or move it to parking. A terse negative response therefore rejects the
+  // offered parking alternative, not the loan itself. The model handles all
+  // richer language semantically; this only protects the unambiguous bare
+  // refusal if the model left its routing field undecided.
+  const resolvedChoice = choice === "undecided" && isBareRefusal(input) ? "keep_car" : choice;
+  if (resolvedChoice === "keep_car" && typeof withoutLimit === "number") return { requestedAmount: withoutLimit };
+  if (resolvedChoice === "parking" && typeof parkingLimit === "number") return {
     requestedProgram: "parking",
     requestedAmount: Math.min(facts.requestedAmount, parkingLimit)
   };
   return {};
+}
+
+function isBareRefusal(input: Pick<AgentTurnInput, "text" | "currentTurnMessages">): boolean {
+  const text = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "").trim();
+  return /^(?:нет|неа|не\s+хочу|не\s+буду|отказываюсь|не\s+подходит)[.!\s]*$/iu.test(text);
 }
 
 function acceptedLimitChoiceNotice(previous: ApplicationFacts, current: ApplicationFacts): string | undefined {
@@ -564,7 +575,7 @@ function removeUnaskedCurrencyProse(reply: string, input: Pick<AgentTurnInput, "
   if (input.currencyConversions?.length) return reply;
   return reply
     .replace(/\s*По\s+(?:текущему|официальному)\s+курсу[^.!?\n]*[.!?]/giu, "")
-    .replace(/\s*это\s+ориентировочно\s+[\d\s ]+сом[.!?]?/giu, "")
+    .replace(/\s*это\s+ориентировочно\s+[\d\s\u00a0]+сом[.!?]?/giu, "")
     .replace(/[ \t]{2,}/gu, " ").trim();
 }
 
@@ -818,15 +829,6 @@ function removeQuestionsForKnownLeadFacts(reply: string, facts: ApplicationFacts
   return [withoutRepeatedResidenceQuestion, nextQuestion].filter(Boolean).join("\n\n");
 }
 
-function appendNextStageAfterAcknowledgement(reply: string, facts: ApplicationFacts): string {
-  // A bare acknowledgement leaves the client with no action. If the model has
-  // just persisted a fact, the server owns the obligation to continue with
-  // the earliest incomplete stage.
-  if (!/^(?:спасибо|понял(?:а)?|принял(?:а)?|хорошо|отлично)[.!\s]*$/iu.test(reply.trim())) return reply;
-  const nextQuestion = nextRequiredStageQuestion(facts);
-  return nextQuestion ? `${reply.trim()}\n\n${nextQuestion}` : reply;
-}
-
 /**
  * A completed lead card is calculated only on the server.  Keep every
  * application prompt here too, so the model cannot advance, reorder, or
@@ -938,13 +940,6 @@ function isIdentityQuestion(input: Pick<AgentTurnInput, "text" | "currentTurnMes
 
 function enforceIdentityAnswer(reply: string, input: Pick<AgentTurnInput, "text" | "currentTurnMessages">): string {
   return isIdentityQuestion(input) ? IDENTITY_REPLY : reply;
-}
-
-function enrichVisitQuestionWithOfficeHours(reply: string): string {
-  const asksForVisit = /на\s+какой\s+день\s+и\s+время\s+вам\s+удобно\s+(?:подъехать|приехать)/iu.test(reply);
-  const alreadyExplainsHours = /(?:понедельник|будн).{0,100}(?:11:00|11\s*час).{0,100}(?:19:00|19\s*час)|(?:11:00|11\s*час).{0,100}(?:19:00|19\s*час)/iu.test(reply);
-  if (!asksForVisit || alreadyExplainsHours) return reply;
-  return `Офис работает с понедельника по пятницу с 11:00 до 19:00. Для оформления нужно приехать не позднее 18:00. ${reply}`;
 }
 
 function residencePatchFromExplicitClientText(text: string | undefined, patch: Partial<ApplicationFacts>, previousFacts: ApplicationFacts): Partial<ApplicationFacts> {
@@ -1087,7 +1082,7 @@ function guarantorPatchFromClearReply(input: Pick<AgentTurnInput, "text" | "curr
 const GUARANTOR_REQUIREMENTS = "Для вашей прописки требуется поручитель\n- возраст от 25 лет\n- проживает в г. Бишкек или Чуйской области\n- должен лично присутствовать при выдаче займа и иметь с собой ID (паспорт)\nУ Вас есть такой поручитель?";
 const GUARANTOR_PARKING_ALTERNATIVE = "Поручитель обязателен для программы без изъятия в Вашем регионе. Можем рассмотреть программу с постановкой автомобиля на охраняемую стоянку?";
 
-function enforceGuarantorQuestionRequirements(reply: string, facts: ApplicationFacts): string {
+function enforceGuarantorQuestionRequirements(reply: string, _facts: ApplicationFacts): string {
   // The model is prohibited from asking workflow questions. The canonical
   // requirements are appended later by `nextRequiredStageQuestion`, so this
   // guard intentionally does not manufacture a second copy in model prose.
