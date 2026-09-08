@@ -51,11 +51,11 @@ export const approvedKnowledgeSeeds: Omit<KnowledgeItemDto, "id">[] = [
   {
     key: "office_location",
     category: "office",
-    aliases: ["адрес", "где вы", "где находится офис", "где ваш офис", "офис", "как доехать"],
+    aliases: ["адрес", "где вы", "где находится офис", "где ваш офис", "офис", "как доехать", "куда ехать", "куда приезжать", "куда подъехать"],
     answerRu: "Наш офис находится на бульваре Молодой Гвардии, 22, в Бишкеке. Мы работаем с понедельника по пятницу с 11:00 до 19:00. Вы можете приехать в любое удобное время в рамках рабочего графика.\nhttps://go.2gis.com/Y34m4\nhttps://maps.app.goo.gl/9xiWLVvdyRgn3Sx4A",
     priority: 100,
     status: "approved",
-    version: 1,
+    version: 2,
     active: true
   },
   {
@@ -228,6 +228,20 @@ export const approvedKnowledgeSeeds: Omit<KnowledgeItemDto, "id">[] = [
     priority: 90, status: "approved", version: 1, active: true
   },
   {
+    key: "vehicle_in_credit",
+    category: "eligibility",
+    aliases: ["авто в кредите", "автомобиль в кредите", "машина в кредите", "кредитный автомобиль", "машина кредитная"],
+    answerRu: "К сожалению, мы не сможем оформить займ, если автомобиль в кредите.",
+    priority: 100, status: "approved", version: 2, active: true
+  },
+  {
+    key: "belongings_in_vehicle",
+    category: "vehicle_storage",
+    aliases: ["вещи надо забрать из авто", "надо забрать вещи из автомобиля", "вещи в машине", "оставить вещи в машине", "можно оставить вещи в автомобиле", "вещи из авто"],
+    answerRu: "Вещи в автомобиле можно оставить или забрать — на Ваше усмотрение.",
+    priority: 100, status: "approved", version: 1, active: true
+  },
+  {
     key: "income_documents",
     category: "eligibility",
     aliases: ["справка о доходах", "официальная работа", "безработный"],
@@ -265,9 +279,9 @@ export const approvedKnowledgeSeeds: Omit<KnowledgeItemDto, "id">[] = [
   {
     key: "parking_details",
     category: "office",
-    aliases: ["где стоянка", "посмотреть парковку", "охраняемая стоянка"],
-    answerRu: "Вопрос осмотра парковки решается непосредственно с менеджером при Вашем визите в офис. Во время оформления займа менеджер подробно расскажет об условиях хранения автомобиля и ответит на все Ваши вопросы.",
-    priority: 80, status: "approved", version: 1, active: true
+    aliases: ["где стоянка", "где у вас стоянка", "где находится парковка", "стоянка в офисе", "охраняемая стоянка"],
+    answerRu: "Парковка находится недалеко от нашего офиса и находится под охраной. Точный адрес парковки не сообщается.",
+    priority: 100, status: "approved", version: 2, active: true
   },
   {
     key: "walk_in_visit",

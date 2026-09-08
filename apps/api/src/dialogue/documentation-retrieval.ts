@@ -5,6 +5,7 @@ import type { Stage1Message } from "./stage1-store.service.js";
 import { approvedKnowledgeSeeds } from "../knowledge/knowledge.service.js";
 
 type DocumentationChunk = (typeof generatedDocumentationChunks)[number];
+type KnowledgeContextChunk = DocumentationChunk | (typeof approvedFaqChunks)[number];
 type DocumentationStage = DocumentationChunk["primaryStage"];
 const stageInstructionsByStage: Partial<Record<DocumentationStage, string>> = agentStageInstructions;
 
@@ -38,9 +39,36 @@ const approvedFaqChunks = approvedKnowledgeSeeds
     text: item.answerRu
   }));
 
-/** Full approved corpus reserved for the dedicated knowledge-answer model. */
-export function allApprovedKnowledge(): DocumentationChunk[] {
-  return [...generatedDocumentationChunks, ...approvedFaqChunks] as DocumentationChunk[];
+/**
+ * Gives the knowledge model a short, ordered evidence packet instead of a
+ * large undifferentiated document dump. FAQ answers have the highest
+ * priority; section 3.18 is always included next because it owns questions
+ * about an already issued loan. The remaining entries are retrieved for the
+ * current message only.
+ */
+export function prioritizedKnowledgeForQuestion(input: {
+  facts: ApplicationFacts;
+  currentMessage?: string;
+  messages: Stage1Message[];
+}): KnowledgeContextChunk[] {
+  const selected = selectRelevantDocumentation({ ...input, includeCrossStageMatches: true, maxChunks: 8 });
+  const current = (input.currentMessage ?? "").toLocaleLowerCase("ru-RU");
+  const tokens = new Set(current.match(/[\p{L}\p{N}]{3,}/gu) ?? []);
+  const matchedFaq = approvedFaqChunks.filter((chunk) =>
+    hasExactApprovedFaqAlias(chunk, current) || matchesApprovedQuestion(chunk, tokens)
+  );
+  const contractRules = generatedDocumentationChunks.filter((chunk) => chunk.section === "3.18");
+  return uniqueKnowledge([
+    ...matchedFaq,
+    ...contractRules,
+    ...approvedFaqChunks,
+    ...selected.knowledge,
+    ...selected.commonKnowledge
+  ]);
+}
+
+function uniqueKnowledge(chunks: KnowledgeContextChunk[]): KnowledgeContextChunk[] {
+  return [...new Map(chunks.map((chunk) => [chunk.key, chunk])).values()];
 }
 const stageKeywords: Record<DocumentationStage, RegExp> = {
   application: /автомобил|машин|марка|модель|год|стоимост|цен|сумм|займ|доллар|евро|тенге|рубл|валют|курс|изменил|изменить|дороже|дешевле|изъят|стоян|долго|длится|сколько\s+времен|оформля|осмотр|оценк/u,
@@ -152,11 +180,11 @@ function findChunk(predicate: (chunk: DocumentationChunk) => boolean): Documenta
   return generatedDocumentationChunks.find(predicate);
 }
 
-function approvedQuestionOf(chunk: DocumentationChunk): string | undefined {
+function approvedQuestionOf(chunk: KnowledgeContextChunk): string | undefined {
   return "approvedQuestion" in chunk && typeof chunk.approvedQuestion === "string" ? chunk.approvedQuestion : undefined;
 }
 
-function approvedAnswerOf(chunk: DocumentationChunk): string | undefined {
+function approvedAnswerOf(chunk: KnowledgeContextChunk): string | undefined {
   return "approvedAnswer" in chunk && typeof chunk.approvedAnswer === "string" ? chunk.approvedAnswer : undefined;
 }
 
@@ -175,24 +203,24 @@ function mandatoryApprovedAnswer(ranked: Array<{ chunk: DocumentationChunk }>, c
   return match ? approvedAnswerOf(match.chunk) ?? retrievalAnswerOf(match.chunk) : undefined;
 }
 
-function approvedQuestionScore(chunk: DocumentationChunk, tokens: Set<string>): number {
+function approvedQuestionScore(chunk: KnowledgeContextChunk, tokens: Set<string>): number {
   const question = approvedQuestionOf(chunk);
   if (!question || !("responsePolicy" in chunk) || chunk.responsePolicy !== "verbatim") return 0;
   const questionTokens = new Set(question.toLocaleLowerCase("ru-RU").match(/[\p{L}\p{N}]{3,}/gu) ?? []);
   return [...tokens].filter((token) => questionTokens.has(token)).length * 30;
 }
 
-function matchesApprovedQuestion(chunk: DocumentationChunk, tokens: Set<string>): boolean {
+function matchesApprovedQuestion(chunk: KnowledgeContextChunk, tokens: Set<string>): boolean {
   return approvedQuestionScore(chunk, tokens) > 0;
 }
 
-function approvedFaqScore(chunk: DocumentationChunk, tokens: Set<string>, current: string): number {
+function approvedFaqScore(chunk: KnowledgeContextChunk, tokens: Set<string>, current: string): number {
   const aliasMatches = chunk.keywords.filter((keyword) => tokens.has(keyword)).length;
   const phraseMatch = hasExactApprovedFaqAlias(chunk, current);
   return approvedQuestionScore(chunk, tokens) * 2 + aliasMatches * 40 + (phraseMatch ? 500 : 0);
 }
 
-function hasExactApprovedFaqAlias(chunk: DocumentationChunk, current: string): boolean {
+function hasExactApprovedFaqAlias(chunk: KnowledgeContextChunk, current: string): boolean {
   const aliases = "aliases" in chunk && Array.isArray(chunk.aliases) ? chunk.aliases : [];
   return aliases.some(
     (alias): alias is string => typeof alias === "string" && alias.trim().length >= 5 && current.includes(alias.toLocaleLowerCase("ru-RU"))

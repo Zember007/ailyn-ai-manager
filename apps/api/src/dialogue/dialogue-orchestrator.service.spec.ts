@@ -1180,6 +1180,21 @@ describe("single-agent dialogue", () => {
     expect(output.reply).toContain("Пожалуйста, отправьте фото ID");
   });
 
+  it.each([
+    ["где у вас стоянка", "Парковка находится недалеко от нашего офиса и находится под охраной. Точный адрес парковки не сообщается."],
+    ["авто в кредите", "К сожалению, мы не сможем оформить займ, если автомобиль в кредите."],
+    ["А вещи надо забрать из авто?", "Вещи в автомобиле можно оставить или забрать — на Ваше усмотрение."]
+  ])("never lets the workflow model invent a factual answer to %s", async (text, approvedAnswer) => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ ...validResult, reply: "Это зависит от условий, уточним позднее.", leadCardPatch: {} }) } }] }) } as any;
+    const output = await new AgentTurnService(client).run({ messages: [], facts: {}, settings: {}, text, attachments: [] });
+
+    expect(output.reply).toContain(approvedAnswer);
+    expect(output.reply).not.toContain("Это зависит от условий");
+    // Even exact FAQ matches are sent to the knowledge expert: it adapts the
+    // approved answer to the client's wording and current context.
+    expect(output.result?.leadCardPatch.knowledgeRequest).toMatchObject({ required: true });
+  });
+
   it("asks about remaining questions after a booked visit and closes honestly after no", async () => {
     const facts = {
       vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 1_000_000, requestedAmount: 200_000, requestedProgram: "parking",

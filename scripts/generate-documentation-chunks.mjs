@@ -90,7 +90,7 @@ function splitDocumentIntoGroups(sourceParagraphs) {
       if (heading) {
         if (current.paragraphs.length > 0) groups.push({ ...current, text: current.paragraphs.join(" ") });
         current = { sourceSection: heading, parentContext: contextForSection(heading, part), paragraphs: [part] };
-      } else if (isQuestionParagraph(part) && current.paragraphs.length > 0) {
+    } else if ((isQuestionParagraph(part) || isSemanticSubheading(part)) && current.paragraphs.length > 0) {
         // The source document stores most FAQ entries as a question paragraph
         // followed by one or more answer paragraphs under one broad heading.
         // Keep every pair together; otherwise a 1,200-character chunk can
@@ -106,6 +106,14 @@ function splitDocumentIntoGroups(sourceParagraphs) {
 
 function isQuestionParagraph(text) {
   return text.includes("?") && text.trim().endsWith("?");
+}
+
+// The DOCX contains topic labels such as «Клиент сообщает о неисправности
+// GPS» directly after FAQ answers, without a numbered heading. They must
+// begin a new retrieval unit; otherwise an answer about parking can absorb a
+// later, unrelated servicing rule and become a false semantic match.
+function isSemanticSubheading(text) {
+  return /^(?:Клиент\s+(?:сообщает|спрашивает|интересуется|просит)|Если\s+клиент\s+(?:сообщает|спрашивает|просит)|Вопросы\s+о\s+)/iu.test(text.trim());
 }
 
 function contextForSection(section, text) {

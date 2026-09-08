@@ -88,25 +88,17 @@ export class DialogueOrchestratorService {
         conversationId: conversation.id,
         messages: turnMessages,
         facts: normalizedFacts,
+        settings,
         text,
         currentTurnMessages,
         workflowFollowUp,
         signal: options.signal
       });
       if (knowledge) {
-        // The KB model owns the answer, while the workflow model owns the next
-        // application step. Preserve direct server answers already composed
-        // for another message in the same batch (for example region 10 or an
-        // age rule) instead of replacing them with the KB answer to coffee.
-        const existingAnswer = workflowFollowUp && turn.reply.endsWith(workflowFollowUp)
-          ? turn.reply.slice(0, -workflowFollowUp.length).trim()
-          : turn.reply.trim();
-        const answerWithoutDuplicateRegion = /Автомобили\s+с\s+регионом\s+10\s+у\s+нас\s+не\s+принимаются/iu.test(existingAnswer)
-          ? existingAnswer.replace(/\s*По\s+вопросу\s+про\s+регион\s+10[^.!?]*[.!?]/iu, "").trim()
-          : existingAnswer;
-        const reply = appendWorkflowFollowUp([answerWithoutDuplicateRegion, knowledge.reply]
-          .filter((value, index, values) => Boolean(value) && values.indexOf(value) === index)
-          .join("\n\n"), workflowFollowUp);
+        // The knowledge model is the only author of factual company answers.
+        // Never prefix it with the workflow model's prose: that prose may be
+        // plausible but unsupported and would reintroduce a hallucination.
+        const reply = appendWorkflowFollowUp(knowledge.reply, workflowFollowUp);
         const result = { ...turn.result, reply };
         turn = { ...turn, result, reply, model: knowledge.model, promptVersion: `${turn.promptVersion}+knowledge` };
       }

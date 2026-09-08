@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { selectRelevantDocumentation } from "./documentation-retrieval.js";
+import { prioritizedKnowledgeForQuestion, selectRelevantDocumentation } from "./documentation-retrieval.js";
 
 describe("selectRelevantDocumentation", () => {
   it("always supplies only the compact approved-answer core", () => {
@@ -75,6 +75,23 @@ describe("selectRelevantDocumentation", () => {
       key: "faq_gps_requirement",
       approvedAnswer: "Это зависит от суммы займа и состояния автомобиля. Точно ответить сможем после осмотра автомобиля."
     });
+  });
+
+  it.each([
+    ["где у вас стоянка", "Парковка находится недалеко от нашего офиса и находится под охраной. Точный адрес парковки не сообщается."],
+    ["авто в кредите", "К сожалению, мы не сможем оформить займ, если автомобиль в кредите."],
+    ["А вещи надо забрать из авто?", "Вещи в автомобиле можно оставить или забрать — на Ваше усмотрение."],
+    ["а куда ехать", "Наш офис находится на бульваре Молодой Гвардии, 22, в Бишкеке. Мы работаем с понедельника по пятницу с 11:00 до 19:00. Вы можете приехать в любое удобное время в рамках рабочего графика.\nhttps://go.2gis.com/Y34m4\nhttps://maps.app.goo.gl/9xiWLVvdyRgn3Sx4A"]
+  ])("makes the approved answer mandatory for %s", (question, answer) => {
+    const result = selectRelevantDocumentation({ facts: {}, currentMessage: question, messages: [] });
+    expect(result.mandatoryAnswer).toBe(answer);
+  });
+
+  it("puts the matching FAQ before section 3.18 and other knowledge-model context", () => {
+    const packet = prioritizedKnowledgeForQuestion({ facts: {}, currentMessage: "Авто в кредите", messages: [] });
+
+    expect(packet[0]).toMatchObject({ key: "faq_vehicle_in_credit" });
+    expect(packet.findIndex((chunk) => chunk.section === "3.18")).toBeGreaterThan(0);
   });
 
   it("retrieves the free-evaluation answer instead of an unrelated application chunk", () => {

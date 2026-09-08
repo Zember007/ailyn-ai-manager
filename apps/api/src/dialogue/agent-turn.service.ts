@@ -9,7 +9,7 @@ import { RouterAiClient } from "../ai/router-ai/router-ai.client.js";
 import type { InboundAttachment } from "../channels/channel.interface.js";
 import { BackendLogsService } from "../logs/backend-logs.service.js";
 import { attachmentFactsFromResult, deriveStageCompletion, effectiveFactsForTurn } from "./agent-turn-reconciliation.js";
-import { allApprovedKnowledge, selectRelevantDocumentation } from "./documentation-retrieval.js";
+import { prioritizedKnowledgeForQuestion, selectRelevantDocumentation } from "./documentation-retrieval.js";
 import { agentTurnResultSchema, knowledgeAnswerSchema, type AgentTurnResult } from "./agent-turn.contracts.js";
 import { moneyNormalizationSchema } from "./pipeline.contracts.js";
 import { calculateLoanPricing, type LoanPricing, type LoanPricingSettings } from "./loan-pricing.js";
@@ -131,6 +131,7 @@ export class AgentTurnService {
   async answerWithKnowledge(input: {
     messages: Stage1Message[];
     facts: ApplicationFacts;
+    settings: object;
     text?: string;
     currentTurnMessages?: Array<{ index: number; text: string }>;
     workflowFollowUp: string;
@@ -139,13 +140,32 @@ export class AgentTurnService {
   }): Promise<{ reply: string; answerFound: boolean; model: string } | undefined> {
     if (!this.client.isConfigured()) return undefined;
     const model = this.config.routerAiKnowledgeModel ?? this.config.routerAiTextModel ?? "routerai-knowledge-model-not-configured";
+    const documentation = selectRelevantDocumentation({
+      facts: input.facts,
+      currentMessage: input.text,
+      messages: input.messages,
+      includeCrossStageMatches: true
+    });
+    const officeLocationResponse = isOfficeLocationQuestion(input.text)
+      ? officeLocationReply(input.settings)
+      : undefined;
     const context = {
       currentMessage: input.text ?? "",
       currentTurnMessages: input.currentTurnMessages ?? (input.text === undefined ? [] : [{ index: 1, text: input.text }]),
       history: input.messages.slice(-MAX_CONTEXT_HISTORY_MESSAGES).map(({ author, body, createdAt }) => ({ author, text: body, createdAt })),
       leadCard: input.facts,
       workflowFollowUp: input.workflowFollowUp,
-      knowledge: allApprovedKnowledge()
+      // Server-owned settings, not model knowledge, are authoritative for
+      // office location and map links.
+      officeLocationResponse,
+      // Keep the model focused on the approved answer most relevant to this
+      // message. The packet always starts with FAQ, then section 3.18 rules,
+      // instead of making it search a large, competing corpus by itself.
+      knowledge: prioritizedKnowledgeForQuestion({
+        facts: input.facts,
+        currentMessage: input.text,
+        messages: input.messages
+      })
     };
     try {
       throwIfAborted(input.signal);
@@ -162,11 +182,18 @@ export class AgentTurnService {
       }, { timeoutMs: this.config.routerAiTimeoutMs, signal: input.signal });
       const parsed = knowledgeAnswerSchema.safeParse(parseAgentJson(response.choices?.[0]?.message?.content));
       if (!parsed.success) throw new Error(`Knowledge response does not match schema: ${parsed.error.issues.map((issue) => issue.path.join(".")).join(", ")}`);
+      // The model is responsible for adapting FAQ wording to the client. If
+      // it nevertheless misses an exact approved answer, retain the approved
+      // client-safe phrasing instead of replacing it with a false "unknown".
+      const answerFound = parsed.data.answerFound || Boolean(documentation.mandatoryAnswer);
+      const reply = officeLocationResponse ?? (parsed.data.answerFound || !documentation.mandatoryAnswer
+        ? parsed.data.reply
+        : documentation.mandatoryAnswer);
       await this.logs?.log("dialogue.knowledge-model", "Knowledge model response received", {
         conversationId: input.conversationId,
-        metadata: { model: response.model ?? model, answerFound: parsed.data.answerFound }
+        metadata: { model: response.model ?? model, answerFound }
       });
-      return { ...parsed.data, model: response.model ?? model };
+      return { reply, answerFound, model: response.model ?? model };
     } catch (error) {
       if (input.signal?.aborted) throw error;
       const message = formatError(error);
@@ -587,9 +614,11 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   // contains no number for the normalizer, while the main model must still be
   // able to commit the public limit that the client just accepted.
   const { knowledgeRequest: modelKnowledgeRequest, ...leadCardFacts } = parsed.leadCardPatch;
-  // Office amenities are a direct FAQ even if the compact first-pass model
-  // misses the relevant chunk. Always send them to the full approved corpus.
-  const knowledgeRequest = modelKnowledgeRequest ?? (isOfficeAmenitiesQuestion(input)
+  // The dedicated knowledge model is always used for a factual question,
+  // including a deterministic FAQ match: it adapts the approved answer to
+  // the client's wording. A later fallback protects that match if the model
+  // itself returns a false negative.
+  const knowledgeRequest = modelKnowledgeRequest ?? (requiresKnowledgeAnswer(input, leadCardFacts)
     ? { required: true as const, reason: "missing_approved_answer" as const }
     : undefined);
   const rawModelPatch = {
@@ -668,7 +697,10 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     ? "Спасибо за обращение. Ожидайте звонка менеджера, он подтвердит время визита."
     : undefined;
   const directAnswer = completionNotice ?? attachmentAcceptanceNotice ?? visitNotice ?? acceptedLimitNotice ?? (region10Answer ? [region10Answer, olderVehicleNotice].filter(Boolean).join("\n\n") : undefined) ?? olderVehicleNotice ?? spouseVisitAnswer(input) ?? familyNotice ?? loanRateReply ?? maximumLoanInputReply ?? maximumLoanReply;
-  const answerBeforeWorkflow = directAnswer ?? removeForbiddenMetaPhrases(replaceUnsupportedFallbackWithApprovedAnswer(guardedModelReply, mandatoryKnowledgeAnswer, input));
+  // A direct approved FAQ outranks all free-form model prose. This prevents
+  // plausible but unsupported claims such as a parking location or credit
+  // eligibility from reaching the client.
+  const answerBeforeWorkflow = mandatoryKnowledgeAnswer ?? directAnswer ?? removeForbiddenMetaPhrases(replaceUnsupportedFallbackWithApprovedAnswer(guardedModelReply, mandatoryKnowledgeAnswer, input));
   // Limits and eligibility are calculated by the server. If an amount is
   // over the selected programme's limit, preserve a normal acknowledgement or
   // FAQ answer but remove the model's competing explanation before adding the
@@ -808,6 +840,21 @@ function approvedOfficeAddress(value: unknown): string {
 
 function approvedOfficeUrl(value: unknown, fallback: string): string {
   return typeof value === "string" && /^https:\/\//iu.test(value.trim()) ? value.trim() : fallback;
+}
+
+function officeLocationReply(settingsValue: object): string {
+  const settings = settingsValue as Record<string, unknown>;
+  const address = approvedOfficeAddress(settings.address);
+  const displayAddress = address === DEFAULT_OFFICE_ADDRESS
+    ? "бульваре Молодой Гвардии, 22, в Бишкеке"
+    : address;
+  const twoGis = approvedOfficeUrl(settings.twoGisUrl, DEFAULT_TWO_GIS_URL);
+  const googleMaps = approvedOfficeUrl(settings.googleMapsUrl, DEFAULT_GOOGLE_MAPS_URL);
+  return `Наш офис находится на ${displayAddress}. Мы работаем с понедельника по пятницу с 11:00 до 19:00. Вы можете приехать в любое удобное время в рамках рабочего графика.\n${twoGis}\n${googleMaps}`;
+}
+
+function isOfficeLocationQuestion(text: string | undefined): boolean {
+  return /(?:куда\s+(?:ехать|приезжать|подъехать)|где\s+(?:вы|офис|находит)|адрес|как\s+доехать)/iu.test(text ?? "");
 }
 
 function replacePrematureVisitQuestion(reply: string, facts: ApplicationFacts, stageCompletion = deriveStageCompletion(facts)): string {
@@ -1424,9 +1471,18 @@ function deduplicateRepeatedGuarantorBlock(reply: string): string {
   return remainder && normalize(remainder) === normalize(first) ? first : reply;
 }
 
-function isOfficeAmenitiesQuestion(input: Pick<AgentTurnInput, "text" | "currentTurnMessages">): boolean {
-  const text = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "").toLocaleLowerCase("ru-RU");
-  return /(?:удобств|wi.?fi|вайфай|зона\s+ожидания|кулер|кондиционер|зарядить\s+телефон|чай|кофе|туалет).{0,60}офис|офис.{0,60}(?:удобств|wi.?fi|вайфай|зона\s+ожидания|кулер|кондиционер|зарядить\s+телефон|чай|кофе|туалет)/iu.test(text);
+/** Route factual/FAQ turns to the dedicated knowledge model. It decides
+ * semantic relevance over the approved corpus; the workflow model may not
+ * invent a company fact while waiting for that result. */
+function requiresKnowledgeAnswer(input: Pick<AgentTurnInput, "text" | "currentTurnMessages">, patch: Partial<ApplicationFacts>): boolean {
+  const text = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "").trim();
+  if (!text) return false;
+  return /[?？]/u.test(text)
+    || /(?:датчик|gps|гпс|трекер|стоянк|парковк|вещ|багаж|в\s+кредит|в\s+залоге|арест|ограничени)/iu.test(text)
+    || patch.vehicleInCredit === true
+    || patch.vehiclePledged === true
+    || patch.vehicleArrested === true
+    || patch.registrationRestricted === true;
 }
 
 function appendRequiredWorkflowFollowUp(reply: string, followUp: string | undefined): string {
