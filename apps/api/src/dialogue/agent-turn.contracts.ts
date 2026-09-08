@@ -46,3 +46,4 @@ export const knowledgeAnswerSchema = z.object({
   answerFound: z.boolean()
 }).strict();
 export type KnowledgeAnswer = z.infer<typeof knowledgeAnswerSchema>;
+export const dialogueSummarySchema = z.object({ summary: z.string().min(1).max(4_000) }).strict();

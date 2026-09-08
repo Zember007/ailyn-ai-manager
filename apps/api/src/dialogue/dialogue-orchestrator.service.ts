@@ -163,6 +163,22 @@ export class DialogueOrchestratorService {
     const validation = { passed: Boolean(turn.result), errors: turn.error ? [turn.error] : [] };
     const reply = composeReply(turn.reply, currency.clientText);
     await this.store.addMessage(conversation, { author: "ai", body: reply, attachmentIds: [], attachments: [], metadata: { sourceMessageId: lastMessage.externalMessageId, routerAiModel: turn.model, promptVersion: turn.promptVersion, validation, trace: { singleModel: true, batchedClientMessages: messages.length, changedFactKeys, managerEvent, intent: turn.result?.intent, targetEvent: turn.result?.targetEvent } } });
+    // The booked visit is the terminal workflow goal. Claim the generation
+    // before invoking the model so concurrent/retried turns cannot create a
+    // second summary. This summary lives on Application, never in facts, and
+    // consequently is excluded from all regular dialogue-model prompts.
+    const summarizeBookedDialogue = (this.agent as Partial<Pick<AgentTurnService, "summarizeBookedDialogue">>).summarizeBookedDialogue;
+    if (summarizeBookedDialogue && deriveStageCompletion(application.facts).visit && !application.dialogueSummary) {
+      const claimed = await this.store.claimDialogueSummaryGeneration(application.id);
+      if (claimed) {
+        const summary = await summarizeBookedDialogue.call(this.agent, {
+          conversationId: conversation.id,
+          facts: application.facts,
+          messages: [...turnMessages, { id: "pending-ai-summary", author: "ai", body: reply, attachmentIds: [], attachments: [], createdAt: new Date().toISOString() }]
+        });
+        if (summary) await this.store.saveDialogueSummary(application.id, summary);
+      }
+    }
     const refreshedConversation = (await this.store.getConversation(conversation.id)) ?? conversation;
     const refreshedApplication = (await this.store.getApplication(application.id)) ?? refreshedConversation.application ?? application;
     void this.logs.log("dialogue.single-agent", "Processed dialogue turn", { conversationId: conversation.id, metadata: { applicationId: refreshedApplication.id, validModelResult: Boolean(turn.result), model: turn.model } });

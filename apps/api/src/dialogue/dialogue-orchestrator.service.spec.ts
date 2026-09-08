@@ -41,6 +41,57 @@ async function runMockedBatchedAgentTurn(input: { facts: Record<string, unknown>
 }
 
 describe("single-agent dialogue", () => {
+  it("generates and stores one private complete-dialogue summary after the visit is booked", async () => {
+    const facts = {
+      vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 1_000_000,
+      requestedAmount: 300_000, requestedProgram: "parking",
+      residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY",
+      documentsProvided: true, declinedCarPhoto: true, familyStatus: "single"
+    } as any;
+    const application = { id: "app", facts, contactId: "contact", stage: "SCHEDULING_VISIT", status: "need_more_data" } as any;
+    const conversation = {
+      id: "conversation", contactId: "contact", channel: "web-test", application,
+      messages: [{ id: "old-client", author: "client", body: "Camry 2022", attachmentIds: [], attachments: [], createdAt: "before" }]
+    } as any;
+    const store = {
+      getOrCreateConversation: vi.fn().mockResolvedValue({ conversation, application }),
+      addMessage: vi.fn().mockResolvedValue({ id: "message", author: "ai", body: "saved", createdAt: "now" }),
+      updateFacts: vi.fn().mockImplementation(async (_application: any, patch: any) => {
+        application.facts = { ...application.facts, ...patch };
+        return Object.keys(patch);
+      }),
+      saveAgentState: vi.fn(), getApplication: vi.fn().mockImplementation(async () => application),
+      getConversation: vi.fn().mockResolvedValue(conversation), addAttachment: vi.fn(), createManagerNotification: vi.fn(),
+      claimDialogueSummaryGeneration: vi.fn().mockResolvedValue(true),
+      saveDialogueSummary: vi.fn().mockImplementation(async (_id: string, summary: string) => { application.dialogueSummary = summary; })
+    } as any;
+    const agent = {
+      run: vi.fn().mockResolvedValue({
+        result: { ...validResult, reply: "Запись предварительная.", leadCardPatch: { visitRequested: true, visitDate: "2026-09-09", visitTime: "17:00" }, targetEvent: "visit" },
+        reply: "Запись предварительная.", model: "workflow", promptVersion: "v1"
+      }),
+      summarizeBookedDialogue: vi.fn().mockResolvedValue("Camry 2022; запись на 09.09 в 17:00.")
+    } as any;
+    const service = new DialogueOrchestratorService(agent, store, { getValues: vi.fn().mockResolvedValue({}) } as any, { log: vi.fn() } as any);
+    const inbound = { externalMessageId: "visit", channel: "web-test", externalContactId: "contact", externalConversationId: "conversation", text: "завтра в 5", attachments: [], timestamp: new Date("2026-09-08T12:00:00.000Z") } as any;
+
+    const first = await service.receive(inbound);
+    await service.receive({ ...inbound, externalMessageId: "after-visit", text: "спасибо" });
+
+    expect(agent.summarizeBookedDialogue).toHaveBeenCalledTimes(1);
+    expect(agent.summarizeBookedDialogue).toHaveBeenCalledWith(expect.objectContaining({
+      facts: expect.not.objectContaining({ dialogueSummary: expect.anything() }),
+      messages: expect.arrayContaining([
+        expect.objectContaining({ author: "client", body: "Camry 2022" }),
+        expect.objectContaining({ author: "client", body: "завтра в 5" }),
+        expect.objectContaining({ author: "ai", body: expect.stringContaining("Запись") })
+      ])
+    }));
+    expect(store.claimDialogueSummaryGeneration).toHaveBeenCalledTimes(1);
+    expect(store.saveDialogueSummary).toHaveBeenCalledWith("app", "Camry 2022; запись на 09.09 в 17:00.");
+    expect(first.application.dialogueSummary).toBe("Camry 2022; запись на 09.09 в 17:00.");
+  });
+
   it("passes the ordered batch and deterministic pricing to the agent", async () => {
     const application = { id: "app", facts: { vehicleValue: 1_900_000, residenceRegion: "Бишкек" }, contactId: "contact", stage: "NEW", status: "need_more_data" } as any;
     const conversation = { id: "conversation", messages: [], application, channel: "web-test" } as any;
@@ -1183,7 +1234,9 @@ describe("single-agent dialogue", () => {
   it.each([
     ["где у вас стоянка", "Парковка находится недалеко от нашего офиса и находится под охраной. Точный адрес парковки не сообщается."],
     ["авто в кредите", "К сожалению, мы не сможем оформить займ, если автомобиль в кредите."],
-    ["А вещи надо забрать из авто?", "Вещи в автомобиле можно оставить или забрать — на Ваше усмотрение."]
+    ["А вещи надо забрать из авто?", "Вещи в автомобиле можно оставить или забрать — на Ваше усмотрение."],
+    ["А по доверенности можно займ оформить?", "Нет, оформить займ по доверенности нельзя: собственник автомобиля должен лично присутствовать при осмотре и выдаче займа."],
+    ["Можно оформить нотариальную доверенность на сотрудника?", "Да, оформление нотариальной доверенности может быть одним из условий выдачи займа. Более подробно порядок оформления и условия Вы сможете уточнить во время визита в офис у менеджера."]
   ])("never lets the workflow model invent a factual answer to %s", async (text, approvedAnswer) => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ ...validResult, reply: "Это зависит от условий, уточним позднее.", leadCardPatch: {} }) } }] }) } as any;
     const output = await new AgentTurnService(client).run({ messages: [], facts: {}, settings: {}, text, attachments: [] });
@@ -1193,6 +1246,23 @@ describe("single-agent dialogue", () => {
     // Even exact FAQ matches are sent to the knowledge expert: it adapts the
     // approved answer to the client's wording and current context.
     expect(output.result?.leadCardPatch.knowledgeRequest).toMatchObject({ required: true });
+  });
+
+  it("never sends the obsolete name for the vehicle registration certificate", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ ...validResult, reply: "Пришлите техпаспорт автомобиля.", leadCardPatch: {} }) } }] }) } as any;
+    const output = await new AgentTurnService(client).run({ messages: [], facts: {}, settings: {}, text: "что нужно для оформления", attachments: [] });
+
+    expect(output.reply).not.toMatch(/тех\.?\s*паспорт/iu);
+    expect(output.reply).toContain("свидетельство о регистрации ТС");
+  });
+
+  it("keeps a notarial power of attorney for a company employee out of the loan-by-proxy refusal", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ reply: "Нет.", answerFound: true }) } }] }) } as any;
+    const reply = await new AgentTurnService(client).answerWithKnowledge({
+      messages: [], facts: {}, settings: {}, text: "А нотиральное довернность можно оформить на сотрудника?", workflowFollowUp: ""
+    });
+
+    expect(reply?.reply).toBe("Да, оформление нотариальной доверенности может быть одним из условий выдачи займа. Более подробно порядок оформления и условия Вы сможете уточнить во время визита в офис у менеджера.");
   });
 
   it("asks about remaining questions after a booked visit and closes honestly after no", async () => {

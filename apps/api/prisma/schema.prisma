@@ -90,6 +90,9 @@ model Application {
   state          ApplicationState @default(NEW)
   idempotencyKey String?          @unique
   metadata       Json             @default("{}")
+  dialogueSummary String?         @db.Text
+  dialogueSummaryRequestedAt DateTime?
+  dialogueSummaryGeneratedAt DateTime?
   contact        Contact?         @relation(fields: [contactId], references: [id])
   conversation   Conversation?    @relation(fields: [conversationId], references: [id])
   facts          ApplicationFact[]

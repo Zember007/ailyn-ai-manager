@@ -10,7 +10,7 @@ import type { InboundAttachment } from "../channels/channel.interface.js";
 import { BackendLogsService } from "../logs/backend-logs.service.js";
 import { attachmentFactsFromResult, deriveStageCompletion, effectiveFactsForTurn } from "./agent-turn-reconciliation.js";
 import { prioritizedKnowledgeForQuestion, selectRelevantDocumentation } from "./documentation-retrieval.js";
-import { agentTurnResultSchema, knowledgeAnswerSchema, type AgentTurnResult } from "./agent-turn.contracts.js";
+import { agentTurnResultSchema, dialogueSummarySchema, knowledgeAnswerSchema, type AgentTurnResult } from "./agent-turn.contracts.js";
 import { moneyNormalizationSchema } from "./pipeline.contracts.js";
 import { calculateLoanPricing, type LoanPricing, type LoanPricingSettings } from "./loan-pricing.js";
 import { formatSomMoney, resolveMoneyFacts, roundSomAmount } from "./money-normalization.js";
@@ -149,6 +149,12 @@ export class AgentTurnService {
     const officeLocationResponse = isOfficeLocationQuestion(input.text)
       ? officeLocationReply(input.settings)
       : undefined;
+    const powerOfAttorneyResponse = isLoanByPowerOfAttorneyQuestion(input.text)
+      ? documentation.mandatoryAnswer
+      : undefined;
+    const notarialPowerOfAttorneyResponse = isNotarialPowerOfAttorneyForCompanyQuestion(input.text)
+      ? "Да, оформление нотариальной доверенности может быть одним из условий выдачи займа. Более подробно порядок оформления и условия Вы сможете уточнить во время визита в офис у менеджера."
+      : undefined;
     const context = {
       currentMessage: input.text ?? "",
       currentTurnMessages: input.currentTurnMessages ?? (input.text === undefined ? [] : [{ index: 1, text: input.text }]),
@@ -186,7 +192,7 @@ export class AgentTurnService {
       // it nevertheless misses an exact approved answer, retain the approved
       // client-safe phrasing instead of replacing it with a false "unknown".
       const answerFound = parsed.data.answerFound || Boolean(documentation.mandatoryAnswer);
-      const reply = officeLocationResponse ?? (parsed.data.answerFound || !documentation.mandatoryAnswer
+      const reply = officeLocationResponse ?? notarialPowerOfAttorneyResponse ?? powerOfAttorneyResponse ?? (parsed.data.answerFound || !documentation.mandatoryAnswer
         ? parsed.data.reply
         : documentation.mandatoryAnswer);
       await this.logs?.log("dialogue.knowledge-model", "Knowledge model response received", {
@@ -201,6 +207,47 @@ export class AgentTurnService {
       await this.logs?.warn("dialogue.knowledge-model", "Knowledge model request failed", {
         conversationId: input.conversationId,
         metadata: { model, error: message }
+      });
+      return undefined;
+    }
+  }
+
+  /** Generates a private lead-card summary after the visit is first booked. */
+  async summarizeBookedDialogue(input: {
+    messages: Stage1Message[];
+    facts: ApplicationFacts;
+    conversationId?: string;
+    signal?: AbortSignal;
+  }): Promise<string | undefined> {
+    if (!this.client.isConfigured()) return undefined;
+    const model = this.config.routerAiKnowledgeModel ?? this.config.routerAiTextModel ?? "routerai-summary-model-not-configured";
+    try {
+      const response = await this.client.createChatCompletion({
+        model,
+        temperature: 0,
+        max_tokens: 400,
+        reasoning: { enabled: false },
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: loadPrompt("dialogue-summary.system.md") },
+          { role: "user", content: JSON.stringify({
+            messages: input.messages.map(({ author, body, createdAt }) => ({ author, text: body, createdAt })),
+            finalFacts: input.facts
+          }) }
+        ]
+      }, { timeoutMs: this.config.routerAiTimeoutMs, signal: input.signal });
+      const parsed = dialogueSummarySchema.safeParse(parseAgentJson(response.choices?.[0]?.message?.content));
+      if (!parsed.success) throw new Error("Dialogue summary response does not match schema");
+      await this.logs?.log("dialogue.summary-model", "Dialogue summary generated", {
+        conversationId: input.conversationId,
+        metadata: { model: response.model ?? model, messageCount: input.messages.length }
+      });
+      return parsed.data.summary.trim();
+    } catch (error) {
+      if (input.signal?.aborted) throw error;
+      await this.logs?.warn("dialogue.summary-model", "Dialogue summary generation failed", {
+        conversationId: input.conversationId,
+        metadata: { model, error: formatError(error) }
       });
       return undefined;
     }
@@ -724,10 +771,29 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     // The model is the sole owner of conversational meaning and client prose.
     // A limit warning answers a client-provided amount, but must never erase
     // an unrelated FAQ answer from the same turn.
-    reply: vehicleNeedClarification
+    reply: normalizeVehicleRegistrationTerminology(vehicleNeedClarification
       ? enforceFirstContactGreeting(vehicleNeedClarification, input)
-      : unresolvedBinaryDecisionReply(input, effectiveFacts) ?? modelReply
+      : unresolvedBinaryDecisionReply(input, effectiveFacts) ?? modelReply)
   };
+}
+
+/** The customer-facing term is fixed even when a model repeats an old alias. */
+function normalizeVehicleRegistrationTerminology(reply: string): string {
+  return reply.replace(/тех\.?\s*паспорт(?:а|у|ом|е)?(?:\s+автомобил(?:я|ю|ем))?/giu, (match) => {
+    const normalized = match.toLocaleLowerCase("ru-RU");
+    const term = normalized.includes("паспорта")
+      ? "свидетельства о регистрации ТС"
+      : normalized.includes("паспорту")
+        ? "свидетельству о регистрации ТС"
+        : normalized.includes("паспортом")
+          ? "свидетельством о регистрации ТС"
+          : normalized.includes("паспорте")
+            ? "свидетельстве о регистрации ТС"
+            : "свидетельство о регистрации ТС";
+    return /^т/iu.test(match) && match[0] === match[0].toLocaleUpperCase("ru-RU")
+      ? `${term[0].toLocaleUpperCase("ru-RU")}${term.slice(1)}`
+      : term;
+  });
 }
 
 function omitVisitFacts(patch: Partial<ApplicationFacts>): Partial<ApplicationFacts> {
@@ -855,6 +921,15 @@ function officeLocationReply(settingsValue: object): string {
 
 function isOfficeLocationQuestion(text: string | undefined): boolean {
   return /(?:куда\s+(?:ехать|приезжать|подъехать)|где\s+(?:вы|офис|находит)|адрес|как\s+доехать)/iu.test(text ?? "");
+}
+
+function isLoanByPowerOfAttorneyQuestion(text: string | undefined): boolean {
+  return !isNotarialPowerOfAttorneyForCompanyQuestion(text)
+    && /(?:займ|кредит|оформлени[ея]).{0,60}(?:по|с)\s+доверенност|(?:по|с)\s+доверенност.{0,60}(?:займ|кредит|оформ)/iu.test(text ?? "");
+}
+
+function isNotarialPowerOfAttorneyForCompanyQuestion(text: string | undefined): boolean {
+  return /(?:(?:довер|нотир)\p{L}*).{0,100}(?:сотрудник|автоломбард|компани)|(?:сотрудник|автоломбард|компани).{0,100}(?:довер|нотир)\p{L}*/iu.test(text ?? "");
 }
 
 function replacePrematureVisitQuestion(reply: string, facts: ApplicationFacts, stageCompletion = deriveStageCompletion(facts)): string {
