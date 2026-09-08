@@ -153,6 +153,10 @@ export function formatMoney(value: number): string {
 /** Public and persisted som amounts are always rounded down to 10,000. */
 export function roundSomAmount(value: number): number {
   if (!Number.isFinite(value)) return value;
+  // Preserve a positive amount below the 10,000 rounding increment so the
+  // minimum-loan validation can reject it honestly instead of turning it
+  // into a misleading zero in the lead card.
+  if (value > 0 && value < 10_000) return value;
   return Math.floor(value / 10_000) * 10_000;
 }
 

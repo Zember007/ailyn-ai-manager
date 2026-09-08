@@ -16,6 +16,16 @@ describe("generated documentation chunk quality", () => {
     expect(approved.every((chunk) => chunk.overlapFromPrevious === undefined)).toBe(true);
   });
 
+  it("does not append continuation labels or company settings to a FAQ answer", () => {
+    const incomeCertificate = generatedDocumentationChunks.find((chunk) => "approvedQuestion" in chunk && chunk.approvedQuestion === "Нужна справка о доходах?");
+    const postLoanQuestions = generatedDocumentationChunks.find((chunk) => "approvedQuestion" in chunk && chunk.approvedQuestion === "Если после оформления останутся вопросы?");
+
+    expect(incomeCertificate).toMatchObject({ approvedAnswer: "Нет, для оформления она не требуется." });
+    expect(postLoanQuestions).toMatchObject({ approvedAnswer: "Вы всегда можете написать нам в WhatsApp или позвонить — мы с удовольствием поможем." });
+    expect(incomeCertificate?.text).not.toMatch(/Продолжение раздела|Настройки компании/u);
+    expect(postLoanQuestions?.text).not.toMatch(/Продолжение раздела|Настройки компании/u);
+  });
+
   it("keeps spouse section 5.15 separate from guarantor section 5.16", () => {
     const spouse = generatedDocumentationChunks.filter((chunk) => chunk.section === "5.15");
     const guarantor = generatedDocumentationChunks.filter((chunk) => chunk.section === "5.16");

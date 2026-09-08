@@ -26,7 +26,6 @@ const DEFAULT_GOOGLE_MAPS_URL = "https://maps.app.goo.gl/9xiWLVvdyRgn3Sx4A";
 // The complete lead card keeps durable facts, while a compact recent tail is
 // enough to resolve conversational references. Keeping this bounded is one of
 // the few latency levers that does not weaken application validation.
-const MAX_CONTEXT_HISTORY_MESSAGES = 8;
 const MAX_AGENT_RESPONSE_TOKENS = 500;
 const unnormalizedMoneyFactKeys = new Set(["vehicleValue", "requestedAmount", "vehicleValueSourceCurrency", "requestedAmountSourceCurrency"]);
 const NORMALIZER_PROMPT = `Вы — технический JSON-нормализатор ответа менеджера.
@@ -158,7 +157,7 @@ export class AgentTurnService {
     const context = {
       currentMessage: input.text ?? "",
       currentTurnMessages: input.currentTurnMessages ?? (input.text === undefined ? [] : [{ index: 1, text: input.text }]),
-      history: input.messages.slice(-MAX_CONTEXT_HISTORY_MESSAGES).map(({ author, body, createdAt }) => ({ author, text: body, createdAt })),
+      history: activeWorkflowHistory(input.messages),
       leadCard: input.facts,
       workflowFollowUp: input.workflowFollowUp,
       // Server-owned settings, not model knowledge, are authoritative for
@@ -188,13 +187,11 @@ export class AgentTurnService {
       }, { timeoutMs: this.config.routerAiTimeoutMs, signal: input.signal });
       const parsed = knowledgeAnswerSchema.safeParse(parseAgentJson(response.choices?.[0]?.message?.content));
       if (!parsed.success) throw new Error(`Knowledge response does not match schema: ${parsed.error.issues.map((issue) => issue.path.join(".")).join(", ")}`);
-      // The model is responsible for adapting FAQ wording to the client. If
-      // it nevertheless misses an exact approved answer, retain the approved
-      // client-safe phrasing instead of replacing it with a false "unknown".
+      // Exact approved questions are deterministic. The model may adapt
+      // semantically matched answers, but cannot replace an exact FAQ with a
+      // neighbouring answer from the same knowledge packet.
       const answerFound = parsed.data.answerFound || Boolean(documentation.mandatoryAnswer);
-      const reply = officeLocationResponse ?? notarialPowerOfAttorneyResponse ?? powerOfAttorneyResponse ?? (parsed.data.answerFound || !documentation.mandatoryAnswer
-        ? parsed.data.reply
-        : documentation.mandatoryAnswer);
+      const reply = officeLocationResponse ?? notarialPowerOfAttorneyResponse ?? powerOfAttorneyResponse ?? documentation.mandatoryAnswer ?? parsed.data.reply;
       await this.logs?.log("dialogue.knowledge-model", "Knowledge model response received", {
         conversationId: input.conversationId,
         metadata: { model: response.model ?? model, answerFound }
@@ -359,7 +356,7 @@ export class AgentTurnService {
         reasoning: { enabled: false },
         response_format: { type: "json_object" },
         messages: [
-          { role: "system", content: "Определи смысл ответа клиента только относительно последнего вопроса AI: есть ли у него ещё вопросы. Верни строго JSON {\"decision\":\"accept\"|\"reject\"|\"undecided\"}. Ответ, что вопросов нет, всё понятно, больше ничего не нужно — reject. Если клиент хочет что-то уточнить — accept. Не добавляй текст." },
+          { role: "system", content: "Определи смысл ответа клиента только относительно последнего вопроса AI: есть ли у него ещё вопросы. Верни строго JSON {\"decision\":\"accept\"|\"reject\"|\"undecided\"}. Ответ, что вопросов нет, всё понятно, больше ничего не нужно — reject. Если клиент хочет что-то уточнить — accept. Нейтральная, несвязанная, оценочная или бессмысленная реплика без ясного смысла — undecided. Не додумывай согласие или отказ. Не добавляй текст." },
           { role: "user", content: JSON.stringify({ lastAssistantQuestion: lastAssistant, clientReply: currentReply }) }
         ]
       }, { timeoutMs: this.config.routerAiTimeoutMs, signal: input.signal });
@@ -431,7 +428,7 @@ export class AgentTurnService {
         reasoning: { enabled: false },
         response_format: { type: "json_object" },
         messages: [
-          { role: "system", content: "Определи смысл ответа клиента только относительно последнего вопроса AI: находится ли ранее названный населённый пункт в Чуйской области. Верни строго JSON {\"decision\":\"accept\"|\"reject\"|\"undecided\"}. Любая понятная поддержка утверждения означает accept; понятное отрицание — reject. Если смысл неясен, верни undecided. Не добавляй текст." },
+          { role: "system", content: "Определи смысл ответа клиента только относительно последнего вопроса AI: находится ли ранее названный населённый пункт в Чуйской области. Верни строго JSON {\"decision\":\"accept\"|\"reject\"|\"undecided\"}. Любая понятная поддержка утверждения означает accept; понятное отрицание — reject. Нейтральная, несвязанная, оценочная или бессмысленная реплика без ясного смысла — undecided. Не додумывай согласие или отказ. Не добавляй текст." },
           { role: "user", content: JSON.stringify({ lastAssistantQuestion: lastAssistant, clientReply: currentReply }) }
         ]
       }, { timeoutMs: this.config.routerAiTimeoutMs, signal: input.signal });
@@ -469,8 +466,8 @@ export class AgentTurnService {
         response_format: { type: "json_object" },
         messages: [
           { role: "system", content: parkingAlternative
-            ? "Определи смысл ответа клиента только относительно последнего вопроса AI: согласен ли он перейти на программу со стоянкой вместо поручителя. Верни строго JSON {\"decision\":\"accept\"|\"reject\"|\"undecided\"}. Не добавляй текст."
-            : "Определи смысл ответа клиента только относительно последнего вопроса AI: есть ли у него требуемый поручитель. Верни строго JSON {\"decision\":\"accept\"|\"reject\"|\"undecided\"}. Ответы «найду», «приведу», «организую», «будет человек», обещание найти или привести поручителя означают accept. Отсутствие поручителя или отказ искать — reject. Не добавляй текст." },
+            ? "Определи смысл ответа клиента только относительно последнего вопроса AI: согласен ли он перейти на программу со стоянкой вместо поручителя. Верни строго JSON {\"decision\":\"accept\"|\"reject\"|\"undecided\"}. Нейтральная, несвязанная, оценочная или бессмысленная реплика без ясного смысла — undecided. Не додумывай согласие или отказ. Не добавляй текст."
+            : "Определи смысл ответа клиента только относительно последнего вопроса AI: есть ли у него требуемый поручитель. Верни строго JSON {\"decision\":\"accept\"|\"reject\"|\"undecided\"}. Ответы «найду», «приведу», «организую», «будет человек», обещание найти или привести поручителя означают accept. Отсутствие поручителя или отказ искать — reject. Нейтральная, несвязанная, оценочная или бессмысленная реплика без ясного смысла — undecided. Не додумывай согласие или отказ. Не добавляй текст." },
           { role: "user", content: JSON.stringify({ lastAssistantQuestion: lastAssistant, clientReply: currentReply }) }
         ]
       }, { timeoutMs: this.config.routerAiTimeoutMs, signal: input.signal });
@@ -503,7 +500,7 @@ export class AgentTurnService {
         reasoning: { enabled: false },
         response_format: { type: "json_object" },
         messages: [
-          { role: "system", content: "Определи смысл ответа клиента только относительно последнего вопроса AI. Вопрос — согласен ли клиент оформить нотариальное согласие супруга/супруги при визите в офис. Верни строго JSON {\"decision\":\"accept\"|\"reject\"|\"undecided\"}. Разговорное одобрение, похвала варианта или обещание выбрать его означают accept; желание оформить самостоятельно или отказ — reject. Не добавляй текст." },
+          { role: "system", content: "Определи смысл ответа клиента только относительно последнего вопроса AI. Вопрос — согласен ли клиент оформить нотариальное согласие супруга/супруги при визите в офис. Верни строго JSON {\"decision\":\"accept\"|\"reject\"|\"undecided\"}. Разговорное одобрение, похвала варианта или обещание выбрать его означают accept; желание оформить самостоятельно или отказ — reject. Нейтральная, несвязанная, оценочная или бессмысленная реплика без ясного смысла — undecided. Не додумывай согласие или отказ. Не добавляй текст." },
           { role: "user", content: JSON.stringify({ lastAssistantQuestion: lastAssistant, clientReply: currentReply }) }
         ]
       }, { timeoutMs: this.config.routerAiTimeoutMs, signal: input.signal });
@@ -665,9 +662,16 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   // including a deterministic FAQ match: it adapts the approved answer to
   // the client's wording. A later fallback protects that match if the model
   // itself returns a false negative.
-  const knowledgeRequest = modelKnowledgeRequest ?? (requiresKnowledgeAnswer(input, leadCardFacts)
-    ? { required: true as const, reason: "missing_approved_answer" as const }
-    : undefined);
+  // A short reply to the last workflow question is stage input, not a new
+  // factual question. The workflow model must not route it to knowledge just
+  // because it could not extract a value from it.
+  const stageResponse = isResponseToLastWorkflowQuestion(input);
+  const mayNeedKnowledge = requiresKnowledgeAnswer(input, leadCardFacts);
+  const knowledgeRequest = stageResponse || !mayNeedKnowledge
+    ? undefined
+    : modelKnowledgeRequest ?? (mayNeedKnowledge
+      ? { required: true as const, reason: "missing_approved_answer" as const }
+      : undefined);
   const rawModelPatch = {
     ...modelMoneyPatchForTurn(leadCardFacts, input, parsed.hasMoney),
     ...residencePatchFromExplicitClientText(input, leadCardFacts, input.facts),
@@ -679,6 +683,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     ...(isClearDocumentsRefusal(input) ? { declinedDocuments: true } : {}),
     ...(isClearCarPhotoRefusal(input) ? { declinedCarPhoto: true } : {})
   };
+  if (!hasExplicitProgramSelection(input)) delete rawModelPatch.requestedProgram;
   const region10PolicyQuestion = isRegion10PolicyQuestion(input);
   const candidateModelPatch = region10PolicyQuestion
     ? Object.fromEntries(Object.entries(rawModelPatch).filter(([key]) => key !== "vehicleRegistrationRegion")) as Partial<ApplicationFacts>
@@ -729,6 +734,8 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   const loanRateReply = loanRateReplyForProgram(input.text, effectiveFacts);
   const requestedAmountLimit = requestedAmountLimitReply(pricing, effectiveFacts);
   const selectedLimitNotice = selectedProgramLimitNotice(input.facts, effectiveFacts, pricing);
+  const unknownVehicleValueNotice = unknownVehicleValueReply(input, effectiveFacts);
+  const waitingForVehicleValueNotice = waitingForVehicleValueReply(input, effectiveFacts);
   const vehicleNeedClarification = ambiguousVehicleNeedReply(input, effectiveFacts);
   const familyNotice = familyTransitionNotice(input, input.facts, effectiveFacts);
   const visitNotice = visitConfirmationNotice(input, input.facts, effectiveFacts);
@@ -743,7 +750,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   const completionNotice = stageCompletion.visit && effectiveFacts.clientClosed
     ? "Спасибо за обращение. Ожидайте звонка менеджера, он подтвердит время визита."
     : undefined;
-  const directAnswer = completionNotice ?? attachmentAcceptanceNotice ?? visitNotice ?? acceptedLimitNotice ?? (region10Answer ? [region10Answer, olderVehicleNotice].filter(Boolean).join("\n\n") : undefined) ?? olderVehicleNotice ?? spouseVisitAnswer(input) ?? familyNotice ?? loanRateReply ?? maximumLoanInputReply ?? maximumLoanReply;
+  const directAnswer = completionNotice ?? attachmentAcceptanceNotice ?? visitNotice ?? acceptedLimitNotice ?? (region10Answer ? [region10Answer, olderVehicleNotice].filter(Boolean).join("\n\n") : undefined) ?? olderVehicleNotice ?? spouseVisitAnswer(input) ?? familyNotice ?? loanRateReply ?? maximumLoanInputReply ?? maximumLoanReply ?? unknownVehicleValueNotice ?? waitingForVehicleValueNotice;
   // A direct approved FAQ outranks all free-form model prose. This prevents
   // plausible but unsupported claims such as a parking location or credit
   // eligibility from reaching the client.
@@ -755,7 +762,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   const serverSafeAnswer = requestedAmountLimit ? removeModelLimitClaim(answerBeforeWorkflow) : answerBeforeWorkflow;
   const modelReply = appendRequiredWorkflowFollowUp(
     appendContinuationAfterRegion10PolicyQuestion(
-      removeModelWorkflowQuestion(removeQuestionsForKnownLeadFacts(removeRepeatedProgramExplanation(enforceFirstContactGreeting(serverSafeAnswer, input), effectiveFacts, input), effectiveFacts, input.facts)),
+      removeModelWorkflowQuestion(removeQuestionsForKnownLeadFacts(removeUnaskedProgramDetails(removeRepeatedProgramExplanation(enforceFirstContactGreeting(serverSafeAnswer, input), effectiveFacts, input), input), effectiveFacts, input.facts)),
       input,
       effectiveFacts
     ),
@@ -1189,9 +1196,12 @@ function serverWorkflowFollowUp(text: string | undefined, facts: ApplicationFact
   const canCalculateMaximum = facts.vehicleModel && facts.vehicleYear && facts.vehicleValue !== undefined && facts.residenceRegion && facts.residenceCategory;
   const nextQuestion = nextRequiredStageQuestion(facts, completion);
   if (completion.visit) return facts.clientClosed ? undefined : FINAL_QUESTIONS_PROMPT;
+  // This must take precedence over every later stage and over informational
+  // questions. The client has an unresolved choice of amount/programme, so
+  // no guarantor, documents or family prompt may be appended yet.
+  if (amountLimitReply) return amountLimitReply;
   if (asksMaximumLoan(text) && canCalculateMaximum) return [amountLimitReply, nextQuestion].filter(Boolean).join("\n\n") || undefined;
   if (asksLoanRate(text)) return nextQuestion;
-  if (amountLimitReply) return [amountLimitReply, nextQuestion].filter(Boolean).join("\n\n") || undefined;
   return [selectedLimitNotice, nextQuestion].filter(Boolean).join("\n\n") || undefined;
 }
 
@@ -1246,16 +1256,18 @@ function nextLeadCardQuestionAfterResidence(facts: ApplicationFacts): string | u
 }
 
 function enforceFirstContactGreeting(reply: string, input: Pick<AgentTurnInput, "messages" | "text" | "currentTurnMessages">): string {
-  if (input.messages.some((message) => message.author === "ai")) return reply;
   const officialGreeting = "Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10.";
+  const hasPriorAssistantMessage = input.messages.some((message) => message.author === "ai");
   // First contact is a compliance requirement, so do not rely on the model
-  // remembering the greeting. Identity questions retain their exact approved
-  // wording and are the only exception.
+  // remembering it. On later turns, remove any greeting the model supplied.
+  // Identity questions retain their exact approved wording and are the only
+  // exception.
   if (isIdentityQuestion(input)) return reply;
   const rest = reply
     .replace(/^\s*здравствуйте[!,.]?\s*(?:(?:меня\s+зовут|я)\s+Айлин[^.!?]*[.!?]\s*)?(?:я\s+менеджер\s+по\s+оформлению\s+новых\s+займов\s+автоломбарда\s+«Молодой»[.!?]\s*)?(?:информируем\s+Вас,?\s+что\s+мы\s+не\s+выдаем[^.!?]*[.!?]\s*)*/iu, "")
     .replace(/^(?:я\s+менеджер\s+по\s+оформлению\s+новых\s+займов\s+автоломбарда\s+«Молодой»[.!?]\s*)+/iu, "")
     .trim();
+  if (hasPriorAssistantMessage) return rest || reply;
   return [officialGreeting, rest].filter(Boolean).join("\n\n");
 }
 
@@ -1502,21 +1514,42 @@ function finalQuestionsPatchFromClearReply(
     : {};
 }
 
-/** Do not acknowledge a binary answer until server state confirms its meaning. */
-function unresolvedBinaryDecisionReply(input: Pick<AgentTurnInput, "messages">, facts: ApplicationFacts): string | undefined {
+function lastAssistantQuestion(text: string): string | undefined {
+  const sentences = text.replace(/\s+/gu, " ").match(/(?:^|[.!]\s+)([^?.]{1,500}\?)/gu);
+  return sentences?.at(-1)?.replace(/^[.!]\s*/u, "").trim();
+}
+
+function clarificationOf(question: string): string {
+  const normalized = question.replace(/^подскажите,?\s*пожалуйста\s*[:,]?\s*/iu, "").trim();
+  return `Уточните, пожалуйста: ${normalized || question}`;
+}
+
+/**
+ * Do not acknowledge a binary answer until server state confirms its meaning.
+ * A new client question is deliberately left to the knowledge/workflow path:
+ * it is not an answer to the preceding binary question.
+ */
+function unresolvedBinaryDecisionReply(input: Pick<AgentTurnInput, "messages" | "text" | "currentTurnMessages">, facts: ApplicationFacts): string | undefined {
   const lastAssistant = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
+  const clientReply = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "").trim();
+  if (!clientReply || /[?？]/u.test(clientReply)) return undefined;
+  const repeatQuestion = (): string | undefined => {
+    const question = lastAssistantQuestion(lastAssistant);
+    return question ? clarificationOf(question) : undefined;
+  };
   if (isResidenceClarificationQuestion(lastAssistant) && facts.residenceNeedsClarification) {
-    return "Не смогла точно определить ответ. Подскажите, пожалуйста, это в Чуйской области?";
+    return repeatQuestion() ?? "Уточните, пожалуйста: это в Чуйской области?";
   }
   if (isGuarantorParkingAlternativeQuestion(lastAssistant) && facts.guarantorAvailable === false && !facts.guarantorAlternativeDeclined && facts.requestedProgram === "without_storage") {
-    return `Не смогла точно понять Ваше решение. ${GUARANTOR_PARKING_ALTERNATIVE}`;
+    return repeatQuestion() ?? clarificationOf(GUARANTOR_PARKING_ALTERNATIVE);
   }
   if (isGuarantorQuestion(lastAssistant) && requiresGuarantorForFacts(facts) && facts.guarantorAvailable === undefined) {
-    return `Не смогла точно понять ответ. ${GUARANTOR_REQUIREMENTS}`;
+    return repeatQuestion() ?? clarificationOf("У Вас есть такой поручитель?");
   }
   if (isOfficeConsentQuestion(lastAssistant) && facts.familyStatus === "married" && facts.spouseConsentAtOffice === undefined) {
-    return "Не смогла точно понять ответ. Вам удобно оформить согласие при визите в офис?";
+    return repeatQuestion() ?? "Уточните, пожалуйста: Вам удобно оформить согласие при визите в офис?";
   }
+  if (isFinalQuestionsPrompt(lastAssistant) && !facts.clientClosed) return repeatQuestion() ?? clarificationOf(FINAL_QUESTIONS_PROMPT);
   return undefined;
 }
 
@@ -1552,12 +1585,65 @@ function deduplicateRepeatedGuarantorBlock(reply: string): string {
 function requiresKnowledgeAnswer(input: Pick<AgentTurnInput, "text" | "currentTurnMessages">, patch: Partial<ApplicationFacts>): boolean {
   const text = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "").trim();
   if (!text) return false;
-  return /[?？]/u.test(text)
+  return isLikelyKnowledgeQuestion(text)
     || /(?:датчик|gps|гпс|трекер|стоянк|парковк|вещ|багаж|в\s+кредит|в\s+залоге|арест|ограничени)/iu.test(text)
     || patch.vehicleInCredit === true
     || patch.vehiclePledged === true
     || patch.vehicleArrested === true
     || patch.registrationRestricted === true;
+}
+
+function isLikelyKnowledgeQuestion(text: string): boolean {
+  if (/[?？]/u.test(text)) return true;
+  return /^(?:(?:а\s+)?(?:есть|можно|сколько|какой|какая|какие|где|когда|как|работает|ставите|нужн(?:о|а|ы)?|дадите|оформить|оформлю|приеду)\b|(?:авто|машин).{0,40}(?:кредит|залоге|арест|ограничен)|(?:датчик|gps|гпс|трекер|парковк|стоянк|вещ|багаж))/iu.test(text.trim());
+}
+
+/**
+ * Facts are persisted on the lead card, so old FAQ pairs do not help the
+ * next turn. Keep only the most recent unfinished workflow prompt; otherwise
+ * a knowledge model can answer a previously resolved question again.
+ */
+function activeWorkflowHistory(messages: Stage1Message[]): Array<{ author: string; text: string; createdAt: string }> {
+  const lastAssistantMessage = [...messages].reverse().find((message) => message.author === "ai");
+  if (!lastAssistantMessage) return [];
+  const prompt = lastAssistantMessage.body
+    .split(/\n\s*\n/gu)
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .at(-1);
+  if (!prompt || !isWorkflowPrompt(prompt)) return [];
+  return [{ author: "ai", text: prompt, createdAt: lastAssistantMessage.createdAt }];
+}
+
+function isWorkflowPrompt(text: string): boolean {
+  return /ориентировочн(?:ую|ая)\s+стоимост|какая\s+сумма\s+займа|без\s+изъяти|со\s+стоянк|ваш[ау]\s+пропис|подскажите.{0,80}(?:документ|фото|семейн|поручител|день|время|стоимост)/iu.test(text);
+}
+
+function isResponseToLastWorkflowQuestion(input: Pick<AgentTurnInput, "text" | "currentTurnMessages" | "messages">): boolean {
+  const text = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "").trim();
+  if (!text || text.length > 240 || /[?？]/u.test(text)) return false;
+  const lastAssistantMessage = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
+  return /ориентировочн(?:ую|ая)\s+стоимост|какая\s+сумма\s+займа|без\s+изъяти|со\s+стоянк|ваш[ау]\s+пропис|подскажите.{0,80}(?:документ|фото|семейн|поручител|день|время)/iu.test(lastAssistantMessage);
+}
+
+function unknownVehicleValueReply(input: Pick<AgentTurnInput, "text" | "currentTurnMessages" | "messages">, facts: ApplicationFacts): string | undefined {
+  if (facts.vehicleValue !== undefined) return undefined;
+  const text = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "").trim();
+  const lastAssistantMessage = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
+  if (!/^(?:не\s+знаю|неизвестно|не\s+могу\s+(?:сказать|оценить)|без\s+понятия)[.!…]*$/iu.test(text)) return undefined;
+  return /ориентировочн(?:ую|ая)\s+стоимост|стоимост[ьи]\s+автомобил|цен[уы]\s+автомобил/iu.test(lastAssistantMessage)
+    ? "Для предварительного расчёта нужна хотя бы ориентировочная стоимость автомобиля."
+    : undefined;
+}
+
+function waitingForVehicleValueReply(input: Pick<AgentTurnInput, "text" | "currentTurnMessages" | "messages">, facts: ApplicationFacts): string | undefined {
+  if (facts.vehicleValue !== undefined) return undefined;
+  const text = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "").trim();
+  const lastAssistantMessage = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
+  if (!/ориентировочн(?:ую|ая)\s+стоимост|стоимост[ьи]\s+автомобил|цен[уы]\s+автомобил/iu.test(lastAssistantMessage)) return undefined;
+  return /^(?:(?:могу\s+)?прикин(?:у|уть)(?:,?\s*(?:секунд(?:у|очку)?|сейчас))?|секунд(?:у|очку)?|сейчас\s+(?:посмотрю|прикину)|подумаю|посчитаю|уточню)[.!…]*$/iu.test(text)
+    ? "Хорошо, подождём."
+    : undefined;
 }
 
 function appendRequiredWorkflowFollowUp(reply: string, followUp: string | undefined): string {
@@ -1653,11 +1739,26 @@ function modelMoneyPatchForTurn(patch: Partial<ApplicationFacts>, input: Pick<Ag
   ].filter((value): value is number => typeof value === "number"));
   for (const key of ["vehicleValue", "requestedAmount"] as const) {
     const value = patch[key];
-    if (typeof value !== "number" || !Number.isFinite(value)) continue;
+    if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) continue;
     const rounded = roundSomAmount(value);
     if (modelOwnsKgsMoney || offeredPublicLimits.has(rounded)) result[key] = rounded;
   }
   return result;
+}
+
+function hasExplicitProgramSelection(input: Pick<AgentTurnInput, "text" | "currentTurnMessages">): boolean {
+  const text = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "");
+  return /(?:без\s+изъяти|со\s+стоянк|на\s+стоянк|парковк)/iu.test(text);
+}
+
+function removeUnaskedProgramDetails(reply: string, input: Pick<AgentTurnInput, "text" | "currentTurnMessages">): string {
+  const text = input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "";
+  if (/(?:процент|ставк|без\s+изъяти|со\s+стоянк|парковк)/iu.test(text)) return reply;
+  return reply
+    .split(/\n\s*\n/gu)
+    .filter((paragraph) => !/(?:ставк|процент).{0,240}(?:программ|стоянк|изъят)|(?:программ|стоянк|изъят).{0,240}(?:ставк|процент)/iu.test(paragraph))
+    .join("\n\n")
+    .trim();
 }
 
 function truncateLogValue(value: unknown): string {
@@ -1710,7 +1811,7 @@ function buildMessage(input: Pick<AgentTurnInput, "messages" | "facts" | "settin
   // only attached when a visit is relevant, so ordinary turns stay compact.
   const visitCalendar = retrieval.stages.includes("visit") ? buildVisitCalendar(now) : undefined;
   const currentTurnMessages = input.currentTurnMessages ?? (input.text === undefined ? [] : [{ index: 1, text: input.text }]);
-  const history = input.messages.slice(-MAX_CONTEXT_HISTORY_MESSAGES).map(({ author, body, createdAt }) => ({ author, text: body, createdAt }));
+  const history = activeWorkflowHistory(input.messages);
   const knownLeadCardFields = Object.entries(input.facts)
     .filter(([, value]) => value !== undefined && value !== null)
     .map(([key]) => key);

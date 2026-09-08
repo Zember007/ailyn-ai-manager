@@ -163,12 +163,15 @@ export class DialogueOrchestratorService {
     const validation = { passed: Boolean(turn.result), errors: turn.error ? [turn.error] : [] };
     const reply = composeReply(turn.reply, currency.clientText);
     await this.store.addMessage(conversation, { author: "ai", body: reply, attachmentIds: [], attachments: [], metadata: { sourceMessageId: lastMessage.externalMessageId, routerAiModel: turn.model, promptVersion: turn.promptVersion, validation, trace: { singleModel: true, batchedClientMessages: messages.length, changedFactKeys, managerEvent, intent: turn.result?.intent, targetEvent: turn.result?.targetEvent } } });
-    // The booked visit is the terminal workflow goal. Claim the generation
-    // before invoking the model so concurrent/retried turns cannot create a
-    // second summary. This summary lives on Application, never in facts, and
-    // consequently is excluded from all regular dialogue-model prompts.
+    // Generate the private lead summary immediately after the booking reply
+    // has been persisted and the visit facts have reached the lead card. A
+    // visit may be recorded before every optional workflow field is complete,
+    // so `deriveStageCompletion(...).visit` is intentionally not the gate.
+    // This summary lives on Application, never in facts, and is excluded from
+    // all regular dialogue-model prompts.
     const summarizeBookedDialogue = (this.agent as Partial<Pick<AgentTurnService, "summarizeBookedDialogue">>).summarizeBookedDialogue;
-    if (summarizeBookedDialogue && deriveStageCompletion(application.facts).visit && !application.dialogueSummary) {
+    const visitBooked = Boolean(application.facts.visitDate && application.facts.visitTime);
+    if (summarizeBookedDialogue && visitBooked && !application.dialogueSummary) {
       const claimed = await this.store.claimDialogueSummaryGeneration(application.id);
       if (claimed) {
         const summary = await summarizeBookedDialogue.call(this.agent, {
@@ -177,6 +180,7 @@ export class DialogueOrchestratorService {
           messages: [...turnMessages, { id: "pending-ai-summary", author: "ai", body: reply, attachmentIds: [], attachments: [], createdAt: new Date().toISOString() }]
         });
         if (summary) await this.store.saveDialogueSummary(application.id, summary);
+        else await this.store.releaseDialogueSummaryGeneration(application.id);
       }
     }
     const refreshedConversation = (await this.store.getConversation(conversation.id)) ?? conversation;
@@ -223,10 +227,19 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
 }
 
 function supplementNormalizedMoney(values: NormalizedMoneyValue[], text: string, currentFacts: ApplicationFacts, messages: Stage1Message[] = []): NormalizedMoneyValue[] {
-  const result = [...values];
+  const expectedField = expectedMoneyFieldFromLastQuestion(messages);
+  const result = values.filter((value) => value.amount > 0 && (!expectedField || value.field === expectedField));
   const present = new Set(result.map((value) => value.field));
   const mentions = detectMoneyMentions(text);
   const resolved = resolveMoneyFacts({ text, currentFacts });
+  // The last workflow question is a deterministic role boundary. A bare
+  // amount after «Какая сумма займа?» is the requested amount, never an
+  // unknown value or a programme choice; do not delegate that to the model.
+  if (expectedField && !present.has(expectedField) && mentions.length === 1) {
+    const mention = mentions[0]!;
+    result.push({ field: expectedField, amount: mention.normalizedAmount, currency: mention.currency ?? "KGS", confidence: mention.confidence });
+    present.add(expectedField);
+  }
   for (const field of ["vehicleValue", "requestedAmount"] as const) {
     if (present.has(field)) continue;
     const mention = mentions
@@ -257,6 +270,13 @@ function supplementNormalizedMoney(values: NormalizedMoneyValue[], text: string,
     present.add(value.field);
   }
   return result;
+}
+
+function expectedMoneyFieldFromLastQuestion(messages: Stage1Message[]): "vehicleValue" | "requestedAmount" | undefined {
+  const lastAssistantQuestion = [...messages].reverse().find((message) => message.author === "ai")?.body ?? "";
+  if (/(?:какая\s+)?сумм\p{L}*\s+займ/iu.test(lastAssistantQuestion)) return "requestedAmount";
+  if (/(?:ориентировочн\p{L}*\s+)?стоимост\p{L}*\s+автомобил/iu.test(lastAssistantQuestion)) return "vehicleValue";
+  return undefined;
 }
 
 function confirmedForeignMoneyFromHistory(text: string, messages: Stage1Message[]): NormalizedMoneyValue[] {

@@ -401,6 +401,14 @@ export class Stage1StoreService {
     await this.recordAudit("application.dialogue_summary.generated", "Application", applicationId);
   }
 
+  /** Allow a later turn to retry if the one-time summary model call failed. */
+  async releaseDialogueSummaryGeneration(applicationId: string): Promise<void> {
+    await this.prisma.application.updateMany({
+      where: { id: applicationId, dialogueSummary: null },
+      data: { dialogueSummaryRequestedAt: null }
+    });
+  }
+
   async createManagerNotification(application: Stage1Application, kind: "initial" | "delta", payload: Record<string, unknown>): Promise<boolean> {
     const idempotencyKey = kind === "initial"
       ? `manager-${application.id}-initial`

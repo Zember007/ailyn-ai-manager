@@ -85,8 +85,18 @@ function splitDocumentIntoGroups(sourceParagraphs) {
   const groups = [];
   let current = { sourceSection: "general", parentContext: "Документ «АЙЛИН 6.2»: общие правила работы Айлин.", paragraphs: [] };
   for (const paragraph of sourceParagraphs) {
-    for (const part of paragraph.split(/(?=(?<![\d.])\d+\.\d+(?:\.\d+)?\s)/u).map((value) => value.trim()).filter(Boolean)) {
-      const heading = part.match(/^\d+\.\d+(?:\.\d+)?/u)?.[0];
+    // A top-level heading (for example, `21. Настройки компании`) and a
+    // continuation label (`Продолжение раздела 20.4`) are semantic document
+    // boundaries too. Without them, their administrative text is appended to
+    // the preceding FAQ answer and may be sent to a client verbatim.
+    // Keep a continuation label whole. Otherwise the generic numeric splitter
+    // can start again at `20.4` inside the label and leave the words
+    // «Продолжение раздела» attached to the preceding FAQ answer.
+    const parts = /^Продолжение\s+раздела\s+/iu.test(paragraph)
+      ? [paragraph]
+      : paragraph.split(/(?=(?<![\d.])(?:[1-9]\d*)(?:\.(?:[1-9]\d*)){0,2}\.?\s+(?=[А-ЯЁ]))/u);
+    for (const part of parts.map((value) => value.trim()).filter(Boolean)) {
+      const heading = sectionHeadingOf(part);
       if (heading) {
         if (current.paragraphs.length > 0) groups.push({ ...current, text: current.paragraphs.join(" ") });
         current = { sourceSection: heading, parentContext: contextForSection(heading, part), paragraphs: [part] };
@@ -102,6 +112,12 @@ function splitDocumentIntoGroups(sourceParagraphs) {
   }
   if (current.paragraphs.length > 0) groups.push({ ...current, text: current.paragraphs.join(" ") });
   return groups;
+}
+
+function sectionHeadingOf(text) {
+  const continuation = text.match(/^Продолжение\s+раздела\s+((?:[1-9]\d*)(?:\.(?:[1-9]\d*)){0,2})\.?\s*/iu)?.[1];
+  if (continuation) return continuation;
+  return text.match(/^((?:[1-9]\d*)(?:\.(?:[1-9]\d*)){0,2})\.?\s+(?=[А-ЯЁ])/u)?.[1];
 }
 
 function isQuestionParagraph(text) {

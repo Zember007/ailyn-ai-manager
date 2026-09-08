@@ -17,6 +17,12 @@ describe("selectRelevantDocumentation", () => {
     expect([...result.commonKnowledge, ...result.knowledge].some((chunk) => /5 минут|около 1 часа/u.test(chunk.text))).toBe(true);
   });
 
+  it("maps a misspelled duration question to the approved one-hour answer", () => {
+    const result = selectRelevantDocumentation({ facts: {}, currentMessage: "Сколько длится оформлениу", messages: [] });
+
+    expect(result.mandatoryAnswer).toBe("Обычно оформление занимает 1 час. Присланные Вами документы помогут нам сократить время выдачи денег.");
+  });
+
   it("includes the exact approved redirect for an existing contract", () => {
     const result = selectRelevantDocumentation({ facts: { existingContractQuestion: true }, currentMessage: "сколько я должен по текущему займу", messages: [] });
     expect(result.commonKnowledge.some((chunk) => chunk.text.includes("Я Айлин — виртуальный помощник"))).toBe(true);
@@ -64,7 +70,6 @@ describe("selectRelevantDocumentation", () => {
   it("retrieves the approved temporary-registration FAQ for a semantic wording", () => {
     const result = selectRelevantDocumentation({ facts: {}, currentMessage: "Можно оформить займ по временной регистрации?", messages: [] });
     expect(result.knowledge[0]).toMatchObject({
-      key: "faq_temporary_residence",
       approvedAnswer: "Да, оформление по временной прописке возможно."
     });
   });
@@ -75,6 +80,22 @@ describe("selectRelevantDocumentation", () => {
       key: "faq_gps_requirement",
       approvedAnswer: "Это зависит от суммы займа и состояния автомобиля. Точно ответить сможем после осмотра автомобиля."
     });
+  });
+
+  it("makes the exact approved air-conditioner answer mandatory", () => {
+    const result = selectRelevantDocumentation({ facts: {}, currentMessage: "Есть кондиционер?", messages: [] });
+
+    expect(result.mandatoryAnswer).toBe("Да.");
+    expect(result.knowledge[0]).toMatchObject({
+      approvedQuestion: "Есть кондиционер?",
+      approvedAnswer: "Да."
+    });
+  });
+
+  it("prefers the exact currency-exchange answer over the combined nearby-services FAQ", () => {
+    const result = selectRelevantDocumentation({ facts: {}, currentMessage: "Есть обмен валют?", messages: [] });
+
+    expect(result.mandatoryAnswer).toBe("Да, есть недалеко от нас. Примерно 5–10 минут пешком.");
   });
 
   it.each([
@@ -96,18 +117,30 @@ describe("selectRelevantDocumentation", () => {
     expect(packet.findIndex((chunk) => chunk.section === "3.18")).toBeGreaterThan(0);
   });
 
+  it("prioritizes spouse ownership clarification over the generic proxy-loan FAQ", () => {
+    const result = selectRelevantDocumentation({ facts: {}, currentMessage: "А доверенносить на жену?", messages: [] });
+    const packet = prioritizedKnowledgeForQuestion({ facts: {}, currentMessage: "А доверенносить на жену?", messages: [] });
+
+    expect(result.mandatoryAnswer).toBeUndefined();
+    expect(packet.some((chunk) => chunk.section === "4.27")).toBe(true);
+    expect(packet.some((chunk) => chunk.key === "faq_power_of_attorney")).toBe(false);
+  });
+
   it("retrieves the free-evaluation answer instead of an unrelated application chunk", () => {
     const result = selectRelevantDocumentation({ facts: {}, currentMessage: "Нужно платить за оценку автомобиля?", messages: [] });
     expect(result.mandatoryAnswer).toBe("Нет, оценка автомобиля бесплатна.");
-    expect(result.knowledge[0]).toMatchObject({ key: "faq_vehicle_evaluation_fee" });
+    expect(result.knowledge[0]).toMatchObject({
+      approvedAnswer: "Нет, оценка автомобиля бесплатна."
+    });
   });
 
   it("retrieves a direct question-answer pair from the DOCX FAQ", () => {
     const result = selectRelevantDocumentation({ facts: {}, currentMessage: "Можно приехать на такси?", messages: [] });
     expect(result.mandatoryAnswer).toBe("Да, конечно.");
     expect(result.knowledge[0]).toMatchObject({
-      retrievalQuestion: "Можно приехать на такси?",
-      retrievalAnswer: "Да, конечно."
+      responsePolicy: "verbatim",
+      approvedQuestion: "Можно приехать на такси?",
+      approvedAnswer: "Да, конечно."
     });
   });
 

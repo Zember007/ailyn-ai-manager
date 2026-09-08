@@ -54,14 +54,22 @@ export function prioritizedKnowledgeForQuestion(input: {
   const selected = selectRelevantDocumentation({ ...input, includeCrossStageMatches: true, maxChunks: 8 });
   const current = (input.currentMessage ?? "").toLocaleLowerCase("ru-RU");
   const tokens = new Set(current.match(/[\p{L}\p{N}]{3,}/gu) ?? []);
-  const matchedFaq = approvedFaqChunks.filter((chunk) =>
-    hasExactApprovedFaqAlias(chunk, current) || matchesApprovedQuestion(chunk, tokens)
+  const spouseProxyContext = isSpouseProxyContext(current);
+  const spouseOwnershipRule = spouseProxyContext
+    ? generatedDocumentationChunks.find((chunk) => chunk.section === "4.27")
+    : undefined;
+  const availableFaq = spouseProxyContext
+    ? approvedFaqChunks.filter((chunk) => chunk.key !== "faq_power_of_attorney")
+    : approvedFaqChunks;
+  const matchedFaq = availableFaq.filter((chunk) =>
+    (hasExactApprovedFaqAlias(chunk, current) || matchesApprovedQuestion(chunk, tokens))
   );
   const contractRules = generatedDocumentationChunks.filter((chunk) => chunk.section === "3.18");
   return uniqueKnowledge([
     ...matchedFaq,
+    ...(spouseOwnershipRule ? [spouseOwnershipRule] : []),
     ...contractRules,
-    ...approvedFaqChunks,
+    ...availableFaq,
     ...selected.knowledge,
     ...selected.commonKnowledge
   ]);
@@ -92,6 +100,7 @@ export function selectRelevantDocumentation(input: {
   includeCrossStageMatches?: boolean;
 }): { stages: DocumentationStage[]; commonKnowledge: DocumentationChunk[]; knowledge: DocumentationChunk[]; stageInstructions: string[]; mandatoryAnswer?: string } {
   const current = `${input.currentMessage ?? ""} ${input.messages.slice(-3).map((message) => message.body).join(" ")}`.toLocaleLowerCase("ru-RU");
+  const spouseProxyContext = isSpouseProxyContext(input.currentMessage ?? "");
   // Rates are not general conversation context: exposing them on every turn
   // makes the model answer a maximum-loan question with percentages.
   const asksInterestRate = /(?:процент|ставк)/iu.test(input.currentMessage ?? "");
@@ -101,7 +110,9 @@ export function selectRelevantDocumentation(input: {
   ].filter((chunk): chunk is DocumentationChunk => Boolean(chunk));
   const stages = relevantStages(input.facts, current);
   const tokens = new Set(current.match(/[\p{L}\p{N}]{3,}/gu) ?? []);
-  const candidates = [...generatedDocumentationChunks, ...approvedFaqChunks] as DocumentationChunk[];
+  const candidates = [...generatedDocumentationChunks, ...approvedFaqChunks].filter((chunk) =>
+    !(spouseProxyContext && chunk.key === "faq_power_of_attorney")
+  ) as DocumentationChunk[];
   const ranked = candidates
     .map((chunk, index) => ({ chunk, index, score: scoreChunk(chunk, index, stages, tokens, current) }))
     .filter((item) => item.score > 0 && (input.includeCrossStageMatches || chunkBelongsToStages(item.chunk, stages) || matchesApprovedQuestion(item.chunk, tokens)))
@@ -197,10 +208,20 @@ function retrievalAnswerOf(chunk: DocumentationChunk): string | undefined {
 }
 
 function mandatoryApprovedAnswer(ranked: Array<{ chunk: DocumentationChunk }>, current: string): string | undefined {
-  const match = ranked.find(({ chunk }) =>
-    (chunk.key.startsWith("faq_") && hasExactApprovedFaqAlias(chunk, current)) || matchesDirectQuestion(chunk, current)
-  );
+  // A direct question-answer pair from the source document is narrower than
+  // a seed FAQ with a broad alias (for example, nearby services). Prefer it
+  // so a currency-exchange question cannot acquire answers about a notary or
+  // an ATM from a neighbouring service bundle.
+  const match = (isProcessingDurationQuestion(current)
+    ? ranked.find(({ chunk }) => String(chunk.key) === "faq_processing_duration")
+    : undefined)
+    ?? ranked.find(({ chunk }) => matchesDirectQuestion(chunk, current))
+    ?? ranked.find(({ chunk }) => chunk.key.startsWith("faq_") && hasExactApprovedFaqAlias(chunk, current));
   return match ? approvedAnswerOf(match.chunk) ?? retrievalAnswerOf(match.chunk) : undefined;
+}
+
+function isProcessingDurationQuestion(text: string): boolean {
+  return /(?:сколько\s+(?:длит|занима)|как\s+(?:долго|быстро)).{0,40}оформлени\p{L}*/iu.test(text);
 }
 
 function approvedQuestionScore(chunk: KnowledgeContextChunk, tokens: Set<string>): number {
@@ -228,7 +249,7 @@ function hasExactApprovedFaqAlias(chunk: KnowledgeContextChunk, current: string)
 }
 
 function matchesDirectQuestion(chunk: DocumentationChunk, current: string): boolean {
-  const question = retrievalQuestionOf(chunk);
+  const question = approvedQuestionOf(chunk) ?? retrievalQuestionOf(chunk);
   if (!question) return false;
   const normalizedQuestion = normalizeForQuestionMatch(question);
   return normalizedQuestion.length >= 8 && normalizeForQuestionMatch(current).includes(normalizedQuestion);
@@ -236,4 +257,8 @@ function matchesDirectQuestion(chunk: DocumentationChunk, current: string): bool
 
 function normalizeForQuestionMatch(text: string): string {
   return text.toLocaleLowerCase("ru-RU").replace(/[^\p{L}\p{N}]+/gu, " ").trim().replace(/\s+/gu, " ");
+}
+
+function isSpouseProxyContext(text: string): boolean {
+  return /доверенн(?:ост|осит)/iu.test(text) && /(?:жен[ауые]?|муж(?:[ауе]|ем)?|супруг[аиу]?|супруге|супругу)/iu.test(text);
 }

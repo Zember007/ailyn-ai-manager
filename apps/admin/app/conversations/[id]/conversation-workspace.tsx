@@ -87,6 +87,11 @@ export function ConversationWorkspace({
           <Panel title="Карточка лида">
             <LeadCard application={application} attachments={conversationAttachments} />
           </Panel>
+          <Panel title="Краткая сводка">
+            <dl className="lead">
+              <Field label="По диалогу" value={application?.dialogueSummary ?? "Сводка появится после записи на визит."} />
+            </dl>
+          </Panel>
           <Panel title="Трассировка AI">
             <Field label="Модель RouterAI" value={latestAi?.metadata?.routerAiModel} />
             <Field label="Версия prompt" value={latestAi?.metadata?.promptVersion} />

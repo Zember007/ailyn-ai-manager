@@ -55,6 +55,8 @@ export interface Stage1Application {
   factHistory: { key: string; previousValue: unknown; newValue: unknown; changedAt: string }[];
   decision?: Record<string, unknown>;
   agentState?: { nextAction: string; cardSummary: string; intent: string; preliminaryLimit?: number | null };
+  /** Private summary generated once after a visit is recorded. */
+  dialogueSummary?: string;
   createdAt: string;
   updatedAt: string;
 }
