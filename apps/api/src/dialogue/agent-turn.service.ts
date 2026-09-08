@@ -265,7 +265,39 @@ export class AgentTurnService {
 
   private async resolveSemanticClarifications(parsed: AgentTurnResult, input: AgentTurnInput): Promise<AgentTurnResult> {
     const residenceNormalized = await this.normalizeResidenceLocality(parsed, input);
-    return this.resolveOfficeConsent(await this.resolveGuarantorDecision(await this.resolveResidenceClarification(residenceNormalized, input), input), input);
+    const officeResolved = await this.resolveOfficeConsent(await this.resolveGuarantorDecision(await this.resolveResidenceClarification(residenceNormalized, input), input), input);
+    return this.resolveFinalQuestionsDecision(officeResolved, input);
+  }
+
+  private async resolveFinalQuestionsDecision(parsed: AgentTurnResult, input: AgentTurnInput): Promise<AgentTurnResult> {
+    const lastAssistant = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
+    // The response normalizer carries known facts into leadCardPatch. Only a
+    // changed value is a model decision; a carried value must still receive
+    // semantic interpretation of the client's final answer.
+    if (!isFinalQuestionsPrompt(lastAssistant) || parsed.leadCardPatch.clientClosed !== input.facts.clientClosed) return parsed;
+    const currentReply = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "").trim();
+    if (!currentReply) return parsed;
+    try {
+      const response = await this.client.createChatCompletion({
+        model: this.config.routerAiTextModel ?? "routerai-text-model-not-configured",
+        temperature: 0,
+        max_tokens: 20,
+        reasoning: { enabled: false },
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: "Определи смысл ответа клиента только относительно последнего вопроса AI: есть ли у него ещё вопросы. Верни строго JSON {\"decision\":\"accept\"|\"reject\"|\"undecided\"}. Ответ, что вопросов нет, всё понятно, больше ничего не нужно — reject. Если клиент хочет что-то уточнить — accept. Не добавляй текст." },
+          { role: "user", content: JSON.stringify({ lastAssistantQuestion: lastAssistant, clientReply: currentReply }) }
+        ]
+      }, { timeoutMs: this.config.routerAiTimeoutMs, signal: input.signal });
+      const decision = parseAgentJson(response.choices?.[0]?.message?.content).decision;
+      return decision === "reject"
+        ? { ...parsed, leadCardPatch: { ...parsed.leadCardPatch, clientClosed: true } }
+        : parsed;
+    } catch (error) {
+      if (input.signal?.aborted) throw error;
+      this.logger.warn(`Final-questions classifier unavailable: ${formatError(error)}`);
+      return parsed;
+    }
   }
 
   /**
@@ -566,6 +598,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     ...guarantorPatchFromClearReply(input, input.facts, leadCardFacts),
     ...limitChoicePatch(parsed.limitChoice, input, input.facts),
     ...familyPatchFromClearReply(input, input.facts, leadCardFacts),
+    ...finalQuestionsPatchFromClearReply(input, input.facts, leadCardFacts),
     ...visitPatchFromClearReply(input, input.facts),
     ...(isClearDocumentsRefusal(input) ? { declinedDocuments: true } : {}),
     ...(isClearCarPhotoRefusal(input) ? { declinedCarPhoto: true } : {})
@@ -631,7 +664,10 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   // workflow. It may answer a direct question (or ask for KB routing); this
   // boundary supplies the one and only next application question.
   const workflowFollowUp = serverWorkflowFollowUp(input.text, effectiveFacts, stageCompletion, requestedAmountLimit, selectedLimitNotice);
-  const directAnswer = attachmentAcceptanceNotice ?? visitNotice ?? acceptedLimitNotice ?? (region10Answer ? [region10Answer, olderVehicleNotice].filter(Boolean).join("\n\n") : undefined) ?? olderVehicleNotice ?? spouseVisitAnswer(input) ?? familyNotice ?? loanRateReply ?? maximumLoanInputReply ?? maximumLoanReply;
+  const completionNotice = stageCompletion.visit && effectiveFacts.clientClosed
+    ? "Спасибо за обращение. Ожидайте звонка менеджера, он подтвердит время визита."
+    : undefined;
+  const directAnswer = completionNotice ?? attachmentAcceptanceNotice ?? visitNotice ?? acceptedLimitNotice ?? (region10Answer ? [region10Answer, olderVehicleNotice].filter(Boolean).join("\n\n") : undefined) ?? olderVehicleNotice ?? spouseVisitAnswer(input) ?? familyNotice ?? loanRateReply ?? maximumLoanInputReply ?? maximumLoanReply;
   const answerBeforeWorkflow = directAnswer ?? removeForbiddenMetaPhrases(replaceUnsupportedFallbackWithApprovedAnswer(guardedModelReply, mandatoryKnowledgeAnswer, input));
   // Limits and eligibility are calculated by the server. If an amount is
   // over the selected programme's limit, preserve a normal acknowledgement or
@@ -1029,10 +1065,12 @@ function serverWorkflowFollowUp(text: string | undefined, facts: ApplicationFact
   // Before that point, answer the question and append the one missing stage
   // so the client knows exactly what to provide next.
   const canCalculateMaximum = facts.vehicleModel && facts.vehicleYear && facts.vehicleValue !== undefined && facts.residenceRegion && facts.residenceCategory;
-  if (asksMaximumLoan(text) && canCalculateMaximum) return amountLimitReply;
-  if (asksLoanRate(text)) return undefined;
-  if (amountLimitReply) return amountLimitReply;
-  return [selectedLimitNotice, nextRequiredStageQuestion(facts, completion)].filter(Boolean).join("\n\n") || undefined;
+  const nextQuestion = nextRequiredStageQuestion(facts, completion);
+  if (completion.visit) return facts.clientClosed ? undefined : FINAL_QUESTIONS_PROMPT;
+  if (asksMaximumLoan(text) && canCalculateMaximum) return [amountLimitReply, nextQuestion].filter(Boolean).join("\n\n") || undefined;
+  if (asksLoanRate(text)) return nextQuestion;
+  if (amountLimitReply) return [amountLimitReply, nextQuestion].filter(Boolean).join("\n\n") || undefined;
+  return [selectedLimitNotice, nextQuestion].filter(Boolean).join("\n\n") || undefined;
 }
 
 function removeModelWorkflowQuestion(reply: string): string {
@@ -1322,6 +1360,25 @@ function guarantorPatchFromClearReply(
 
 const GUARANTOR_REQUIREMENTS = "Для вашей прописки требуется поручитель\n- возраст от 25 лет\n- проживает в г. Бишкек или Чуйской области\n- должен лично присутствовать при выдаче займа и иметь с собой ID (паспорт)\nУ Вас есть такой поручитель?";
 const GUARANTOR_PARKING_ALTERNATIVE = "Поручитель обязателен для программы без изъятия в Вашем регионе. Можем рассмотреть программу с постановкой автомобиля на охраняемую стоянку?";
+const FINAL_QUESTIONS_PROMPT = "Есть ли у Вас ещё вопросы?";
+
+function isFinalQuestionsPrompt(text: string): boolean {
+  return /есть\s+ли\s+у\s+вас\s+(?:ещ[её]\s+)?вопрос/iu.test(text);
+}
+
+/** Regex is only the fallback when semantic final-answer recognition failed. */
+function finalQuestionsPatchFromClearReply(
+  input: Pick<AgentTurnInput, "text" | "currentTurnMessages" | "messages">,
+  facts: ApplicationFacts,
+  modelPatch: Partial<ApplicationFacts>
+): Partial<ApplicationFacts> {
+  const lastAssistant = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
+  if (!isFinalQuestionsPrompt(lastAssistant) || modelPatch.clientClosed !== facts.clientClosed) return {};
+  const reply = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "").trim();
+  return /^(?:нет|неа|нету|вс[её]\s+понятно|ничего\s+больше\s+не\s+нужно)(?:[,.!\s]|вс[её]\s+понятно)*$/iu.test(reply)
+    ? { clientClosed: true }
+    : {};
+}
 
 /** Do not acknowledge a binary answer until server state confirms its meaning. */
 function unresolvedBinaryDecisionReply(input: Pick<AgentTurnInput, "messages">, facts: ApplicationFacts): string | undefined {

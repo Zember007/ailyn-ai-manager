@@ -40,6 +40,18 @@ describe("business rules", () => {
     expect(resolveKyrgyzstanLocality(input)).toMatchObject({ locality, category, match });
   });
 
+  it.each([
+    ["Аламудунский район", "BISHKEK_CHUY"],
+    ["Свердловский район Бишкек", "BISHKEK_CHUY"],
+    ["Тюпский район", "OTHER_KG"],
+    ["Чаткальский район", "OTHER_KG"],
+    ["Кадамжайский район", "OTHER_KG"],
+    ["Чон-Алайский район", "OTHER_KG"],
+    ["Бакай-Атинский район", "OTHER_KG"]
+  ])("resolves canonical administrative registration locality %s", (locality, category) => {
+    expect(resolveKyrgyzstanLocality(locality)).toMatchObject({ locality, category, match: "exact" });
+  });
+
   it("uses the Chuy limit for Tokmok and never calculates before residence is resolved", () => {
     expect(calculateLoanLimits({ vehicleValue: 1_748_976, residenceRegion: "Токмок" })).toEqual({ withoutStorage: 600_000, parking: 874_488 });
     expect(calculateLoanLimits({ vehicleValue: 1_748_976, residenceRegion: "непонятный посёлок" })).toEqual({});

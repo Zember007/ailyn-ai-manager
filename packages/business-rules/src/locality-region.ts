@@ -61,15 +61,60 @@ for (const [name, category] of SOATE_LOCALITY_CATEGORIES) {
 }
 
 /**
- * Canonical names missing from the SOATE extract or officially renamed.
- * Spelling variants intentionally do not live here: the AI normalizer owns
- * that task, and this table remains a small auditable data correction.
+ * Canonical administrative entities supplementing the locality-level SOATE
+ * extract: oblasts, districts, city districts and renamed places. These are
+ * valid registration answers in their own right. Spelling variants do not
+ * live here: the AI normalizer owns that task.
  */
-const catalogueCorrections: Array<[name: string, category: LoanResidenceCategory]> = [
+const supplementaryAdministrativeLocalities: Array<[name: string, category: LoanResidenceCategory]> = [
+  // Бишкек and Чуйская область
+  ["Чуйская область", "BISHKEK_CHUY"], ["Аламудунский район", "BISHKEK_CHUY"],
+  ["Жайылский район", "BISHKEK_CHUY"], ["Кеминский район", "BISHKEK_CHUY"],
+  ["Московский район", "BISHKEK_CHUY"], ["Панфиловский район", "BISHKEK_CHUY"],
+  ["Сокулукский район", "BISHKEK_CHUY"], ["Чуйский район", "BISHKEK_CHUY"],
+  ["Ысык-Атинский район", "BISHKEK_CHUY"], ["Иссык-Атинский район", "BISHKEK_CHUY"],
+  ["Ленинский район Бишкек", "BISHKEK_CHUY"], ["Октябрьский район Бишкек", "BISHKEK_CHUY"],
+  ["Первомайский район Бишкек", "BISHKEK_CHUY"], ["Свердловский район Бишкек", "BISHKEK_CHUY"],
+
+  // Иссык-Кульская область
+  ["Иссык-Кульская область", "OTHER_KG"], ["Ысык-Кульская область", "OTHER_KG"],
+  ["Ак-Суйский район", "OTHER_KG"], ["Джети-Огузский район", "OTHER_KG"],
+  ["Жети-Огузский район", "OTHER_KG"], ["Иссык-Кульский район", "OTHER_KG"],
+  ["Тонский район", "OTHER_KG"], ["Тюпский район", "OTHER_KG"],
+
+  // Джалал-Абадская область
+  ["Джалал-Абадская область", "OTHER_KG"], ["Жалал-Абадская область", "OTHER_KG"],
+  ["Аксыйский район", "OTHER_KG"], ["Ала-Букинский район", "OTHER_KG"],
+  ["Базар-Коргонский район", "OTHER_KG"], ["Чаткальский район", "OTHER_KG"],
+  ["Ноокенский район", "OTHER_KG"], ["Сузакский район", "OTHER_KG"],
+  ["Тогуз-Тороуский район", "OTHER_KG"], ["Токтогульский район", "OTHER_KG"],
+
+  // Нарынская область
+  ["Нарынская область", "OTHER_KG"], ["Ак-Талинский район", "OTHER_KG"],
+  ["Ат-Башинский район", "OTHER_KG"], ["Жумгальский район", "OTHER_KG"],
+  ["Кочкорский район", "OTHER_KG"], ["Нарынский район", "OTHER_KG"],
+
+  // Ошская область
+  ["Ошская область", "OTHER_KG"], ["Алайский район", "OTHER_KG"],
+  ["Араванский район", "OTHER_KG"], ["Кара-Кульджинский район", "OTHER_KG"],
+  ["Кара-Суйский район", "OTHER_KG"], ["Ноокатский район", "OTHER_KG"],
+  ["Узгенский район", "OTHER_KG"], ["Чон-Алайский район", "OTHER_KG"],
+
+  // Баткенская область
+  ["Баткенская область", "OTHER_KG"], ["Баткенский район", "OTHER_KG"],
+  ["Кадамжайский район", "OTHER_KG"], ["Лейлекский район", "OTHER_KG"],
+
+  // Таласская область
+  ["Таласская область", "OTHER_KG"], ["Бакай-Атинский район", "OTHER_KG"],
+  ["Кара-Бууринский район", "OTHER_KG"], ["Манасский район", "OTHER_KG"],
+  ["Таласский район", "OTHER_KG"],
+
+  // Canonical locations absent from or renamed after a SOATE source extract.
+  ["Беловодское", "BISHKEK_CHUY"], ["Лебединовка", "BISHKEK_CHUY"],
   ["Бостери", "OTHER_KG"],
   ["Раззаков", "OTHER_KG"]
 ];
-for (const [name, category] of catalogueCorrections) {
+for (const [name, category] of supplementaryAdministrativeLocalities) {
   add(exactIndex, name, name, category);
   add(transliteratedIndex, transliterate(name), name, category);
 }
@@ -89,7 +134,6 @@ export function resolveKyrgyzstanLocality(value: string | undefined): LocalityRe
   if (!value) return undefined;
   const normalized = normalize(value);
   if (!normalized) return undefined;
-  for (const [pattern, result] of regionalWords) if (pattern.test(normalized)) return result;
 
   const exact = resolveFromIndex(exactIndex, normalized);
   if (exact) return makeResolution(exact, "exact");
@@ -97,6 +141,10 @@ export function resolveKyrgyzstanLocality(value: string | undefined): LocalityRe
   const latin = transliterate(value);
   const transliterated = resolveFromIndex(transliteratedIndex, latin);
   if (transliterated) return makeResolution(transliterated, "transliteration");
+
+  // A specific administrative locality wins over a broad region word, e.g.
+  // «Свердловский район Бишкек» must not collapse to just «Бишкек».
+  for (const [pattern, result] of regionalWords) if (pattern.test(normalized)) return result;
 
   // Limit fuzzy matching to a single locality-sized client answer. This avoids
   // guessing a region from an arbitrary sentence while accepting "такмоке".

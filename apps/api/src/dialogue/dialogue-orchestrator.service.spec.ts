@@ -1168,6 +1168,36 @@ describe("single-agent dialogue", () => {
     expect(client.createChatCompletion).toHaveBeenCalledTimes(4);
   });
 
+  it("always advances an incomplete workflow after answering a client question", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ ...validResult, reply: "Ставка определяется индивидуально.", leadCardPatch: {} }) } }] }) } as any;
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "Какая сумма займа Вам необходима?", createdAt: "now" } as any],
+      facts: { vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 1_000_000, requestedAmount: 200_000, requestedProgram: "without_storage", residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY" } as any,
+      settings: {}, text: "какие проценты", attachments: []
+    });
+
+    expect(output.reply).toContain("ставка определяется индивидуально");
+    expect(output.reply).toContain("Пожалуйста, отправьте фото ID");
+  });
+
+  it("asks about remaining questions after a booked visit and closes honestly after no", async () => {
+    const facts = {
+      vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 1_000_000, requestedAmount: 200_000, requestedProgram: "parking",
+      residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY", documentsProvided: true,
+      documents: { car_photo: "received" }, familyStatus: "single", visitRequested: true, visitDate: "2026-09-09", visitTime: "17:00"
+    } as any;
+    const firstClient = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ ...validResult, reply: "Запись подтверждена.", leadCardPatch: {} }) } }] }) } as any;
+    const closedClient = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn()
+      .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ ...validResult, reply: "Поняла.", leadCardPatch: {} }) } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ decision: "reject" }) } }] }) } as any;
+    const followUp = await new AgentTurnService(firstClient).run({ messages: [], facts, settings: {}, text: "спасибо", attachments: [] });
+    const closed = await new AgentTurnService(closedClient).run({ messages: [{ author: "ai", body: "Есть ли у Вас ещё вопросы?", createdAt: "now" } as any], facts, settings: {}, text: "нет, всё понятно", attachments: [] });
+
+    expect(followUp.reply).toContain("Есть ли у Вас ещё вопросы?");
+    expect(closed.result?.leadCardPatch.clientClosed).toBe(true);
+    expect(closed.reply).toBe("Спасибо за обращение. Ожидайте звонка менеджера, он подтвердит время визита.");
+  });
+
   it("treats a promise to find a guarantor as acceptance and never acknowledges an undecided reply", async () => {
     const facts = {
       vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 1_740_000,
