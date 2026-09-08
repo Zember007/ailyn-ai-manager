@@ -620,10 +620,29 @@ describe("single-agent dialogue", () => {
     });
 
     expect(output.result?.leadCardPatch).toMatchObject({
-      residenceText: "чтолпон ата",
+      residenceText: "Чолпон-Ата",
       residenceRegion: "Другой регион Кыргызстана",
       residenceCategory: "OTHER_KG",
       residenceNeedsClarification: false
+    });
+  });
+
+  it("uses a second model only to stabilize a locality before the catalogue assigns its region", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn()
+      .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ ...validResult, leadCardPatch: { residenceText: "чалупон ата", residenceRegion: "Чуйская область", residenceCategory: "BISHKEK_CHUY" } }) } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ locality: "Чолпон-Ата", category: "BISHKEK_CHUY" }) } }] }) } as any;
+
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "Подскажите, пожалуйста, Ваш город, село или область по прописке.", createdAt: "now" } as any],
+      facts: { vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 1_000_000, requestedAmount: 300_000, requestedProgram: "parking" } as any,
+      settings: {}, text: "чалупон ата", attachments: []
+    });
+
+    expect(client.createChatCompletion).toHaveBeenCalledTimes(2);
+    expect(output.result?.leadCardPatch).toMatchObject({
+      residenceText: "Чолпон-Ата",
+      residenceRegion: "Другой регион Кыргызстана",
+      residenceCategory: "OTHER_KG"
     });
   });
 
@@ -647,6 +666,72 @@ describe("single-agent dialogue", () => {
       residenceNeedsClarification: false
     });
     expect(output.reply).not.toMatch(/пропис/iu);
+  });
+
+  it("uses the server catalogue for Bosteri instead of a model's false Chuy classification", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult,
+      reply: "Бостери относится к Чуйской области.",
+      leadCardPatch: { residenceRegion: "Чуйская область", residenceCategory: "BISHKEK_CHUY" }
+    }) } }] }) } as any;
+
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "Подскажите, пожалуйста, Вашу прописку — Бишкек, Чуйская область или другой регион Кыргызстана.", createdAt: "now" } as any],
+      facts: { vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 2_000_000, requestedAmount: 300_000, requestedProgram: "without_storage" } as any,
+      settings: {}, text: "бостери", attachments: []
+    });
+
+    expect(output.result?.leadCardPatch).toMatchObject({ residenceText: "Бостери", residenceRegion: "Другой регион Кыргызстана", residenceCategory: "OTHER_KG", residenceNeedsClarification: false });
+  });
+
+  it("asks for Chuy confirmation and blocks pricing when the server catalogue cannot resolve a locality", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult,
+      reply: "Это Чуйская область.",
+      leadCardPatch: { residenceRegion: "Чуйская область", residenceCategory: "BISHKEK_CHUY" }
+    }) } }] }) } as any;
+
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "Подскажите, пожалуйста, Вашу прописку — Бишкек, Чуйская область или другой регион Кыргызстана.", createdAt: "now" } as any],
+      facts: { vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 2_000_000, requestedAmount: 300_000, requestedProgram: "without_storage" } as any,
+      settings: {}, text: "неизвестный аил", attachments: []
+    });
+
+    expect(output.result?.leadCardPatch).toMatchObject({ residenceText: "неизвестный аил", residenceNeedsClarification: true });
+    expect(output.result?.leadCardPatch.residenceCategory).toBeUndefined();
+    expect(output.reply).toContain("Подскажите, пожалуйста, это в Чуйской области?");
+    expect(output.reply).not.toContain("доступно до");
+  });
+
+  it("accepts a Chuy category only after the semantic classifier confirms the clarification", async () => {
+    const mainResponse = { choices: [{ message: { content: JSON.stringify({ ...validResult, reply: "Поняла.", leadCardPatch: { residenceRegion: "Чуйская область", residenceCategory: "BISHKEK_CHUY" } }) } }] } as any;
+    const classifierResponse = { choices: [{ message: { content: JSON.stringify({ decision: "accept" }) } }] } as any;
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValueOnce(mainResponse).mockResolvedValueOnce(classifierResponse) } as any;
+
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "Подскажите, пожалуйста, это в Чуйской области?", createdAt: "now" } as any],
+      facts: { vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 2_000_000, requestedAmount: 300_000, requestedProgram: "without_storage", residenceText: "неизвестный аил", residenceNeedsClarification: true } as any,
+      settings: {}, text: "точно", attachments: []
+    });
+
+    expect(client.createChatCompletion).toHaveBeenCalledTimes(2);
+    expect(output.result?.leadCardPatch).toMatchObject({ residenceRegion: "Чуйская область", residenceCategory: "BISHKEK_CHUY", residenceNeedsClarification: false });
+  });
+
+  it("keeps residence unresolved when the semantic classifier is undecided", async () => {
+    const mainResponse = { choices: [{ message: { content: JSON.stringify({ ...validResult, reply: "Поняла.", leadCardPatch: { residenceRegion: "Чуйская область", residenceCategory: "BISHKEK_CHUY" } }) } }] } as any;
+    const classifierResponse = { choices: [{ message: { content: JSON.stringify({ decision: "undecided" }) } }] } as any;
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValueOnce(mainResponse).mockResolvedValueOnce(classifierResponse) } as any;
+
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "Подскажите, пожалуйста, это в Чуйской области?", createdAt: "now" } as any],
+      facts: { vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 2_000_000, requestedAmount: 300_000, requestedProgram: "without_storage", residenceText: "неизвестный аил", residenceNeedsClarification: true } as any,
+      settings: {}, text: "не знаю", attachments: []
+    });
+
+    expect(output.result?.leadCardPatch.residenceCategory).toBeUndefined();
+    expect(output.result?.leadCardPatch.residenceNeedsClarification).toBe(true);
+    expect(output.reply).toContain("Подскажите, пожалуйста, это в Чуйской области?");
   });
 
   it("removes a repeated full-residence question after Cholpon-Ata is normalized", async () => {
@@ -1032,8 +1117,7 @@ describe("single-agent dialogue", () => {
 
   it("offers parking after a clear guarantor refusal and switches the programme after acceptance", async () => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn()
-      .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ ...validResult, reply: "Поняла.", leadCardPatch: {} }) } }] })
-      .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ ...validResult, reply: "Поняла.", leadCardPatch: {} }) } }] }) } as any;
+      .mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ ...validResult, reply: "Поняла.", leadCardPatch: {} }) } }] }) } as any;
     const facts = {
       vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 1_740_000,
       requestedAmount: 200_000, requestedProgram: "without_storage",
@@ -1055,6 +1139,56 @@ describe("single-agent dialogue", () => {
     expect(acceptedParking.result?.leadCardPatch).toMatchObject({ requestedProgram: "parking", guarantorAlternativeDeclined: false });
     expect(acceptedParking.reply).toContain("Пожалуйста, отправьте фото ID и свидетельства о регистрации автомобиля с обеих сторон.");
     expect(acceptedParking.reply).not.toContain("поручитель");
+  });
+
+  it("uses the semantic classifier first for non-template guarantor decisions", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn()
+      .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ ...validResult, reply: "Поняла.", leadCardPatch: {} }) } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ decision: "accept" }) } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ ...validResult, reply: "Поняла.", leadCardPatch: {} }) } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ decision: "accept" }) } }] }) } as any;
+    const facts = {
+      vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 1_740_000,
+      requestedAmount: 200_000, requestedProgram: "without_storage",
+      residenceRegion: "Другой регион Кыргызстана", residenceCategory: "OTHER_KG"
+    } as any;
+    const service = new AgentTurnService(client);
+
+    const guarantor = await service.run({
+      messages: [{ author: "ai", body: "Для вашей прописки требуется поручитель. У Вас есть такой поручитель?", createdAt: "now" } as any],
+      facts, settings: {}, text: "своего человека приведу", attachments: []
+    });
+    const parking = await service.run({
+      messages: [{ author: "ai", body: "Поручитель обязателен для программы без изъятия в Вашем регионе. Можем рассмотреть программу с постановкой автомобиля на охраняемую стоянку?", createdAt: "now" } as any],
+      facts: { ...facts, guarantorAvailable: false }, settings: {}, text: "это мне подходит", attachments: []
+    });
+
+    expect(guarantor.result?.leadCardPatch).toMatchObject({ guarantorAvailable: true, guarantorAlternativeDeclined: false });
+    expect(parking.result?.leadCardPatch).toMatchObject({ requestedProgram: "parking", guarantorAlternativeDeclined: false });
+    expect(client.createChatCompletion).toHaveBeenCalledTimes(4);
+  });
+
+  it("treats a promise to find a guarantor as acceptance and never acknowledges an undecided reply", async () => {
+    const facts = {
+      vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 1_740_000,
+      requestedAmount: 200_000, requestedProgram: "without_storage",
+      residenceRegion: "Другой регион Кыргызстана", residenceCategory: "OTHER_KG"
+    } as any;
+    const question = "Для вашей прописки требуется поручитель. У Вас есть такой поручитель?";
+    const acceptedClient = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn()
+      .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ ...validResult, reply: "Поняла.", leadCardPatch: {} }) } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ decision: "accept" }) } }] }) } as any;
+    const undecidedClient = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn()
+      .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ ...validResult, reply: "Поняла.", leadCardPatch: {} }) } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ decision: "undecided" }) } }] }) } as any;
+
+    const accepted = await new AgentTurnService(acceptedClient).run({ messages: [{ author: "ai", body: question, createdAt: "now" } as any], facts, settings: {}, text: "найду", attachments: [] });
+    const undecided = await new AgentTurnService(undecidedClient).run({ messages: [{ author: "ai", body: question, createdAt: "now" } as any], facts, settings: {}, text: "потом", attachments: [] });
+
+    expect(accepted.result?.leadCardPatch.guarantorAvailable).toBe(true);
+    expect(undecided.result?.leadCardPatch.guarantorAvailable).toBeUndefined();
+    expect(undecided.reply).toContain("Не смогла точно понять ответ.");
+    expect(undecided.reply).not.toContain("Поняла");
   });
 
   it("returns to the mandatory guarantor requirement when parking is declined", async () => {

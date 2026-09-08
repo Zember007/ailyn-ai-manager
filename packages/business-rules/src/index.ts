@@ -1,5 +1,5 @@
 import { resolveKyrgyzstanLocality, type LoanResidenceCategory } from "./locality-region.js";
-export { resolveKyrgyzstanLocality } from "./locality-region.js";
+export { normalizeKyrgyzstanLocality, resolveKyrgyzstanLocality } from "./locality-region.js";
 
 export type BusinessRuleStatus =
   | "continue"

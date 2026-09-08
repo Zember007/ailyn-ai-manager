@@ -11,7 +11,13 @@ export type LocalityRegionResolution = {
   match: "exact" | "transliteration" | "typo";
 };
 
-type MatchIndex = Map<string, Set<LoanResidenceCategory>>;
+/**
+ * The index keeps the SOATE spelling alongside its business category.  A set
+ * of categories alone is not enough: after accepting a typo we must persist
+ * the canonical locality, not the client's misspelling.
+ */
+type IndexedLocality = { canonical: string; category: LoanResidenceCategory };
+type MatchIndex = Map<string, Map<string, Set<LoanResidenceCategory>>>;
 
 const cyrillicToLatin: Record<string, string> = {
   а: "a", б: "b", в: "v", г: "g", д: "d", е: "e", ё: "e", ж: "zh", з: "z", и: "i", й: "y",
@@ -37,42 +43,46 @@ function transliterate(value: string): string {
   return [...normalize(value)].map((character) => cyrillicToLatin[character] ?? character).join("");
 }
 
-function add(index: MatchIndex, value: string, category: LoanResidenceCategory): void {
+function add(index: MatchIndex, value: string, canonical: string, category: LoanResidenceCategory): void {
   const key = normalize(value);
   if (!key) return;
-  const categories = index.get(key) ?? new Set<LoanResidenceCategory>();
+  const localities = index.get(key) ?? new Map<string, Set<LoanResidenceCategory>>();
+  const categories = localities.get(canonical) ?? new Set<LoanResidenceCategory>();
   categories.add(category);
-  index.set(key, categories);
+  localities.set(canonical, categories);
+  index.set(key, localities);
 }
 
 const exactIndex: MatchIndex = new Map();
 const transliteratedIndex: MatchIndex = new Map();
 for (const [name, category] of SOATE_LOCALITY_CATEGORIES) {
-  add(exactIndex, name, category);
-  add(transliteratedIndex, transliterate(name), category);
+  add(exactIndex, name, name, category);
+  add(transliteratedIndex, transliterate(name), name, category);
 }
 
-/** Misspellings observed in client chats. Keep this list small and auditable. */
-const explicitAliases: Array<[string, LoanResidenceCategory]> = [
-  ["такмок", "BISHKEK_CHUY"],
-  ["такмоке", "BISHKEK_CHUY"],
-  ["токмоке", "BISHKEK_CHUY"],
-  ["беловодское", "BISHKEK_CHUY"],
-  ["лебединовка", "BISHKEK_CHUY"],
-  ["жалал абад", "OTHER_KG"],
-  ["джалал абад", "OTHER_KG"],
-  ["исфана", "OTHER_KG"],
-  ["гульчо", "OTHER_KG"]
+/**
+ * Canonical names missing from the SOATE extract or officially renamed.
+ * Spelling variants intentionally do not live here: the AI normalizer owns
+ * that task, and this table remains a small auditable data correction.
+ */
+const catalogueCorrections: Array<[name: string, category: LoanResidenceCategory]> = [
+  ["Бостери", "OTHER_KG"],
+  ["Раззаков", "OTHER_KG"]
 ];
-for (const [alias, category] of explicitAliases) {
-  add(exactIndex, alias, category);
-  add(transliteratedIndex, transliterate(alias), category);
+for (const [name, category] of catalogueCorrections) {
+  add(exactIndex, name, name, category);
+  add(transliteratedIndex, transliterate(name), name, category);
 }
 
 const regionalWords: Array<[RegExp, LocalityRegionResolution]> = [
   [/(?:^|\s)(?:бишкек|bishkek)(?:$|\s)/u, { category: "BISHKEK_CHUY", residenceRegion: "Бишкек", locality: "Бишкек", match: "exact" }],
   [/(?:^|\s)(?:чу[йи](?:ская)?|chuy(?:skaya)?|chui(?:skaya)?)(?:$|\s)/u, { category: "BISHKEK_CHUY", residenceRegion: "Чуйская область", locality: "Чуйская область", match: "exact" }],
-  [/(?:^|\s)(?:ошская|баткенская|нарынская|таласская|иссык кульская|жалал абадская|джалал абадская)(?:$|\s)/u, { category: "OTHER_KG", residenceRegion: "Другой регион Кыргызстана", locality: "Другой регион Кыргызстана", match: "exact" }]
+  [/(?:^|\s)ошская(?:\s+область)?(?:$|\s)/u, { category: "OTHER_KG", residenceRegion: "Другой регион Кыргызстана", locality: "Ошская область", match: "exact" }],
+  [/(?:^|\s)баткенская(?:\s+область)?(?:$|\s)/u, { category: "OTHER_KG", residenceRegion: "Другой регион Кыргызстана", locality: "Баткенская область", match: "exact" }],
+  [/(?:^|\s)нарынская(?:\s+область)?(?:$|\s)/u, { category: "OTHER_KG", residenceRegion: "Другой регион Кыргызстана", locality: "Нарынская область", match: "exact" }],
+  [/(?:^|\s)таласская(?:\s+область)?(?:$|\s)/u, { category: "OTHER_KG", residenceRegion: "Другой регион Кыргызстана", locality: "Таласская область", match: "exact" }],
+  [/(?:^|\s)(?:иссык|ысык) куль(?:ская)?(?:\s+область)?(?:$|\s)/u, { category: "OTHER_KG", residenceRegion: "Другой регион Кыргызстана", locality: "Иссык-Кульская область", match: "exact" }],
+  [/(?:^|\s)(?:жалал|джалал) абад(?:ская)?(?:\s+область)?(?:$|\s)/u, { category: "OTHER_KG", residenceRegion: "Другой регион Кыргызстана", locality: "Джалал-Абадская область", match: "exact" }]
 ];
 
 export function resolveKyrgyzstanLocality(value: string | undefined): LocalityRegionResolution | undefined {
@@ -82,45 +92,55 @@ export function resolveKyrgyzstanLocality(value: string | undefined): LocalityRe
   for (const [pattern, result] of regionalWords) if (pattern.test(normalized)) return result;
 
   const exact = resolveFromIndex(exactIndex, normalized);
-  if (exact) return makeResolution(value, exact, "exact");
+  if (exact) return makeResolution(exact, "exact");
 
   const latin = transliterate(value);
   const transliterated = resolveFromIndex(transliteratedIndex, latin);
-  if (transliterated) return makeResolution(value, transliterated, "transliteration");
+  if (transliterated) return makeResolution(transliterated, "transliteration");
 
   // Limit fuzzy matching to a single locality-sized client answer. This avoids
   // guessing a region from an arbitrary sentence while accepting "такмоке".
   if (normalized.split(" ").length > 2 || normalized.length < 5) return undefined;
   const candidates = [...exactIndex.entries()]
     .filter(([key]) => Math.abs(key.length - normalized.length) <= 2)
-    .map(([key, categories]) => ({ key, categories, distance: levenshtein(normalized, key) }))
+    .map(([key, localities]) => ({ key, localities, distance: levenshtein(normalized, key) }))
     .filter((candidate) => candidate.distance <= (normalized.length >= 6 ? 2 : 1))
     .sort((left, right) => left.distance - right.distance || right.key.length - left.key.length);
   if (!candidates.length || (candidates[1] && candidates[0].distance === candidates[1].distance)) return undefined;
-  const category = oneCategory(candidates[0].categories);
-  return category ? makeResolution(value, category, "typo") : undefined;
+  const locality = oneLocality(candidates[0].localities);
+  return locality ? makeResolution(locality, "typo") : undefined;
 }
 
-function resolveFromIndex(index: MatchIndex, value: string): LoanResidenceCategory | undefined {
-  const direct = oneCategory(index.get(value));
+/** Returns the server-confirmed SOATE spelling for an accepted locality. */
+export function normalizeKyrgyzstanLocality(value: string | undefined): string | undefined {
+  return resolveKyrgyzstanLocality(value)?.locality;
+}
+
+function resolveFromIndex(index: MatchIndex, value: string): IndexedLocality | undefined {
+  const direct = oneLocality(index.get(value));
   if (direct) return direct;
   const matches = [...index.entries()]
     .filter(([key]) => value === key || value.startsWith(`${key} `) || value.endsWith(` ${key}`) || value.includes(` ${key} `))
     .sort(([left], [right]) => right.length - left.length);
-  return matches.length ? oneCategory(matches[0][1]) : undefined;
+  return matches.length ? oneLocality(matches[0][1]) : undefined;
 }
 
-function oneCategory(categories: Set<LoanResidenceCategory> | undefined): LoanResidenceCategory | undefined {
-  return categories?.size === 1 ? [...categories][0] : undefined;
+function oneLocality(localities: Map<string, Set<LoanResidenceCategory>> | undefined): IndexedLocality | undefined {
+  if (!localities) return undefined;
+  const candidates = [...localities.entries()]
+    .flatMap(([canonical, categories]) => [...categories].map((category) => ({ canonical, category })));
+  if (new Set(candidates.map((candidate) => candidate.category)).size !== 1) return undefined;
+  // Duplicate names within the same category remain safe for eligibility;
+  // use the first official SOATE spelling as the canonical display value.
+  return candidates[0];
 }
 
-function makeResolution(input: string, category: LoanResidenceCategory, match: LocalityRegionResolution["match"]): LocalityRegionResolution {
-  const locality = normalize(input);
-  const isBishkek = /(^|\s)(?:бишкек|bishkek)(?:\s|$)/u.test(locality);
+function makeResolution(locality: IndexedLocality, match: LocalityRegionResolution["match"]): LocalityRegionResolution {
+  const isBishkek = /(^|\s)(?:бишкек|bishkek)(?:\s|$)/u.test(normalize(locality.canonical));
   return {
-    category,
-    residenceRegion: category === "OTHER_KG" ? "Другой регион Кыргызстана" : isBishkek ? "Бишкек" : "Чуйская область",
-    locality,
+    category: locality.category,
+    residenceRegion: locality.category === "OTHER_KG" ? "Другой регион Кыргызстана" : isBishkek ? "Бишкек" : "Чуйская область",
+    locality: locality.canonical,
     match
   };
 }

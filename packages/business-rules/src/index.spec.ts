@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { calculateLoanLimits, evaluateApplication, resolveKyrgyzstanLocality } from "./index.js";
+import { calculateLoanLimits, evaluateApplication, normalizeKyrgyzstanLocality, resolveKyrgyzstanLocality } from "./index.js";
 
 describe("business rules", () => {
   it.each([
@@ -23,8 +23,21 @@ describe("business rules", () => {
     ["Сокулук", "BISHKEK_CHUY", "Чуйская область"],
     ["Беловодское", "BISHKEK_CHUY", "Чуйская область"],
     ["Лебединовка", "BISHKEK_CHUY", "Чуйская область"]
+    ,["Бостери", "OTHER_KG", "Другой регион Кыргызстана"]
   ])("resolves %s from the SOATE locality index", (locality, category, region) => {
     expect(resolveKyrgyzstanLocality(locality)).toMatchObject({ category, residenceRegion: region });
+  });
+
+  it.each([
+    ["чалупон ата", "Чолпон-Ата", "OTHER_KG", "typo"],
+    ["в Чолпон-Ате", "Чолпон-Ата", "OTHER_KG", "typo"],
+    ["cholpon ata", "Чолпон-Ата", "OTHER_KG", "transliteration"],
+    ["Бостеры", "Бостери", "OTHER_KG", "typo"],
+    ["Джалалабад", "Джалал-Абад", "OTHER_KG", "typo"],
+    ["Иссык-Кульская область", "Иссык-Кульская область", "OTHER_KG", "exact"]
+  ])("normalizes %s to the canonical server locality", (input, locality, category, match) => {
+    expect(normalizeKyrgyzstanLocality(input)).toBe(locality);
+    expect(resolveKyrgyzstanLocality(input)).toMatchObject({ locality, category, match });
   });
 
   it("uses the Chuy limit for Tokmok and never calculates before residence is resolved", () => {

@@ -228,7 +228,7 @@ export class AgentTurnService {
             : undefined;
           throw new Error(`Agent response does not match AgentTurnResult (${issues}; stage=${JSON.stringify(state)}; targetEvent=${JSON.stringify(payload.targetEvent)})`);
         }
-        const result = finalizeAgentPayload(await this.resolveOfficeConsent(parsed.data, input), input);
+        const result = finalizeAgentPayload(await this.resolveSemanticClarifications(parsed.data, input), input);
         return { result, reply: result.reply, model: response.model ?? this.config.routerAiTextModel ?? "routerai", promptVersion: PROMPT_VERSION };
       } catch (error) {
         if (input.signal?.aborted) throw error;
@@ -261,6 +261,125 @@ export class AgentTurnService {
     this.logger.warn(`Single-agent fallback activated after ${MAX_MODEL_ATTEMPTS} attempts: ${lastError}`);
     await this.logFallback(input, lastError, attempts);
     return { reply: NEUTRAL_REPLY, model: this.config.routerAiTextModel ?? "routerai", promptVersion: PROMPT_VERSION, error: lastError };
+  }
+
+  private async resolveSemanticClarifications(parsed: AgentTurnResult, input: AgentTurnInput): Promise<AgentTurnResult> {
+    const residenceNormalized = await this.normalizeResidenceLocality(parsed, input);
+    return this.resolveOfficeConsent(await this.resolveGuarantorDecision(await this.resolveResidenceClarification(residenceNormalized, input), input), input);
+  }
+
+  /**
+   * The model only repairs a client-written locality into a likely canonical
+   * name. It never assigns a region: its output is accepted only when the
+   * SOATE catalogue resolves it in the deterministic boundary below.
+   */
+  private async normalizeResidenceLocality(parsed: AgentTurnResult, input: AgentTurnInput): Promise<AgentTurnResult> {
+    const currentReply = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "").trim();
+    // An exact catalogue hit is already canonical. Transliterations and
+    // typos deliberately go through the normalizer so the stored display
+    // value does not depend on fuzzy-match tie-breaking.
+    const directResolution = resolveKyrgyzstanLocality(currentReply);
+    if (!currentReply || directResolution?.match === "exact") return parsed;
+    const lastAssistant = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
+    // Never spend or consume the locality normalizer while another binary
+    // stage is awaiting its answer.
+    if (isGuarantorQuestion(lastAssistant) || isGuarantorParkingAlternativeQuestion(lastAssistant) || isOfficeConsentQuestion(lastAssistant) || isResidenceClarificationQuestion(lastAssistant)) return parsed;
+    const modelCandidate = parsed.leadCardPatch.residenceText;
+    const modelRecognizedLocality = typeof modelCandidate === "string" && modelCandidate.trim() && modelCandidate !== input.facts.residenceText;
+    if (!modelRecognizedLocality && !/(?:пропис|зарегистрирован|место\s+жительств)/iu.test(lastAssistant)) return parsed;
+    try {
+      const response = await this.client.createChatCompletion({
+        model: this.config.routerAiTextModel ?? "routerai-text-model-not-configured",
+        temperature: 0,
+        max_tokens: 40,
+        reasoning: { enabled: false },
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: "Нормализуй только название населённого пункта Кыргызстана из ответа клиента. Верни строго JSON {\"locality\": string|null}. Если узнаваемо, дай одно каноническое русское название города, села или области; если нет — null. Не определяй область, не указывай категорию займа и не придумывай населённый пункт." },
+          { role: "user", content: JSON.stringify({ lastAssistantQuestion: lastAssistant, clientReply: currentReply, mainModelCandidate: modelRecognizedLocality ? modelCandidate : undefined }) }
+        ]
+      }, { timeoutMs: this.config.routerAiTimeoutMs, signal: input.signal });
+      const locality = parseAgentJson(response.choices?.[0]?.message?.content).locality;
+      if (typeof locality !== "string") return parsed;
+      const resolved = resolveKyrgyzstanLocality(locality);
+      return resolved
+        ? { ...parsed, leadCardPatch: { ...parsed.leadCardPatch, residenceText: resolved.locality } }
+        : parsed;
+    } catch (error) {
+      if (input.signal?.aborted) throw error;
+      this.logger.warn(`Residence-locality normalizer unavailable: ${formatError(error)}`);
+      return parsed;
+    }
+  }
+
+  private async resolveResidenceClarification(parsed: AgentTurnResult, input: AgentTurnInput): Promise<AgentTurnResult> {
+    const lastAssistant = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
+    if (!isResidenceClarificationQuestion(lastAssistant)) return parsed;
+    const currentReply = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "").trim();
+    if (!currentReply) return parsed;
+    try {
+      const response = await this.client.createChatCompletion({
+        model: this.config.routerAiTextModel ?? "routerai-text-model-not-configured",
+        temperature: 0,
+        max_tokens: 20,
+        reasoning: { enabled: false },
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: "Определи смысл ответа клиента только относительно последнего вопроса AI: находится ли ранее названный населённый пункт в Чуйской области. Верни строго JSON {\"decision\":\"accept\"|\"reject\"|\"undecided\"}. Любая понятная поддержка утверждения означает accept; понятное отрицание — reject. Если смысл неясен, верни undecided. Не добавляй текст." },
+          { role: "user", content: JSON.stringify({ lastAssistantQuestion: lastAssistant, clientReply: currentReply }) }
+        ]
+      }, { timeoutMs: this.config.routerAiTimeoutMs, signal: input.signal });
+      const decision = parseAgentJson(response.choices?.[0]?.message?.content).decision;
+      if (decision === "accept") return { ...parsed, leadCardPatch: { ...parsed.leadCardPatch, residenceRegion: "Чуйская область", residenceCategory: "BISHKEK_CHUY", residenceNeedsClarification: false } };
+      if (decision === "reject") return { ...parsed, leadCardPatch: { ...parsed.leadCardPatch, residenceRegion: "Другой регион Кыргызстана", residenceCategory: "OTHER_KG", residenceNeedsClarification: false } };
+    } catch (error) {
+      if (input.signal?.aborted) throw error;
+      this.logger.warn(`Residence-clarification classifier unavailable: ${formatError(error)}`);
+    }
+    const fallback = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "");
+    if (clearAffirmation(fallback)) return { ...parsed, leadCardPatch: { ...parsed.leadCardPatch, residenceRegion: "Чуйская область", residenceCategory: "BISHKEK_CHUY", residenceNeedsClarification: false } };
+    if (clearNegation(fallback)) return { ...parsed, leadCardPatch: { ...parsed.leadCardPatch, residenceRegion: "Другой регион Кыргызстана", residenceCategory: "OTHER_KG", residenceNeedsClarification: false } };
+    return { ...parsed, leadCardPatch: { ...parsed.leadCardPatch, residenceRegion: undefined, residenceCategory: undefined, residenceNeedsClarification: true } };
+  }
+
+  private async resolveGuarantorDecision(parsed: AgentTurnResult, input: AgentTurnInput): Promise<AgentTurnResult> {
+    const lastAssistant = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
+    const parkingAlternative = isGuarantorParkingAlternativeQuestion(lastAssistant);
+    const guarantorQuestion = isGuarantorQuestion(lastAssistant);
+    if (!parkingAlternative && !guarantorQuestion) return parsed;
+    // normalizeAgentPayload carries existing facts into every model patch.
+    // Only a value that differs from the persisted fact is an actual main
+    // model decision; carried values must still go to semantic recognition.
+    if (parkingAlternative && (parsed.leadCardPatch.requestedProgram !== input.facts.requestedProgram || parsed.leadCardPatch.guarantorAlternativeDeclined !== input.facts.guarantorAlternativeDeclined)) return parsed;
+    if (guarantorQuestion && parsed.leadCardPatch.guarantorAvailable !== input.facts.guarantorAvailable) return parsed;
+    const currentReply = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "").trim();
+    if (!currentReply) return parsed;
+    try {
+      const response = await this.client.createChatCompletion({
+        model: this.config.routerAiTextModel ?? "routerai-text-model-not-configured",
+        temperature: 0,
+        max_tokens: 20,
+        reasoning: { enabled: false },
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: parkingAlternative
+            ? "Определи смысл ответа клиента только относительно последнего вопроса AI: согласен ли он перейти на программу со стоянкой вместо поручителя. Верни строго JSON {\"decision\":\"accept\"|\"reject\"|\"undecided\"}. Не добавляй текст."
+            : "Определи смысл ответа клиента только относительно последнего вопроса AI: есть ли у него требуемый поручитель. Верни строго JSON {\"decision\":\"accept\"|\"reject\"|\"undecided\"}. Ответы «найду», «приведу», «организую», «будет человек», обещание найти или привести поручителя означают accept. Отсутствие поручителя или отказ искать — reject. Не добавляй текст." },
+          { role: "user", content: JSON.stringify({ lastAssistantQuestion: lastAssistant, clientReply: currentReply }) }
+        ]
+      }, { timeoutMs: this.config.routerAiTimeoutMs, signal: input.signal });
+      const decision = parseAgentJson(response.choices?.[0]?.message?.content).decision;
+      if (decision === "accept") return parkingAlternative
+        ? { ...parsed, leadCardPatch: { ...parsed.leadCardPatch, requestedProgram: "parking", guarantorAlternativeDeclined: false } }
+        : { ...parsed, leadCardPatch: { ...parsed.leadCardPatch, guarantorAvailable: true, guarantorAlternativeDeclined: false } };
+      if (decision === "reject") return parkingAlternative
+        ? { ...parsed, leadCardPatch: { ...parsed.leadCardPatch, guarantorAlternativeDeclined: true } }
+        : { ...parsed, leadCardPatch: { ...parsed.leadCardPatch, guarantorAvailable: false, guarantorAlternativeDeclined: false } };
+    } catch (error) {
+      if (input.signal?.aborted) throw error;
+      this.logger.warn(`Guarantor classifier unavailable: ${formatError(error)}`);
+    }
+    return parsed;
   }
 
   private async resolveOfficeConsent(parsed: AgentTurnResult, input: AgentTurnInput): Promise<AgentTurnResult> {
@@ -332,7 +451,7 @@ export class AgentTurnService {
         });
         return undefined;
       }
-      const result = finalizeAgentPayload(await this.resolveOfficeConsent(parsed.data, input), input);
+      const result = finalizeAgentPayload(await this.resolveSemanticClarifications(parsed.data, input), input);
       if (this.logs?.log) {
         await this.logs.log("dialogue.response-normalizer", "Response normalizer output parsed", {
           conversationId: input.conversationId,
@@ -443,8 +562,8 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     : undefined);
   const rawModelPatch = {
     ...modelMoneyPatchForTurn(leadCardFacts, input, parsed.hasMoney),
-    ...residencePatchFromExplicitClientText(input.text, leadCardFacts, input.facts),
-    ...guarantorPatchFromClearReply(input, input.facts),
+    ...residencePatchFromExplicitClientText(input, leadCardFacts, input.facts),
+    ...guarantorPatchFromClearReply(input, input.facts, leadCardFacts),
     ...limitChoicePatch(parsed.limitChoice, input, input.facts),
     ...familyPatchFromClearReply(input, input.facts, leadCardFacts),
     ...visitPatchFromClearReply(input, input.facts),
@@ -504,7 +623,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   const vehicleNeedClarification = ambiguousVehicleNeedReply(input, effectiveFacts);
   const familyNotice = familyTransitionNotice(input, input.facts, effectiveFacts);
   const visitNotice = visitConfirmationNotice(input, input.facts, effectiveFacts);
-  const attachmentAcceptanceNotice = input.attachments.length > 0 ? "Фотографии получены. Продолжаем оформление." : undefined;
+  const attachmentAcceptanceNotice = input.attachments.length > 0 ? "Фотографии получены." : undefined;
   const acceptedLimitNotice = acceptedLimitChoiceNotice(input.facts, effectiveFacts);
   const olderVehicleNotice = olderVehicleProgramNotice(input, effectiveFacts);
   const region10Answer = isRegion10PolicyQuestion(input) ? "Автомобили с регионом 10 у нас не принимаются в залог по правилам компании." : undefined;
@@ -513,7 +632,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   // boundary supplies the one and only next application question.
   const workflowFollowUp = serverWorkflowFollowUp(input.text, effectiveFacts, stageCompletion, requestedAmountLimit, selectedLimitNotice);
   const directAnswer = attachmentAcceptanceNotice ?? visitNotice ?? acceptedLimitNotice ?? (region10Answer ? [region10Answer, olderVehicleNotice].filter(Boolean).join("\n\n") : undefined) ?? olderVehicleNotice ?? spouseVisitAnswer(input) ?? familyNotice ?? loanRateReply ?? maximumLoanInputReply ?? maximumLoanReply;
-  const answerBeforeWorkflow = directAnswer ?? replaceUnsupportedFallbackWithApprovedAnswer(guardedModelReply, mandatoryKnowledgeAnswer, input);
+  const answerBeforeWorkflow = directAnswer ?? removeForbiddenMetaPhrases(replaceUnsupportedFallbackWithApprovedAnswer(guardedModelReply, mandatoryKnowledgeAnswer, input));
   // Limits and eligibility are calculated by the server. If an amount is
   // over the selected programme's limit, preserve a normal acknowledgement or
   // FAQ answer but remove the model's competing explanation before adding the
@@ -537,7 +656,9 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     // The model is the sole owner of conversational meaning and client prose.
     // A limit warning answers a client-provided amount, but must never erase
     // an unrelated FAQ answer from the same turn.
-    reply: vehicleNeedClarification ? enforceFirstContactGreeting(vehicleNeedClarification, input) : modelReply
+    reply: vehicleNeedClarification
+      ? enforceFirstContactGreeting(vehicleNeedClarification, input)
+      : unresolvedBinaryDecisionReply(input, effectiveFacts) ?? modelReply
   };
 }
 
@@ -692,7 +813,9 @@ export function nextRequiredStageQuestion(facts: ApplicationFacts, completion = 
   }
   if (!completion.requestedAmount) return "Какая сумма займа Вам необходима?";
   if (!completion.program) return "Вас интересует займ без изъятия автомобиля или с постановкой автомобиля на охраняемую стоянку?";
-  if (!completion.residence) return "Подскажите, пожалуйста, Вашу прописку — Бишкек, Чуйская область или другой регион Кыргызстана.";
+  if (!completion.residence) return facts.residenceNeedsClarification
+    ? "Подскажите, пожалуйста, это в Чуйской области?"
+    : "Подскажите, пожалуйста, Вашу прописку — Бишкек, Чуйская область или другой регион Кыргызстана.";
   if (!completion.guarantor) {
     return facts.guarantorAvailable === false && !facts.guarantorAlternativeDeclined
       ? GUARANTOR_PARKING_ALTERNATIVE
@@ -1015,34 +1138,63 @@ function enforceIdentityAnswer(reply: string, input: Pick<AgentTurnInput, "text"
   return isIdentityQuestion(input) ? IDENTITY_REPLY : reply;
 }
 
-function residencePatchFromExplicitClientText(text: string | undefined, patch: Partial<ApplicationFacts>, previousFacts: ApplicationFacts): Partial<ApplicationFacts> {
-  const locality = resolveKyrgyzstanLocality(text);
+function residencePatchFromExplicitClientText(input: Pick<AgentTurnInput, "text" | "currentTurnMessages" | "messages">, patch: Partial<ApplicationFacts>, previousFacts: ApplicationFacts): Partial<ApplicationFacts> {
+  const text = input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text;
+  const lastAssistant = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
+  if (isResidenceClarificationQuestion(lastAssistant)) {
+    if (patch.residenceRegion && patch.residenceCategory && patch.residenceNeedsClarification === false) return {};
+    return {
+      residenceText: previousFacts.residenceText ?? text?.trim(),
+      residenceRegion: undefined,
+      residenceCategory: undefined,
+      residenceNeedsClarification: true
+    };
+  }
+  // The main input is tried first. If it was an unusual spelling, the
+  // preceding AI normalizer may have produced a canonical name; that name is
+  // still only a lookup key here, never a model-supplied region decision.
+  const normalizedModelLocality = patch.residenceText !== previousFacts.residenceText
+    ? resolveKyrgyzstanLocality(patch.residenceText)
+    : undefined;
+  const locality = resolveKyrgyzstanLocality(text) ?? normalizedModelLocality;
   const shortLocalityCorrection = Boolean(locality && (text?.trim().split(/\s+/u).length ?? 0) <= 3);
   // A bare locality after any earlier answer is a client correction, not a
   // reference to the old residence. Its canonical category must supersede a
   // stale OTHER_KG value before the guarantor gate is evaluated.
   if (shortLocalityCorrection) {
     return {
-      residenceText: text?.trim(),
+      residenceText: locality!.locality,
       residenceRegion: locality!.residenceRegion,
       residenceCategory: locality!.category,
       residenceNeedsClarification: false
     };
   }
-  if (patch.residenceRegion || patch.residenceCategory) return {};
   const followsResidenceQuestion = Boolean(
     previousFacts.vehicleModel && previousFacts.vehicleYear && previousFacts.vehicleValue !== undefined &&
     previousFacts.requestedAmount !== undefined && previousFacts.requestedProgram &&
     !previousFacts.residenceRegion && !previousFacts.residenceCategory
   );
-  if (!followsResidenceQuestion && !/(?:прописан|прописка|регистрац(?:ия|ии)|живу)/iu.test(text ?? "")) return {};
-  if (!locality) return {};
-  return {
+  const mayBeResidence = followsResidenceQuestion || /(?:прописан|прописка|регистрац(?:ия|ии)|живу)/iu.test(text ?? "");
+  if (!mayBeResidence) return {};
+  if (!locality) return {
     residenceText: text?.trim(),
+    residenceRegion: undefined,
+    residenceCategory: undefined,
+    residenceNeedsClarification: true
+  };
+  return {
+    // Store the server-canonical SOATE/alias name. The original inbound
+    // message remains in conversation history; eligibility must use the
+    // normalized locality rather than a spelling such as «чалупон ата».
+    residenceText: locality.locality,
     residenceRegion: locality.residenceRegion,
     residenceCategory: locality.category,
     residenceNeedsClarification: false
   };
+}
+
+function isResidenceClarificationQuestion(text: string): boolean {
+  return /это\s+в\s+чуйской\s+области/iu.test(text);
 }
 
 function familyPatchFromClearReply(input: Pick<AgentTurnInput, "text" | "currentTurnMessages" | "messages">, facts: ApplicationFacts, modelPatch: Partial<ApplicationFacts>): Partial<ApplicationFacts> {
@@ -1144,16 +1296,25 @@ function clearNegation(text: string): boolean {
   return /^(?:нет|неа|нету|не\s+будет|не\s+имеется|no|жок)$/iu.test(text);
 }
 
-function guarantorPatchFromClearReply(input: Pick<AgentTurnInput, "text" | "currentTurnMessages" | "messages">, facts: ApplicationFacts): Partial<ApplicationFacts> {
+function guarantorPatchFromClearReply(
+  input: Pick<AgentTurnInput, "text" | "currentTurnMessages" | "messages">,
+  facts: ApplicationFacts,
+  modelPatch: Partial<ApplicationFacts>
+): Partial<ApplicationFacts> {
   if (!requiresGuarantorForFacts(facts)) return {};
   const lastAssistantReply = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
   const text = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "").trim().toLocaleLowerCase("ru-RU");
   if (isGuarantorParkingAlternativeQuestion(lastAssistantReply)) {
+    // The semantic classifier (or the main model) has already interpreted
+    // this exact reply. Regexes are intentionally only the outage/undecided
+    // fallback and cannot replace that decision.
+    if (modelPatch.requestedProgram !== facts.requestedProgram || modelPatch.guarantorAlternativeDeclined !== facts.guarantorAlternativeDeclined) return {};
     if (clearAffirmation(text)) return { requestedProgram: "parking", guarantorAlternativeDeclined: false };
     if (clearNegation(text)) return { guarantorAlternativeDeclined: true };
     return {};
   }
   if (!isGuarantorQuestion(lastAssistantReply)) return {};
+  if (modelPatch.guarantorAvailable !== facts.guarantorAvailable) return {};
   if (clearAffirmation(text)) return { guarantorAvailable: true, guarantorAlternativeDeclined: false };
   if (clearNegation(text)) return { guarantorAvailable: false, guarantorAlternativeDeclined: false };
   return {};
@@ -1161,6 +1322,32 @@ function guarantorPatchFromClearReply(input: Pick<AgentTurnInput, "text" | "curr
 
 const GUARANTOR_REQUIREMENTS = "Для вашей прописки требуется поручитель\n- возраст от 25 лет\n- проживает в г. Бишкек или Чуйской области\n- должен лично присутствовать при выдаче займа и иметь с собой ID (паспорт)\nУ Вас есть такой поручитель?";
 const GUARANTOR_PARKING_ALTERNATIVE = "Поручитель обязателен для программы без изъятия в Вашем регионе. Можем рассмотреть программу с постановкой автомобиля на охраняемую стоянку?";
+
+/** Do not acknowledge a binary answer until server state confirms its meaning. */
+function unresolvedBinaryDecisionReply(input: Pick<AgentTurnInput, "messages">, facts: ApplicationFacts): string | undefined {
+  const lastAssistant = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
+  if (isResidenceClarificationQuestion(lastAssistant) && facts.residenceNeedsClarification) {
+    return "Не смогла точно определить ответ. Подскажите, пожалуйста, это в Чуйской области?";
+  }
+  if (isGuarantorParkingAlternativeQuestion(lastAssistant) && facts.guarantorAvailable === false && !facts.guarantorAlternativeDeclined && facts.requestedProgram === "without_storage") {
+    return `Не смогла точно понять Ваше решение. ${GUARANTOR_PARKING_ALTERNATIVE}`;
+  }
+  if (isGuarantorQuestion(lastAssistant) && requiresGuarantorForFacts(facts) && facts.guarantorAvailable === undefined) {
+    return `Не смогла точно понять ответ. ${GUARANTOR_REQUIREMENTS}`;
+  }
+  if (isOfficeConsentQuestion(lastAssistant) && facts.familyStatus === "married" && facts.spouseConsentAtOffice === undefined) {
+    return "Не смогла точно понять ответ. Вам удобно оформить согласие при визите в офис?";
+  }
+  return undefined;
+}
+
+function removeForbiddenMetaPhrases(reply: string): string {
+  return reply
+    .replace(/(?:если\s+хотите,?\s+)?могу\s+помочь\s+дальше\s+по\s+оформлению[.!]?/giu, "")
+    .replace(/продолжаем\s+оформление[.!]?/giu, "")
+    .replace(/[ \t]{2,}/gu, " ")
+    .trim();
+}
 
 function enforceGuarantorQuestionRequirements(reply: string, _facts: ApplicationFacts): string {
   // The model is prohibited from asking workflow questions. The canonical
