@@ -771,15 +771,18 @@ describe("single-agent dialogue", () => {
         residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY",
         documentsProvided: true, declinedCarPhoto: true, familyStatus: "single"
       } as any,
-      settings: { timezone: "Asia/Bishkek" }, text: "завтра в 6", attachments: []
+      settings: { timezone: "Asia/Bishkek", address: "Адрес офиса нужно подтвердить в настройках", twoGisUrl: "", googleMapsUrl: "" }, text: "завтра в 6", attachments: []
     });
 
     expect(output.result?.leadCardPatch).toMatchObject({ visitRequested: true, visitTime: "18:00" });
     expect(output.reply).toContain("в 18:00");
+    expect(output.reply).toContain("Адрес: Б. Молодой Гвардии, 22, Бишкек");
+    expect(output.reply).toContain("2ГИС: https://go.2gis.com/Y34m4");
+    expect(output.reply).toContain("Google Maps: https://maps.app.goo.gl/9xiWLVvdyRgn3Sx4A");
     expect(output.reply).not.toContain("Офис работает");
   });
 
-  it("answers a maximum-loan question without appending a missing-vehicle prompt", async () => {
+  it("answers a maximum-loan question and asks for its missing vehicle fact", async () => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
       ...validResult,
       hasMoney: true,
@@ -792,7 +795,24 @@ describe("single-agent dialogue", () => {
       facts: {}, settings: {}, text: "камри 2022 г 1 млн дадите?", attachments: []
     });
 
-    expect(output.reply).toBe("Максимальная сумма зависит от автомобиля, выбранной программы и прописки.");
+    expect(output.reply).toBe("Максимальная сумма зависит от автомобиля, выбранной программы и прописки.\n\nПодскажите, пожалуйста, ориентировочную стоимость автомобиля.");
+  });
+
+  it("answers a maximum-loan question and asks for the earliest remaining stage", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult,
+      hasMoney: true,
+      reply: "Максимальная сумма зависит от автомобиля, выбранной программы и прописки.",
+      leadCardPatch: { vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 1_000_000 }
+    }) } }] }) } as any;
+
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "Подскажите, пожалуйста, модель и год выпуска автомобиля и ориентировочную стоимость автомобиля.", createdAt: "now" } as any],
+      facts: { requestedProgram: "without_storage" } as any,
+      settings: {}, text: "камри 2022 г 1 млн дадите?", attachments: []
+    });
+
+    expect(output.reply).toBe("Максимальная сумма зависит от автомобиля, выбранной программы и прописки.\n\nКакая сумма займа Вам необходима?");
   });
 
   it("blocks the next stage when the selected programme does not cover the requested amount", async () => {
@@ -1252,6 +1272,31 @@ describe("single-agent dialogue", () => {
 
     expect(output.result?.leadCardPatch.spouseConsentAtOffice).toBe(false);
     expect(output.reply).toBe("Тогда, пожалуйста, возьмите с собой оригинал нотариального согласия супруга или супруги.\n\nОфис работает с понедельника по пятницу с 11:00 до 19:00. Для оформления нужно приехать не позднее 18:00. На какой день и время Вам удобно подъехать?");
+  });
+
+  it("accepts ok as consent to arrange the spouse's notarized consent in the office", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ ...validResult, reply: "Поняла.", leadCardPatch: {} }) } }] }) } as any;
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "Для оформления потребуется нотариальное согласие супруга или супруги. Его можно оформить у любого нотариуса или у нотариуса в нашем здании; ориентировочная стоимость — 1500 сом. Вам удобно оформить согласие при визите в офис?", createdAt: "now" } as any],
+      facts: { vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 430_000, requestedAmount: 100_000, requestedProgram: "without_storage", residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY", declinedDocuments: true, declinedCarPhoto: true, familyStatus: "married" } as any,
+      settings: {}, text: "ок", attachments: []
+    });
+
+    expect(output.result?.leadCardPatch.spouseConsentAtOffice).toBe(true);
+    expect(output.reply).not.toContain("Вам удобно оформить согласие");
+    expect(output.reply).toContain("На какой день и время Вам удобно подъехать?");
+  });
+
+  it("keeps the model's semantic consent decision when the client avoids keyword replies", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ ...validResult, reply: "Поняла.", leadCardPatch: { spouseConsentAtOffice: true } }) } }] }) } as any;
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "Для оформления потребуется нотариальное согласие супруга или супруги. Вам удобно оформить согласие при визите в офис?", createdAt: "now" } as any],
+      facts: { vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 430_000, requestedAmount: 100_000, requestedProgram: "without_storage", residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY", declinedDocuments: true, declinedCarPhoto: true, familyStatus: "married" } as any,
+      settings: {}, text: "это моя тема, точно возьму", attachments: []
+    });
+
+    expect(output.result?.leadCardPatch.spouseConsentAtOffice).toBe(true);
+    expect(output.reply).not.toContain("Вам удобно оформить согласие");
   });
 
   it("keeps the married stage open and gives remote-consent guidance when the spouse is away", async () => {

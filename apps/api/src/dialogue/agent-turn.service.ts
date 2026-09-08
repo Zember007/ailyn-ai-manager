@@ -20,6 +20,9 @@ const PROMPT_VERSION = "single-agent-v3";
 const NEUTRAL_REPLY = "Извините, сейчас не удалось обработать сообщение. Пожалуйста, напишите ещё раз или обратитесь к сотрудникам компании.";
 const MAX_MODEL_ATTEMPTS = 3;
 const MAX_LOG_VALUE_LENGTH = 4000;
+const DEFAULT_OFFICE_ADDRESS = "Б. Молодой Гвардии, 22, Бишкек";
+const DEFAULT_TWO_GIS_URL = "https://go.2gis.com/Y34m4";
+const DEFAULT_GOOGLE_MAPS_URL = "https://maps.app.goo.gl/9xiWLVvdyRgn3Sx4A";
 // The complete lead card keeps durable facts, while a compact recent tail is
 // enough to resolve conversational references. Keeping this bounded is one of
 // the few latency levers that does not weaken application validation.
@@ -605,11 +608,20 @@ function visitConfirmationNotice(input: Pick<AgentTurnInput, "settings">, previo
   const date = new Date(`${current.visitDate}T00:00:00Z`);
   const weekday = new Intl.DateTimeFormat("ru-RU", { weekday: "long", timeZone: "UTC" }).format(date);
   const displayDate = new Intl.DateTimeFormat("ru-RU", { day: "2-digit", month: "2-digit", timeZone: "UTC" }).format(date);
-  const address = typeof settings.address === "string" ? settings.address : "Б. Молодой Гвардии, 22, Бишкек";
-  const twoGis = typeof settings.twoGisUrl === "string" ? settings.twoGisUrl : "https://go.2gis.com/Y34m4";
-  const googleMaps = typeof settings.googleMapsUrl === "string" ? settings.googleMapsUrl : "https://maps.app.goo.gl/9xiWLVvdyRgn3Sx4A";
+  const address = approvedOfficeAddress(settings.address);
+  const twoGis = approvedOfficeUrl(settings.twoGisUrl, DEFAULT_TWO_GIS_URL);
+  const googleMaps = approvedOfficeUrl(settings.googleMapsUrl, DEFAULT_GOOGLE_MAPS_URL);
   void timezone;
   return `Поняла, записываю Вас на ${weekday}, ${displayDate}, в ${current.visitTime}.\nЗапись предварительная, её подтвердит менеджер.\nАдрес: ${address}\n2ГИС: ${twoGis}\nGoogle Maps: ${googleMaps}`;
+}
+
+function approvedOfficeAddress(value: unknown): string {
+  if (typeof value !== "string" || !value.trim() || /(?:подтвердить|настройк)/iu.test(value)) return DEFAULT_OFFICE_ADDRESS;
+  return value.trim();
+}
+
+function approvedOfficeUrl(value: unknown, fallback: string): string {
+  return typeof value === "string" && /^https:\/\//iu.test(value.trim()) ? value.trim() : fallback;
 }
 
 function replacePrematureVisitQuestion(reply: string, facts: ApplicationFacts, stageCompletion = deriveStageCompletion(facts)): string {
@@ -860,9 +872,12 @@ function removeQuestionsForKnownLeadFacts(reply: string, facts: ApplicationFacts
  * reopen a stage with a differently worded question.
  */
 function serverWorkflowFollowUp(text: string | undefined, facts: ApplicationFacts, completion: StageCompletion, amountLimitReply: string | undefined, selectedLimitNotice: string | undefined): string | undefined {
-  // A question about the maximum is answered by the calculation above. Do not
-  // turn that answer into a repeated request for the amount the client needs.
-  if (asksMaximumLoan(text)) return amountLimitReply;
+  // Once all inputs for a maximum calculation are known, do not turn the
+  // calculation into a repeated request for the amount the client needs.
+  // Before that point, answer the question and append the one missing stage
+  // so the client knows exactly what to provide next.
+  const canCalculateMaximum = facts.vehicleModel && facts.vehicleYear && facts.vehicleValue !== undefined && facts.residenceRegion && facts.residenceCategory;
+  if (asksMaximumLoan(text) && canCalculateMaximum) return amountLimitReply;
   if (asksLoanRate(text)) return undefined;
   if (amountLimitReply) return amountLimitReply;
   return [selectedLimitNotice, nextRequiredStageQuestion(facts, completion)].filter(Boolean).join("\n\n") || undefined;
@@ -1029,8 +1044,11 @@ function familyPatchFromClearReply(input: Pick<AgentTurnInput, "text" | "current
   if (familyStatus === "married") {
     if (/(?:супруг[аи]?.{0,50}(?:не\s+в\s+бишкек|в\s+отъезд|за\s+границ)|(?:не\s+в\s+бишкек|в\s+отъезд|за\s+границ).{0,50}супруг[аи]?)/iu.test(text)) patch.spouseAway = true;
     const officeConsentQuestion = /(?:согласие|нотариальн).{0,100}(?:офис|здани)/iu.test(lastAssistant);
-    if (officeConsentQuestion && /^(?:да|ага|угу|конечно|будет|yes|oui|ооба|оа)$/iu.test(text)) patch.spouseConsentAtOffice = true;
-    if (officeConsentQuestion && /^(?:нет|неа|нету|no|жок)$/iu.test(text)) patch.spouseConsentAtOffice = false;
+    // The model interprets the whole answer in the context of the preceding
+    // question. Regexes below are only a fallback for terse replies it left
+    // undecided; they must never overwrite a semantic model decision.
+    if (officeConsentQuestion && modelPatch.spouseConsentAtOffice === undefined && clearAffirmation(text)) patch.spouseConsentAtOffice = true;
+    if (officeConsentQuestion && modelPatch.spouseConsentAtOffice === undefined && clearNegation(text)) patch.spouseConsentAtOffice = false;
     if (/(?:согласие|нотариальн).{0,40}(?:готов|есть\s+на\s+руках|оформил[а-яё]*)/iu.test(text)) patch.spouseConsentReady = true;
   }
   return patch;
@@ -1086,7 +1104,7 @@ function isGuarantorParkingAlternativeQuestion(text: string): boolean {
 }
 
 function clearAffirmation(text: string): boolean {
-  return /^(?:да|ага|угу|есть|конечно|будет|будут|имеется|yes|oui|ооба|оа|бар)$/iu.test(text);
+  return /^(?:да|ага|угу|ок(?:ей)?|okay|ok|хорошо|ладно|конечно|подходит|устраивает|соглас(?:ен|на)|давайте|будет|будут|есть|имеется|yes|oui|ооба|оа|бар)[.!]?$/iu.test(text.trim());
 }
 
 function clearNegation(text: string): boolean {
