@@ -228,7 +228,7 @@ export class AgentTurnService {
             : undefined;
           throw new Error(`Agent response does not match AgentTurnResult (${issues}; stage=${JSON.stringify(state)}; targetEvent=${JSON.stringify(payload.targetEvent)})`);
         }
-        const result = finalizeAgentPayload(parsed.data, input);
+        const result = finalizeAgentPayload(await this.resolveOfficeConsent(parsed.data, input), input);
         return { result, reply: result.reply, model: response.model ?? this.config.routerAiTextModel ?? "routerai", promptVersion: PROMPT_VERSION };
       } catch (error) {
         if (input.signal?.aborted) throw error;
@@ -261,6 +261,35 @@ export class AgentTurnService {
     this.logger.warn(`Single-agent fallback activated after ${MAX_MODEL_ATTEMPTS} attempts: ${lastError}`);
     await this.logFallback(input, lastError, attempts);
     return { reply: NEUTRAL_REPLY, model: this.config.routerAiTextModel ?? "routerai", promptVersion: PROMPT_VERSION, error: lastError };
+  }
+
+  private async resolveOfficeConsent(parsed: AgentTurnResult, input: AgentTurnInput): Promise<AgentTurnResult> {
+    const lastAssistant = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
+    const familyStatus = parsed.leadCardPatch.familyStatus ?? input.facts.familyStatus;
+    if (familyStatus !== "married" || parsed.leadCardPatch.spouseConsentAtOffice !== undefined || !isOfficeConsentQuestion(lastAssistant)) return parsed;
+
+    const currentReply = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "").trim();
+    if (!currentReply) return parsed;
+    try {
+      const response = await this.client.createChatCompletion({
+        model: this.config.routerAiTextModel ?? "routerai-text-model-not-configured",
+        temperature: 0,
+        max_tokens: 20,
+        reasoning: { enabled: false },
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: "Определи смысл ответа клиента только относительно последнего вопроса AI. Вопрос — согласен ли клиент оформить нотариальное согласие супруга/супруги при визите в офис. Верни строго JSON {\"decision\":\"accept\"|\"reject\"|\"undecided\"}. Разговорное одобрение, похвала варианта или обещание выбрать его означают accept; желание оформить самостоятельно или отказ — reject. Не добавляй текст." },
+          { role: "user", content: JSON.stringify({ lastAssistantQuestion: lastAssistant, clientReply: currentReply }) }
+        ]
+      }, { timeoutMs: this.config.routerAiTimeoutMs, signal: input.signal });
+      const decision = parseAgentJson(response.choices?.[0]?.message?.content).decision;
+      if (decision !== "accept" && decision !== "reject") return parsed;
+      return { ...parsed, leadCardPatch: { ...parsed.leadCardPatch, spouseConsentAtOffice: decision === "accept" } };
+    } catch (error) {
+      if (input.signal?.aborted) throw error;
+      this.logger.warn(`Office-consent classifier unavailable: ${formatError(error)}`);
+      return parsed;
+    }
   }
 
   private async normalizeFailedResponse(input: AgentTurnInput, rawResponse: string, reason: string): Promise<{ result: AgentTurnResult; model: string } | undefined> {
@@ -303,7 +332,7 @@ export class AgentTurnService {
         });
         return undefined;
       }
-      const result = finalizeAgentPayload(parsed.data, input);
+      const result = finalizeAgentPayload(await this.resolveOfficeConsent(parsed.data, input), input);
       if (this.logs?.log) {
         await this.logs.log("dialogue.response-normalizer", "Response normalizer output parsed", {
           conversationId: input.conversationId,
@@ -1043,7 +1072,7 @@ function familyPatchFromClearReply(input: Pick<AgentTurnInput, "text" | "current
   }
   if (familyStatus === "married") {
     if (/(?:супруг[аи]?.{0,50}(?:не\s+в\s+бишкек|в\s+отъезд|за\s+границ)|(?:не\s+в\s+бишкек|в\s+отъезд|за\s+границ).{0,50}супруг[аи]?)/iu.test(text)) patch.spouseAway = true;
-    const officeConsentQuestion = /(?:согласие|нотариальн).{0,100}(?:офис|здани)/iu.test(lastAssistant);
+    const officeConsentQuestion = isOfficeConsentQuestion(lastAssistant);
     // The model interprets the whole answer in the context of the preceding
     // question. Regexes below are only a fallback for terse replies it left
     // undecided; they must never overwrite a semantic model decision.
@@ -1052,6 +1081,10 @@ function familyPatchFromClearReply(input: Pick<AgentTurnInput, "text" | "current
     if (/(?:согласие|нотариальн).{0,40}(?:готов|есть\s+на\s+руках|оформил[а-яё]*)/iu.test(text)) patch.spouseConsentReady = true;
   }
   return patch;
+}
+
+function isOfficeConsentQuestion(text: string): boolean {
+  return /(?:согласие|нотариальн).{0,100}(?:офис|здани)/iu.test(text);
 }
 
 function familyTransitionNotice(input: Pick<AgentTurnInput, "text" | "currentTurnMessages" | "messages">, previous: ApplicationFacts, current: ApplicationFacts): string | undefined {

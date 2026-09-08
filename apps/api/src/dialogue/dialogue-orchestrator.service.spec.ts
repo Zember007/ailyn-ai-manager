@@ -1299,6 +1299,21 @@ describe("single-agent dialogue", () => {
     expect(output.reply).not.toContain("Вам удобно оформить согласие");
   });
 
+  it("uses the semantic fallback model for a colloquial approval the main model left undecided", async () => {
+    const mainResponse = { choices: [{ message: { content: JSON.stringify({ ...validResult, reply: "Поняла.", leadCardPatch: {} }) } }] } as any;
+    const classifierResponse = { choices: [{ message: { content: JSON.stringify({ decision: "accept" }) } }] } as any;
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValueOnce(mainResponse).mockResolvedValueOnce(classifierResponse) } as any;
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "Для оформления потребуется нотариальное согласие супруга или супруги. Вам удобно оформить согласие при визите в офис?", createdAt: "now" } as any],
+      facts: { vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 430_000, requestedAmount: 100_000, requestedProgram: "without_storage", residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY", declinedDocuments: true, declinedCarPhoto: true, familyStatus: "married" } as any,
+      settings: {}, text: "это топ", attachments: []
+    });
+
+    expect(client.createChatCompletion).toHaveBeenCalledTimes(2);
+    expect(output.result?.leadCardPatch.spouseConsentAtOffice).toBe(true);
+    expect(output.reply).not.toContain("Вам удобно оформить согласие");
+  });
+
   it("keeps the married stage open and gives remote-consent guidance when the spouse is away", async () => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ ...validResult, reply: "Поняла.", leadCardPatch: { familyStatus: "married" } }) } }] }) } as any;
     const output = await new AgentTurnService(client).run({
