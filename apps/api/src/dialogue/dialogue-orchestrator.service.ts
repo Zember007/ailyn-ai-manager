@@ -136,7 +136,7 @@ export class DialogueOrchestratorService {
         // plan plus a rate answer from the approved knowledge base. Preserve
         // the former; only the latter may supply interest-rate wording.
         const responsePlan = turn.result.loanQuestionKind === "maximum_limit_and_rate"
-          ? [turn.reply, knowledge.reply].filter(Boolean).join("\n\n")
+          ? [removeTrailingWorkflowFollowUp(turn.reply, workflowFollowUp), knowledge.reply].filter(Boolean).join("\n\n")
           : knowledge.reply;
         const reply = appendWorkflowFollowUp(responsePlan, workflowFollowUp);
         const result = { ...turn.result, reply };
@@ -275,6 +275,16 @@ function appendWorkflowFollowUp(reply: string, followUp: string): string {
   return [reply.trim(), followUp].filter(Boolean).join("\n\n");
 }
 
+/** A factual KB answer is inserted after the server calculation but before
+ * the next application question. Keep that question as the final paragraph. */
+function removeTrailingWorkflowFollowUp(reply: string, followUp: string): string {
+  if (!followUp) return reply.trim();
+  const trimmed = reply.trim();
+  return trimmed.endsWith(followUp)
+    ? trimmed.slice(0, trimmed.length - followUp.length).trim()
+    : trimmed;
+}
+
 function toPendingInboundMessage(message: InboundMessage): Stage1Message {
   return {
     id: message.externalMessageId,
@@ -299,8 +309,22 @@ function supplementNormalizedMoney(values: NormalizedMoneyValue[], text: string,
   const result = classifiedValue
     ? [classifiedValue]
     : values.filter((value) => value.amount > 0 && (!expectedField || value.field === expectedField));
-  const present = new Set(result.map((value) => value.field));
   const mentions = detectMoneyMentions(text);
+  // The model remains the primary normalizer. This is a deliberately narrow
+  // correction for an unambiguous numeric construction it can occasionally
+  // truncate: «1 млн с половиной» must never reach pricing as 1 млн. It is
+  // not a heuristic role assignment—the deterministic parser has already
+  // established both the explicit unit and the role cue.
+  for (const mention of mentions) {
+    const start = mention.start ?? 0;
+    if (!/\d\s*(?:млн|миллион)\s+с\s+половин/iu.test(text.slice(start, (mention.end ?? start) + 32))) continue;
+    if (mention.roleCandidate !== "requestedAmount" && mention.roleCandidate !== "vehicleValue") continue;
+    const index = result.findIndex((value) => value.field === mention.roleCandidate);
+    const normalized = { field: mention.roleCandidate, amount: mention.normalizedAmount, currency: mention.currency ?? "KGS" as const, confidence: mention.confidence };
+    if (index >= 0) result[index] = normalized;
+    else result.push(normalized);
+  }
+  const present = new Set(result.map((value) => value.field));
   const resolved = resolveMoneyFacts({ text, currentFacts });
   // The last workflow question is a deterministic role boundary. A bare
   // amount after «Какая сумма займа?» is the requested amount, never an
@@ -499,6 +523,11 @@ export async function resolveNormalizedMoneyFacts(values: NormalizedMoneyValue[]
     if (value.currency === "KGS") {
       if (existingFacts?.[value.field] === Math.round(value.amount)) continue;
       facts[value.field] = roundSomAmount(value.amount);
+      // A new som amount supersedes a previously converted foreign-currency
+      // amount. Leaving (for example) USD here makes the card internally
+      // inconsistent and can cause a later turn to treat the old currency as
+      // the source of the new amount.
+      facts[value.field === "requestedAmount" ? "requestedAmountSourceCurrency" : "vehicleValueSourceCurrency"] = undefined;
       continue;
     }
     if (!integrations) continue;

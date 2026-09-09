@@ -83,7 +83,17 @@ export function detectMoneyMentions(text: string): MoneyMention[] {
     const prefixCurrency = normalizeCurrency(match[1]);
     const suffixCurrency = normalizeCurrency(match[4]);
     const currency = suffixCurrency ?? prefixCurrency ?? null;
-    const amount = parseNormalizedAmount(numberPart, unit);
+    const baseAmount = parseNormalizedAmount(numberPart, unit);
+    // «Миллион с половиной» is a single explicit amount, not a vague
+    // approximation. Keep this narrow: the fractional form must immediately
+    // follow an amount with a unit, so dates and unrelated "половина" text
+    // cannot become money.
+    const halfUnitAmount = /(?:^|\s)с\s+половин(?:ой|ы)(?:$|[\s,.!?])/iu.test(contextAfter)
+      ? parseNormalizedAmount("0.5", unit)
+      : undefined;
+    const amount = baseAmount === undefined
+      ? undefined
+      : baseAmount + (halfUnitAmount ?? 0);
 
     if (amount === undefined || !looksLikeMoneyMention({ fullText: source, raw, amount, unit, prefixCurrency, suffixCurrency, contextBefore, contextAfter })) {
       continue;

@@ -37,7 +37,19 @@ export function effectiveFactsForTurn(input: {
     result.residenceRegion = resolvedResidence.residenceRegion;
     result.residenceCategory = resolvedResidence.category;
     result.residenceNeedsClarification = false;
+  } else {
+    // A binary reply such as «нет» must not replace an already canonical
+    // residence with an unresolvable text fragment. Explicit residence
+    // corrections are admitted before this boundary; this is the last line
+    // of defence against a stale model patch reopening a completed stage.
+    const previousResidence = resolveKyrgyzstanLocality(input.previous.residenceText ?? input.previous.residenceRegion);
+    if (previousResidence && input.previous.residenceRegion && input.previous.residenceCategory) {
+      result.residenceText = input.previous.residenceText ?? previousResidence.locality;
+      result.residenceRegion = input.previous.residenceRegion;
+      result.residenceCategory = input.previous.residenceCategory;
+    }
   }
+  if (result.residenceRegion && result.residenceCategory) result.residenceNeedsClarification = false;
   for (const key of ["vehicleValue", "requestedAmount"] as const) {
     if (typeof result[key] === "number") result[key] = roundSomAmount(result[key]);
   }
@@ -48,7 +60,7 @@ export function deriveStageCompletion(facts: ApplicationFacts): StageCompletion 
   const vehicle = Boolean(facts.vehicleModel && facts.vehicleYear && facts.vehicleValue !== undefined);
   const requestedAmount = vehicle && facts.requestedAmount !== undefined;
   const program = requestedAmount && facts.requestedProgram !== undefined;
-  const residence = program && Boolean(facts.residenceRegion && facts.residenceCategory) && !facts.residenceNeedsClarification;
+  const residence = program && Boolean(facts.residenceRegion && facts.residenceCategory);
   const guarantorRequired = residence && facts.requestedProgram === "without_storage" && facts.residenceCategory === "OTHER_KG";
   const guarantor = residence && (!guarantorRequired || facts.guarantorAvailable === true);
   const documents = guarantor && (facts.documentsProvided === true || facts.declinedDocuments === true);

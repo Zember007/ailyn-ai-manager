@@ -86,7 +86,29 @@ describe("agent turn reconciliation pricing", () => {
     });
   });
 
-  it("resets the amount stage and every dependent stage when a new preference invalidates amount and programme", () => {
+  it("keeps a canonical residence closed when a later binary reply is not a locality", () => {
+    const facts = effectiveFactsForTurn({
+      previous: {
+        residenceText: "Бишкек", residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY",
+        residenceNeedsClarification: true
+      },
+      modelPatch: { residenceText: "нет", residenceNeedsClarification: true },
+      explicitFacts: {}, currencyFacts: {}, attachmentFacts: {}
+    });
+
+    expect(facts).toMatchObject({
+      residenceText: "Бишкек", residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY",
+      residenceNeedsClarification: false
+    });
+    expect(deriveStageCompletion({
+      ...facts,
+      vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 3_000_000,
+      requestedAmount: 600_000, requestedProgram: "without_storage",
+      declinedDocuments: true
+    })).toMatchObject({ residence: true, guarantor: true, documents: true });
+  });
+
+  it("resets the amount stage and every dependent stage when the amount changes", () => {
     const facts = effectiveFactsForTurn({
       previous: {
         vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 2_000_000,
@@ -94,7 +116,7 @@ describe("agent turn reconciliation pricing", () => {
         residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY",
         documentsProvided: true, documents: { car_photo: "received" }, familyStatus: "single"
       },
-      modelPatch: { requestedMaximumAmount: true, requestedAmount: undefined, requestedProgram: undefined },
+      modelPatch: { requestedAmount: undefined, requestedProgram: undefined },
       explicitFacts: {}, currencyFacts: {}, attachmentFacts: {}
     });
 

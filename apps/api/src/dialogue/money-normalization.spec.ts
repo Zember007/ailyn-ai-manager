@@ -29,6 +29,12 @@ describe("money normalization", () => {
     ]));
   });
 
+  it("parses the explicit half-million form as one requested amount", () => {
+    expect(detectMoneyMentions("мне надо всё-таки 1 млн с половиной")).toEqual([
+      expect.objectContaining({ normalizedAmount: 1_500_000, roleCandidate: "requestedAmount", currency: null })
+    ]);
+  });
+
   it("keeps the multiplier and currency in a compact foreign amount", () => {
     expect(detectMoneyMentions("Перепутал цену, мне нужно 10 к долларов")).toEqual(expect.arrayContaining([
       expect.objectContaining({ sourceText: "10 к долларов", normalizedAmount: 10_000, currency: "USD" })
