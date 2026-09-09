@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
-import { AgentTurnService, OLDER_VEHICLE_PROGRAM_NOTICE } from "./agent-turn.service.js";
+import { AgentTurnService, nextRequiredStageQuestion, OLDER_VEHICLE_PROGRAM_NOTICE } from "./agent-turn.service.js";
 import { agentStageInstructions } from "./agent-stage-instructions.js";
-import { DialogueOrchestratorService, composeReply, resolveForeignCurrencyFacts, resolveNormalizedMoneyFacts } from "./dialogue-orchestrator.service.js";
+import { DialogueOrchestratorService, composeReply, removeEarlierDuplicateSentences, resolveForeignCurrencyFacts, resolveNormalizedMoneyFacts } from "./dialogue-orchestrator.service.js";
 import { generatedDocumentationChunks } from "./documentation-chunks.generated.js";
 
 process.env.DATABASE_URL ??= "postgresql://test:test@localhost:5432/ailyn";
@@ -43,6 +43,26 @@ async function runMockedBatchedAgentTurn(input: { facts: Record<string, unknown>
 }
 
 describe("single-agent dialogue", () => {
+  it("asks only for visit time when the visit date is already saved", () => {
+    expect(nextRequiredStageQuestion({
+      vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 3_000_000,
+      requestedAmount: 600_000, requestedProgram: "without_storage",
+      residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY",
+      documentsProvided: true, documents: { car_photo: "received" }, familyStatus: "single",
+      visitDate: "2026-10-06"
+    })).toBe("Офис работает с понедельника по пятницу с 11:00 до 19:00. Для оформления нужно приехать не позднее 18:00. В какое время Вам удобно подъехать?");
+  });
+
+  it("asks only for a visit date when the visit time is already saved", () => {
+    expect(nextRequiredStageQuestion({
+      vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 3_000_000,
+      requestedAmount: 600_000, requestedProgram: "without_storage",
+      residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY",
+      documentsProvided: true, documents: { car_photo: "received" }, familyStatus: "single",
+      visitTime: "14:00"
+    })).toBe("Офис работает с понедельника по пятницу с 11:00 до 19:00. На какой день Вам удобно подъехать?");
+  });
+
   it("does not append a programme question while a currency clarification is pending", async () => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
       ...validResult,
@@ -2595,6 +2615,24 @@ describe("single-agent dialogue", () => {
     expect(output.reply).toContain("2–3 фотографии автомобиля");
   });
 
+  it("acknowledges 'не найду фото' as a document-stage refusal before moving on", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult, reply: "Не смогла понять. Напишите, пожалуйста, подробнее.", leadCardPatch: {}
+    }) } }] }) } as any;
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "Пожалуйста, отправьте фото ID и свидетельства о регистрации автомобиля с обеих сторон.", createdAt: "now" } as any],
+      facts: {
+        vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 3_000_000,
+        requestedAmount: 600_000, requestedProgram: "without_storage",
+        residenceText: "Бишкек", residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY"
+      } as any,
+      settings: {}, text: "не найду фото", attachments: []
+    });
+
+    expect(output.result?.leadCardPatch.declinedDocuments).toBe(true);
+    expect(output.reply).toBe("Хорошо, документы можно отправить позже.\n\nПожалуйста, отправьте 2–3 фотографии автомобиля.");
+  });
+
   it("answers a loan question without consuming the pending guarantor answer", async () => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
       ...validResult, loanQuestionKind: "maximum_limit", reply: "Распознано.", leadCardPatch: {}
@@ -3832,6 +3870,40 @@ describe("single-agent dialogue", () => {
     expect(output.reply).toBe("Хорошо, оформим согласие при визите.\n\nОфис работает с понедельника по пятницу с 11:00 до 19:00. Для оформления нужно приехать не позднее 18:00. На какой день и время Вам удобно подъехать?");
   });
 
+  it.each([
+    ["6 октября в 6", "18:00"],
+    ["6 октября в 6 вечера", "18:00"],
+    ["6 котября в 5", "17:00"]
+  ])("treats %s as a visit date and time, not a vehicle price", async (text, visitTime) => {
+    const modelResult = {
+      ...validResult,
+      reply: "Поняла.",
+      // Regression: a model can incorrectly label the day/time number as a
+      // monetary field. The active server-owned visit stage must reject it.
+      hasMoney: true,
+      leadCardPatch: { vehicleValue: 6 }
+    };
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify(modelResult) } }] }) } as any;
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "Офис работает с понедельника по пятницу с 11:00 до 19:00. Для оформления нужно приехать не позднее 18:00. На какой день и время Вам удобно подъехать?", createdAt: "2026-09-09" } as any],
+      facts: {
+        vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 3_000_000,
+        requestedAmount: 600_000, requestedProgram: "without_storage",
+        residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY",
+        declinedDocuments: true, declinedCarPhoto: true, familyStatus: "single"
+      } as any,
+      settings: {}, text, attachments: []
+    });
+
+    expect(output.result?.leadCardPatch).toEqual(expect.objectContaining({
+      vehicleValue: 3_000_000,
+      visitRequested: true,
+      visitDate: "2026-10-06",
+      visitTime
+    }));
+    expect(output.reply).toContain(`в ${visitTime}`);
+  });
+
   it("does not repeat the residence question after residence is stored in the lead", async () => {
     const repeatedResidenceQuestion = { ...validResult, reply: "Хорошо, продолжаем по программе без изъятия. Подскажите, пожалуйста, Ваша прописка — Бишкек, Чуйская область или другой регион Кыргызстана?" };
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify(repeatedResidenceQuestion) } }] }) } as any;
@@ -4027,6 +4099,18 @@ describe("single-agent dialogue", () => {
     expect(reply).toBe(`${currency}\n\nПодскажите программу.`);
   });
 
+  it("removes the first exact repeated sentence of at least three words", () => {
+    expect(removeEarlierDuplicateSentences(
+      "5 октября — это воскресенье. Для оформления нужно приехать не позднее 18:00. Офис работает с понедельника по пятницу. Для оформления нужно приехать не позднее 18:00. На какой день Вам удобно подъехать?"
+    )).toBe(
+      "5 октября — это воскресенье. Офис работает с понедельника по пятницу. Для оформления нужно приехать не позднее 18:00. На какой день Вам удобно подъехать?"
+    );
+  });
+
+  it("keeps similar sentences and short duplicates intact", () => {
+    expect(removeEarlierDuplicateSentences("Приезжайте до 18:00. Приезжайте до 17:00. Да. Да.")).toBe("Приезжайте до 18:00. Приезжайте до 17:00. Да. Да.");
+  });
+
   it("persists a validated patch and preserves the public result shape", async () => {
     const application = { id: "app", facts: {}, contactId: "contact", stage: "NEW", status: "need_more_data" } as any;
     const conversation = { id: "conversation", messages: [], application, channel: "web-test" } as any;
@@ -4073,6 +4157,35 @@ describe("single-agent dialogue", () => {
     expect(output.reply).not.toContain("всё ещё актуальна");
   });
 
+  it("extracts client and owner FIO from a combined ID and STS image when the dialogue response omitted them", async () => {
+    const client = {
+      isConfigured: vi.fn().mockReturnValue(true),
+      createChatCompletion: vi.fn()
+        .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ ...validResult, reply: "Спасибо, документы получены.", leadCardPatch: {}, attachments: [{ attachmentId: "combined", type: "unknown", status: "received" }] }) } }] })
+        .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({
+          fullName: "Смолева Евгения Прокопьевна",
+          ownerFullName: "Смолева Евгения Прокопьевна",
+          documents: { id_front: true, id_back: false, vehicle_registration_front: true, vehicle_registration_back: false }
+        }) } }] })
+    } as any;
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "Пожалуйста, отправьте фото ID и свидетельства о регистрации автомобиля с обеих сторон.", createdAt: "now" } as any],
+      facts: { vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 1_000_000, requestedAmount: 400_000, requestedProgram: "parking", residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY" } as any,
+      settings: {}, text: "", attachments: [{ id: "combined", mimeType: "image/png", contentBase64: "iVBORw0KGgo=" }]
+    });
+
+    expect(output.result?.leadCardPatch).toMatchObject({
+      fullName: "Смолева Евгения Прокопьевна",
+      ownerFullName: "Смолева Евгения Прокопьевна",
+      documents: { id_front: "received", vehicle_registration_front: "received" },
+      documentsProvided: true
+    });
+    expect(client.createChatCompletion).toHaveBeenCalledTimes(2);
+    expect(client.createChatCompletion.mock.calls[1][0].messages[1].content).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "image_url", image_url: expect.objectContaining({ detail: "high" }) })
+    ]));
+  });
+
   it("unconditionally accepts uploads and continues to the next stage without promising a re-check", async () => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
       ...validResult,
@@ -4088,6 +4201,27 @@ describe("single-agent dialogue", () => {
     expect(output.result?.leadCardPatch.documentsProvided).toBe(true);
     expect(output.reply).toBe("Фотографии получены. Продолжаем оформление.\n\nПожалуйста, отправьте 2–3 фотографии автомобиля.");
     expect(output.reply).not.toMatch(/уточн|неразборчив|пересн|дослать/iu);
+  });
+
+  it("closes the car-photo stage after any upload even when the model calls it unknown", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult,
+      reply: "Спасибо, документы получены. Пожалуйста, отправьте 2–3 фотографии автомобиля.",
+      leadCardPatch: {},
+      attachments: [{ attachmentId: "camry-photo", type: "unknown", status: "received" }]
+    }) } }] }) } as any;
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "Спасибо, документы получены. Пожалуйста, отправьте 2–3 фотографии автомобиля.", createdAt: "now" } as any],
+      facts: {
+        vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 1_000_000, requestedAmount: 400_000,
+        requestedProgram: "parking", residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY", documentsProvided: true
+      } as any,
+      settings: {}, text: "", attachments: [{ id: "camry-photo", mimeType: "image/jpeg" }]
+    });
+
+    expect(output.result?.leadCardPatch.documents).toMatchObject({ car_photo: "received" });
+    expect(output.reply).not.toMatch(/2\s*[–-]\s*3\s+фотограф/iu);
+    expect(output.reply).toMatch(/браке/iu);
   });
 
   it("keeps accepted STS sides when ID photos arrive in the next message", async () => {

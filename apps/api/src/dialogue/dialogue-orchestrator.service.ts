@@ -228,7 +228,10 @@ export class DialogueOrchestratorService {
     // A real output renderer receives the complete plan including FX above.
     // Keep the old composition path for test doubles and legacy callers that
     // do not implement the renderer yet.
-    const reply = renderClientReply ? turn.reply : composeReply(turn.reply, currency.clientText);
+    // The output model and server follow-up can independently include the
+    // same instruction. Deduplicate at the final delivery boundary so the
+    // persisted and returned message are identical.
+    const reply = removeEarlierDuplicateSentences(renderClientReply ? turn.reply : composeReply(turn.reply, currency.clientText));
     await this.store.addMessage(conversation, { author: "ai", body: reply, attachmentIds: [], attachments: [], metadata: { sourceMessageId: lastMessage.externalMessageId, routerAiModel: turn.model, promptVersion: turn.promptVersion, validation, trace: { singleModel: true, batchedClientMessages: messages.length, changedFactKeys, managerEvent, intent: turn.result?.intent, targetEvent: turn.result?.targetEvent } } });
     // Generate the private lead summary immediately after the booking reply
     // has been persisted and the visit facts have reached the lead card. A
@@ -473,6 +476,33 @@ export function composeReply(modelReply: string, currencyText?: string): string 
   if (!introduction) return [currencyText, cleanReply].filter(Boolean).join("\n\n");
   const rest = cleanReply.slice(introduction.length).trim();
   return [introduction, currencyText, rest].filter(Boolean).join("\n\n");
+}
+
+/**
+ * If a later sentence repeats an earlier sentence with at least three words,
+ * keep the later (usually canonical server) wording and remove the first.
+ * Comparison is exact after case, whitespace, and punctuation normalization;
+ * similar sentences are intentionally untouched.
+ */
+export function removeEarlierDuplicateSentences(reply: string): string {
+  const sentences = reply.match(/[^.!?]+[.!?]+|[^.!?]+$/gu) ?? [];
+  const firstByText = new Map<string, number>();
+  const remove = new Set<number>();
+  for (const [index, sentence] of sentences.entries()) {
+    const words = sentence.toLocaleLowerCase("ru-RU").match(/[\p{L}\p{N}]+/gu) ?? [];
+    if (words.length < 3) continue;
+    const key = words.join(" ");
+    const first = firstByText.get(key);
+    if (first !== undefined) remove.add(first);
+    firstByText.set(key, index);
+  }
+  return sentences
+    .filter((_, index) => !remove.has(index))
+    .join("")
+    .replace(/[ \t]+\n/gu, "\n")
+    .replace(/\n{3,}/gu, "\n\n")
+    .replace(/[ \t]{2,}/gu, " ")
+    .trim();
 }
 
 // Public compatibility symbols kept while the old orchestration path is removed.

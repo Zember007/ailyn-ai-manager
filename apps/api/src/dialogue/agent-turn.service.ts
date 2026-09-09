@@ -449,10 +449,63 @@ export class AgentTurnService {
     const limitChoiceNormalized = await this.resolveLimitChoice(parsed, input);
     const programNormalized = await this.resolveProgramDecision(limitChoiceNormalized, input);
     const optionalStageNormalized = await this.resolveOptionalStageDecision(programNormalized, input);
-    const residenceNormalized = await this.normalizeResidenceLocality(optionalStageNormalized, input);
+    const documentsNormalized = await this.resolveDocumentIdentityFacts(optionalStageNormalized, input);
+    const residenceNormalized = await this.normalizeResidenceLocality(documentsNormalized, input);
     const divorceTimingResolved = await this.resolveDivorcePurchaseTiming(residenceNormalized, input);
     const officeResolved = await this.resolveOfficeConsent(await this.resolveGuarantorDecision(await this.resolveResidenceClarification(divorceTimingResolved, input), input), input);
     return this.resolveFinalQuestionsDecision(officeResolved, input);
+  }
+
+  /** A narrow vision pass prevents the prose model from dropping a readable
+   * name or a second document shown in the same photograph. */
+  private async resolveDocumentIdentityFacts(parsed: AgentTurnResult, input: AgentTurnInput): Promise<AgentTurnResult> {
+    const lastAssistant = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
+    const imageAttachments = input.attachments.filter((attachment) =>
+      Boolean(attachment.contentBase64) && /^image\/(?:jpeg|png|webp|gif)$/iu.test(attachment.mimeType ?? "")
+    );
+    const hasClientName = Boolean(input.facts.fullName ?? parsed.leadCardPatch.fullName);
+    const hasOwnerName = Boolean(input.facts.ownerFullName ?? parsed.leadCardPatch.ownerFullName);
+    if (!isDocumentRequest(lastAssistant) || imageAttachments.length === 0 || (hasClientName && hasOwnerName)) return parsed;
+
+    try {
+      const response = await this.client.createChatCompletion({
+        model: this.config.routerAiVisionModel ?? this.config.routerAiTextModel ?? "routerai-vision-model-not-configured",
+        temperature: 0,
+        max_tokens: 180,
+        reasoning: { enabled: false },
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: "Ты извлекаешь поля только из приложенных документов Кыргызстана. Верни строго JSON {\"fullName\":string|null,\"ownerFullName\":string|null,\"documents\":{\"id_front\":boolean,\"id_back\":boolean,\"vehicle_registration_front\":boolean,\"vehicle_registration_back\":boolean}}. Просмотри каждую карточку и область во всех фото: в одном кадре могут быть ID и СТС, а документы могут быть физическими или экраном Tunduk. fullName — только полное читаемое ФИО с лицевой стороны ID/паспорта; ownerFullName — только полное читаемое ФИО из подписанного поля собственника на СТС. Не переносить ФИО собственника в fullName, не угадывать и не сокращать имя. Для каждого видимого типа документа поставь true; иначе false. Не добавляй текст и не используй имя файла как источник данных." },
+          {
+            role: "user",
+            content: [
+              { type: "text" as const, text: JSON.stringify({ attachmentIds: imageAttachments.map((attachment) => attachment.id) }) },
+              ...imageAttachments.map((attachment) => ({
+                type: "image_url" as const,
+                image_url: { url: `data:${attachment.mimeType};base64,${attachment.contentBase64}`, detail: "high" as const }
+              }))
+            ]
+          }
+        ]
+      }, { timeoutMs: this.config.routerAiTimeoutMs, signal: input.signal });
+      const extracted = parseDocumentIdentityExtraction(response.choices?.[0]?.message?.content);
+      const documents = {
+        ...(parsed.leadCardPatch.documents ?? {}),
+        ...Object.fromEntries(Object.entries(extracted.documents).filter(([, present]) => present).map(([type]) => [type, "received"]))
+      };
+      const patch = {
+        ...(hasClientName || !extracted.fullName ? {} : { fullName: extracted.fullName }),
+        ...(hasOwnerName || !extracted.ownerFullName ? {} : { ownerFullName: extracted.ownerFullName }),
+        ...(Object.keys(documents).length > 0 ? { documents } : {})
+      };
+      return Object.keys(patch).length > 0
+        ? { ...parsed, leadCardPatch: { ...parsed.leadCardPatch, ...patch } }
+        : parsed;
+    } catch (error) {
+      if (input.signal?.aborted) throw error;
+      this.logger.warn(`Document identity extraction unavailable: ${formatError(error)}`);
+      return parsed;
+    }
   }
 
   /** The short answer is meaningful only in the immediately preceding
@@ -1063,8 +1116,13 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
       ? { required: true as const, reason: "missing_approved_answer" as const }
       : undefined);
   const limitChoiceFacts = limitChoicePatch(parsed.limitChoice, input, input.facts);
+  // A number in an active scheduling reply is a day or time, never a new
+  // vehicle value or requested amount.  This also prevents a model that
+  // labels «6 октября в 5» as money from replacing the car value with 0
+  // after monetary rounding.
+  const schedulingVisitReply = isVisitSchedulingReply(input, input.facts);
   const rawModelPatch = {
-    ...modelMoneyPatchForTurn(modelFactsWithoutResidence, input, parsed.hasMoney),
+    ...(schedulingVisitReply ? {} : modelMoneyPatchForTurn(modelFactsWithoutResidence, input, parsed.hasMoney)),
     ...residencePatchFromExplicitClientText(input, leadCardFacts, input.facts),
     ...requestedAmountResetPatch(input),
     ...maximumLoanAmountPatch(input, input.facts),
@@ -1118,6 +1176,17 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     ...attachmentFactsFromResult(input.facts, parsed.attachments),
     ...(input.attachments.length > 0 ? { documentsProvided: true } : {})
   };
+  // A file uploaded immediately after the dedicated car-photo request is a
+  // car-photo handoff even if the generic dialogue model classified it as
+  // unknown. This is a workflow acknowledgement, not an image-quality claim:
+  // never make the client repeat the same optional step.
+  if (input.attachments.length > 0 && isCarPhotoRequest(lastAssistantReply)) {
+    attachmentFacts.documents = {
+      ...(input.facts.documents ?? {}),
+      ...(attachmentFacts.documents ?? {}),
+      car_photo: "received"
+    };
+  }
   const factsWithoutBelowMinimumAmount = requiresBelowMinimumConfirmation || confirmedBelowMinimumAmount
     ? { ...input.facts, requestedAmount: undefined, requestedAmountSourceCurrency: undefined }
     : input.facts;
@@ -1224,7 +1293,8 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   // A direct question about the loan amount outranks a pending family or
   // visit branch. The calculation itself is server-owned; after answering,
   // the normal workflow appender returns to the outstanding action.
-  const directAnswer = repeatedStageReply ?? completionNotice ?? attachmentAcceptanceNotice ?? visitNotice ?? visitTimeClarification ?? residenceLimitNotice ?? programmeChangeGuarantorNotice ?? maximumChoiceNotice ?? acceptedLimitNotice ?? (region10Answer ? [region10Answer, olderVehicleNotice].filter(Boolean).join("\n\n") : undefined) ?? olderVehicleNotice ?? maximumLoanInputReply ?? maximumLoanReply ?? spouseVisitAnswer(input) ?? familyNotice ?? unknownVehicleValueNotice ?? waitingForVehicleValueNotice;
+  const optionalStageDeclineNotice = optionalStageDeclineNoticeForTurn(input.facts, effectiveFacts);
+  const directAnswer = repeatedStageReply ?? completionNotice ?? attachmentAcceptanceNotice ?? optionalStageDeclineNotice ?? visitNotice ?? visitTimeClarification ?? residenceLimitNotice ?? programmeChangeGuarantorNotice ?? maximumChoiceNotice ?? acceptedLimitNotice ?? (region10Answer ? [region10Answer, olderVehicleNotice].filter(Boolean).join("\n\n") : undefined) ?? olderVehicleNotice ?? maximumLoanInputReply ?? maximumLoanReply ?? spouseVisitAnswer(input) ?? familyNotice ?? unknownVehicleValueNotice ?? waitingForVehicleValueNotice;
   // A direct approved FAQ outranks all free-form model prose. This prevents
   // plausible but unsupported claims such as a parking location or credit
   // eligibility from reaching the client. The final output renderer receives
@@ -1310,20 +1380,36 @@ function omitVisitFacts(patch: Partial<ApplicationFacts>): Partial<ApplicationFa
 function visitPatchFromClearReply(input: Pick<AgentTurnInput, "text" | "currentTurnMessages" | "messages" | "settings">, facts: ApplicationFacts): Partial<ApplicationFacts> {
   if (!deriveStageCompletion(facts).readyForVisit) return {};
   const lastAssistant = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
-  if (!/(?:на\s+какой\s+день|день\s+и\s+время|когда\s+вам\s+удобно).{0,100}(?:подъехать|приехать)/iu.test(lastAssistant)) return {};
+  if (!isVisitSchedulingQuestion(lastAssistant)) return {};
   const text = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "").trim().toLocaleLowerCase("ru-RU");
-  const timeMatch = text.match(/(?:в\s*)?(\d{1,2})(?::(\d{2}))?\s*(?:час(?:а|ов)?|ч)?\b/iu);
+  // The time must be tied to «в» (or an explicit hour suffix), otherwise the
+  // date day in «6 октября» is incorrectly treated as 18:00.
+  const timeMatch = text.match(/(?:\bв\s+(\d{1,2})(?::(\d{2}))?|\b(\d{1,2})(?::(\d{2}))?\s*(?:час(?:а|ов)?|ч))\s*(утра|дня|вечера)?\b/iu);
   if (!timeMatch) return {};
-  let hour = Number(timeMatch[1]);
-  const minute = Number(timeMatch[2] ?? "0");
+  let hour = Number(timeMatch[1] ?? timeMatch[3]);
+  const minute = Number(timeMatch[2] ?? timeMatch[4] ?? "0");
+  const dayPart = timeMatch[5] ?? "";
   // During the working-day visit window, colloquial «в 5» means 17:00.
-  if (hour >= 1 && hour <= 8) hour += 12;
+  if (/(?:дня|вечера)/iu.test(dayPart) && hour < 12) hour += 12;
+  else if (hour >= 1 && hour <= 8) hour += 12;
   if (hour < 11 || hour > 18 || minute > 59) return {};
   const settings = input.settings as Record<string, unknown>;
   const timezone = typeof settings.timezone === "string" ? settings.timezone : "Asia/Bishkek";
-  const visitDate = relativeVisitDate(text, timezone);
+  const visitDate = visitDateFromReply(text, timezone);
   if (!visitDate) return {};
   return { visitRequested: true, visitDate, visitTime: `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}` };
+}
+
+function isVisitSchedulingQuestion(text: string): boolean {
+  return /(?:на\s+какой\s+день|день\s+и\s+время|когда\s+вам\s+удобно).{0,100}(?:подъехать|приехать)/iu.test(text);
+}
+
+function isVisitSchedulingReply(input: Pick<AgentTurnInput, "text" | "currentTurnMessages" | "messages">, facts: ApplicationFacts): boolean {
+  if (!deriveStageCompletion(facts).readyForVisit) return false;
+  const lastAssistant = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
+  if (!isVisitSchedulingQuestion(lastAssistant)) return false;
+  const text = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "").trim();
+  return /(?:сегодня|завтра|\b\d{1,2}\s+(?:январ\p{L}*|феврал\p{L}*|март\p{L}*|апрел\p{L}*|мая|июн\p{L}*|июл\p{L}*|август\p{L}*|сентябр\p{L}*|к?октябр\p{L}*|ноябр\p{L}*|декабр\p{L}*))/iu.test(text);
 }
 
 /** A relative day is useful context, but «утром» is not a schedulable time.
@@ -1332,15 +1418,58 @@ function visitPatchFromClearReply(input: Pick<AgentTurnInput, "text" | "currentT
 function visitTimeClarificationReply(input: Pick<AgentTurnInput, "text" | "currentTurnMessages" | "messages" | "settings">, facts: ApplicationFacts): string | undefined {
   if (!deriveStageCompletion(facts).readyForVisit) return undefined;
   const lastAssistant = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
-  if (!/(?:на\s+какой\s+день|день\s+и\s+время|когда\s+вам\s+удобно).{0,100}(?:подъехать|приехать)/iu.test(lastAssistant)) return undefined;
+  if (!isVisitSchedulingQuestion(lastAssistant)) return undefined;
   const text = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "").trim().toLocaleLowerCase("ru-RU");
   const timezone = typeof (input.settings as Record<string, unknown>).timezone === "string"
     ? (input.settings as Record<string, unknown>).timezone as string
     : "Asia/Bishkek";
-  if (!relativeVisitDate(text, timezone)) return undefined;
-  const hasExactTime = /(?:в\s*)?\d{1,2}(?::\d{2})?\s*(?:час(?:а|ов)?|ч)?\b/iu.test(text);
+  if (!visitDateFromReply(text, timezone)) return undefined;
+  const hasExactTime = /(?:\bв\s+\d{1,2}(?::\d{2})?|\b\d{1,2}(?::\d{2})?\s*(?:час(?:а|ов)?|ч))\b/iu.test(text);
   if (hasExactTime) return undefined;
   return "Завтра подойдёт. Во сколько Вам удобно подъехать? Офис работает с понедельника по пятницу с 11:00 до 19:00, для оформления нужно приехать не позднее 18:00.";
+}
+
+function visitDateFromReply(text: string, timezone: string): string | undefined {
+  const relative = relativeVisitDate(text, timezone);
+  if (relative) return relative;
+
+  const monthMatch = text.match(/\b(\d{1,2})\s+(январ\p{L}*|феврал\p{L}*|март\p{L}*|апрел\p{L}*|мая|июн\p{L}*|июл\p{L}*|август\p{L}*|сентябр\p{L}*|к?октябр\p{L}*|ноябр\p{L}*|декабр\p{L}*)\b/iu);
+  if (!monthMatch) return undefined;
+  const monthToken = monthMatch[2].toLocaleLowerCase("ru-RU");
+  const month = russianMonthIndex(monthToken);
+  if (month === undefined) return undefined;
+
+  const day = Number(monthMatch[1]);
+  const today = currentDateTime(timezone).slice(0, 10);
+  let year = Number(today.slice(0, 4));
+  let date = validUtcDate(year, month, day);
+  if (!date) return undefined;
+  if (date.toISOString().slice(0, 10) < today) {
+    year += 1;
+    date = validUtcDate(year, month, day);
+  }
+  return date?.toISOString().slice(0, 10);
+}
+
+function russianMonthIndex(value: string): number | undefined {
+  if (/^январ/iu.test(value)) return 0;
+  if (/^феврал/iu.test(value)) return 1;
+  if (/^март/iu.test(value)) return 2;
+  if (/^апрел/iu.test(value)) return 3;
+  if (/^мая$/iu.test(value)) return 4;
+  if (/^июн/iu.test(value)) return 5;
+  if (/^июл/iu.test(value)) return 6;
+  if (/^август/iu.test(value)) return 7;
+  if (/^сентябр/iu.test(value)) return 8;
+  if (/^к?октябр/iu.test(value)) return 9;
+  if (/^ноябр/iu.test(value)) return 10;
+  if (/^декабр/iu.test(value)) return 11;
+  return undefined;
+}
+
+function validUtcDate(year: number, month: number, day: number): Date | undefined {
+  const date = new Date(Date.UTC(year, month, day));
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month && date.getUTCDate() === day ? date : undefined;
 }
 
 function relativeVisitDate(text: string, timezone: string): string | undefined {
@@ -1590,7 +1719,15 @@ export function nextRequiredStageQuestion(facts: ApplicationFacts, completion = 
   if (!completion.documents) return "Пожалуйста, отправьте фото ID и свидетельства о регистрации автомобиля с обеих сторон.";
   if (!completion.carPhoto) return "Пожалуйста, отправьте 2–3 фотографии автомобиля.";
   if (!completion.family) return nextFamilyStageQuestion(facts);
-  if (completion.readyForVisit && !completion.visit) return "Офис работает с понедельника по пятницу с 11:00 до 19:00. Для оформления нужно приехать не позднее 18:00. На какой день и время Вам удобно подъехать?";
+  if (completion.readyForVisit && !completion.visit) {
+    if (facts.visitDate && !facts.visitTime) {
+      return "Офис работает с понедельника по пятницу с 11:00 до 19:00. Для оформления нужно приехать не позднее 18:00. В какое время Вам удобно подъехать?";
+    }
+    if (facts.visitTime && !facts.visitDate) {
+      return "Офис работает с понедельника по пятницу с 11:00 до 19:00. На какой день Вам удобно подъехать?";
+    }
+    return "Офис работает с понедельника по пятницу с 11:00 до 19:00. Для оформления нужно приехать не позднее 18:00. На какой день и время Вам удобно подъехать?";
+  }
   return undefined;
 }
 
@@ -2690,7 +2827,13 @@ function isClearOptionalStageRefusal(input: Pick<AgentTurnInput, "text" | "messa
   // A short non-question is not automatically a refusal: corrections such
   // as «я вообще-то из Балыкчы» must be able to change an earlier stage.
   // Optional stages close only on an unambiguous negative/deferral.
-  return /^(?:нет|неа|нету|их\s+нет|нет\s+с\s+собой|не\s+буду|не\s+хочу|не\s+могу|не\s+получится|не\s+получится\s+сейчас|позже|потом|отправлю\s+позже|пришлю\s+позже)[.!\s]*$/u.test(text);
+  return /^(?:нет|неа|нету|их\s+нет|нет\s+с\s+собой|не\s+буду|не\s+хочу|не\s+могу|не\s+получится|не\s+получится\s+сейчас|не\s+найд(?:у|ется)|не\s+смогу\s+найти|позже|потом|отправлю\s+позже|пришлю\s+позже)(?:\s+(?:фото|фотографии|документ\p{L}*))?[.!\s]*$/u.test(text);
+}
+
+function optionalStageDeclineNoticeForTurn(previous: ApplicationFacts, current: ApplicationFacts): string | undefined {
+  if (!previous.declinedDocuments && current.declinedDocuments) return "Хорошо, документы можно отправить позже.";
+  if (!previous.declinedCarPhoto && current.declinedCarPhoto) return "Хорошо, фотографии автомобиля можно отправить позже.";
+  return undefined;
 }
 
 function enforceOptionalStageRefusalMessage(reply: string, input: Pick<AgentTurnInput, "text" | "messages" | "attachments">): string {
@@ -2815,6 +2958,27 @@ function parseAgentJson(value: string | undefined): Record<string, unknown> {
     }
     throw error;
   }
+}
+
+function parseDocumentIdentityExtraction(value: string | undefined): {
+  fullName?: string;
+  ownerFullName?: string;
+  documents: Partial<Record<"id_front" | "id_back" | "vehicle_registration_front" | "vehicle_registration_back", boolean>>;
+} {
+  const payload = parseAgentJson(value);
+  const name = (key: "fullName" | "ownerFullName") => {
+    const candidate = payload[key];
+    return typeof candidate === "string" && candidate.trim().length > 2 && candidate.trim().length <= 200 ? candidate.trim() : undefined;
+  };
+  const rawDocuments = payload.documents;
+  const documents = rawDocuments && typeof rawDocuments === "object" && !Array.isArray(rawDocuments)
+    ? Object.fromEntries(
+      ["id_front", "id_back", "vehicle_registration_front", "vehicle_registration_back"]
+        .filter((type) => (rawDocuments as Record<string, unknown>)[type] === true)
+        .map((type) => [type, true])
+    )
+    : {};
+  return { fullName: name("fullName"), ownerFullName: name("ownerFullName"), documents };
 }
 
 function buildMessage(input: Pick<AgentTurnInput, "messages" | "facts" | "settings" | "text" | "currentTurnMessages" | "pricing" | "attachments" | "currencyConversions" | "knowledgeLookup">, includeImages = true) {

@@ -234,3 +234,14 @@ git commit -m "fix: make dialogue transitions server-owned"
 - Prompt-bound binary semantic classification with regex-only fallback is covered by Task 4.
 - Maximum questions no longer choose a programme, while explicit programme selection applies its matching maximum in Task 2.
 - Server-owned timing, stage completion, and the reported Bishkek/guarantor regression are covered by Task 5.
+
+### Task 6: Visit date/time precedence over money parsing
+
+**Files:**
+- Modify: `apps/api/src/dialogue/agent-turn.service.ts`
+- Test: `apps/api/src/dialogue/dialogue-orchestrator.service.spec.ts`
+
+- [ ] Add regressions for `6 октября в 6`, `6 октября в 6 вечера`, and typo `6 котября в 5` while the visit action is active.
+- [ ] Parse an absolute Russian date using the current Bishkek year, rolling to the next year only when that date has already passed.
+- [ ] Require the time marker `в` or an explicit hour word so the day of month cannot become the visit time.
+- [ ] Suppress money-field extraction for a reply that is structurally a visit date/time response; the model must not overwrite vehicle value with a day number.
