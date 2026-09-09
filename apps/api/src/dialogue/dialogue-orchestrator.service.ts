@@ -113,7 +113,7 @@ export class DialogueOrchestratorService {
       // factual question to knowledge. Do not let the KB answer terminate the
       // application: derive the next required action from server-owned facts.
       const workflowFollowUp = extractWorkflowFollowUp(turn.reply)
-        || nextRequiredStageQuestion(turnFacts, deriveStageCompletion(turnFacts))
+        || nextRequiredStageQuestion(turnFacts, deriveStageCompletion(turnFacts, settings))
         // A completed application has no further collection action. The
         // knowledge contract still receives a string in that terminal case.
         || "";
@@ -190,7 +190,7 @@ export class DialogueOrchestratorService {
         ...(attachments.length > 0 ? { documentsProvided: true } : {})
       };
       const reconciledFacts = effectiveFactsForTurn({ previous: initialApplication.facts, modelPatch, explicitFacts: {}, currencyFacts: currencyFactsForTurn, attachmentFacts });
-      const effectiveFacts = { ...reconciledFacts, stageCompletion: deriveStageCompletion(reconciledFacts) };
+      const effectiveFacts = { ...reconciledFacts, stageCompletion: deriveStageCompletion(reconciledFacts, settings) };
       const preliminaryLimit = selectedProgramLimit(effectiveFacts, settings);
       changedFactKeys = await this.store.updateFacts(application, effectiveFacts);
       await this.store.saveAgentState(application, {

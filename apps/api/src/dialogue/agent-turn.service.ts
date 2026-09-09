@@ -13,7 +13,7 @@ import { prioritizedKnowledgeForQuestion, selectRelevantDocumentation } from "./
 import { agentTurnResultSchema, dialogueSummarySchema, knowledgeAnswerSchema, type AgentTurnResult } from "./agent-turn.contracts.js";
 import { moneyNormalizationSchema } from "./pipeline.contracts.js";
 import { calculateLoanPricing, type LoanPricing, type LoanPricingSettings } from "./loan-pricing.js";
-import { formatSomMoney, resolveMoneyFacts, roundSomAmount } from "./money-normalization.js";
+import { detectMoneyMentions, formatSomMoney, resolveMoneyFacts, roundSomAmount } from "./money-normalization.js";
 import type { Stage1Message } from "./stage1-store.service.js";
 
 const PROMPT_VERSION = "single-agent-v3";
@@ -534,7 +534,10 @@ export class AgentTurnService {
     const lastAssistant = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
     const clientReply = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "").trim();
     if (!clientReply || !isAmountLimitChoiceQuestion(lastAssistant)) return parsed;
-    const fallbackChoice = limitChoiceFromClearReply(clientReply);
+    const singleProgrammeOffer = isSingleProgrammeLimitOffer(lastAssistant);
+    const fallbackChoice = singleProgrammeOffer
+      ? singleProgrammeLimitChoiceFromClearReply(clientReply)
+      : limitChoiceFromClearReply(clientReply);
     if (!this.client.isConfigured()) return fallbackChoice === "undecided" ? parsed : { ...parsed, limitChoice: fallbackChoice };
     try {
       const response = await this.client.createChatCompletion({
@@ -544,14 +547,20 @@ export class AgentTurnService {
         reasoning: { enabled: false },
         response_format: { type: "json_object" },
         messages: [
-          { role: "system", content: "Интерпретируй ответ клиента только на серверную развилку лимита: либо снизить сумму по программе без изъятия, либо перейти на охраняемую стоянку. Верни строго JSON {\"choice\":\"keep_car\"|\"parking\"|\"undecided\",\"hasOtherStageAnswer\":boolean,\"question\":string|null}. `parking` — клиент выбирает стоянку: «стоянка», «на стоянку», «парковка», «со стоянкой». `keep_car` — без изъятия или уменьшение суммы: «без изъятия», «оставляю машину у себя», «уменьшаем сумму»; а также ясное согласие И ясный отказ на эту развилку — в обоих случаях сервер оставляет без изъятия и снижает сумму до предложенного лимита. Если клиент одновременно задаёт иной вопрос или меняет иной факт, hasOtherStageAnswer=true; question содержит только этот вопрос. Не придумывай выбор." },
+          { role: "system", content: singleProgrammeOffer
+            ? "Интерпретируй ответ клиента только на серверное предложение продолжить по уже выбранной программе на меньшую сумму. Верни строго JSON {\"choice\":\"keep_car\"|\"parking\"|\"undecided\",\"hasOtherStageAnswer\":boolean,\"question\":string|null}. `keep_car` означает согласие принять предложенный лимит — в том числе «да», «ок», «хорошо», «подходит». `undecided` означает отказ или неясный ответ. `parking` не выбирай, если клиент явно не просит сменить программу на стоянку. Если клиент одновременно задаёт иной вопрос или меняет иной факт, hasOtherStageAnswer=true; question содержит только этот вопрос. Не придумывай выбор."
+            : "Интерпретируй ответ клиента только на серверную развилку лимита: либо снизить сумму по программе без изъятия, либо перейти на охраняемую стоянку. Верни строго JSON {\"choice\":\"keep_car\"|\"parking\"|\"undecided\",\"hasOtherStageAnswer\":boolean,\"question\":string|null}. `parking` — клиент выбирает стоянку: «стоянка», «на стоянку», «парковка», «со стоянкой». `keep_car` — без изъятия или уменьшение суммы: «без изъятия», «оставляю машину у себя», «уменьшаем сумму»; а также ясное согласие И ясный отказ на эту развилку — в обоих случаях сервер оставляет без изъятия и снижает сумму до предложенного лимита. Если клиент одновременно задаёт иной вопрос или меняет иной факт, hasOtherStageAnswer=true; question содержит только этот вопрос. Не придумывай выбор." },
           { role: "user", content: JSON.stringify({ limitOffer: lastAssistant, clientReply }) }
         ]
       }, { timeoutMs: this.config.routerAiTimeoutMs, signal: input.signal });
       const normalized = parseAgentJson(response.choices?.[0]?.message?.content);
-      const choice = normalized.choice === "keep_car" || normalized.choice === "parking" || normalized.choice === "undecided"
+      const modelChoice = normalized.choice === "keep_car" || normalized.choice === "parking" || normalized.choice === "undecided"
         ? normalized.choice
-        : fallbackChoice;
+        : undefined;
+      // Model interpretation is primary. A narrow lexical decision is used
+      // only after an unavailable or undecided model result, and only for a
+      // terse unequivocal response such as «ок».
+      const choice = !modelChoice || modelChoice === "undecided" ? fallbackChoice : modelChoice;
       const clientQuestion = normalized.hasOtherStageAnswer === true
         ? extractExplicitClientQuestion(normalized.question, clientReply)
         : undefined;
@@ -1135,14 +1144,14 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   // or confirm a visit until the application itself has reached that stage.
   // Keep the language model free to interpret intent; the server owns this
   // workflow boundary.
-  const candidateCompletion = deriveStageCompletion(candidateFacts);
+  const candidateCompletion = deriveStageCompletion(candidateFacts, input.settings as LoanPricingSettings);
   const modelPatch = candidateCompletion.readyForVisit
     ? candidatePatch
     : omitVisitFacts(candidatePatch);
   const effectiveFacts = modelPatch === candidatePatch
     ? candidateFacts
     : effectiveFactsForTurn({ previous: factsWithoutBelowMinimumAmount, modelPatch, explicitFacts: {}, currencyFacts: {}, attachmentFacts });
-  const stageCompletion = deriveStageCompletion(effectiveFacts);
+  const stageCompletion = deriveStageCompletion(effectiveFacts, input.settings as LoanPricingSettings);
   // Limits are always calculated from the current server facts. A retrieved
   // article about rates must never overwrite a client question such as
   // «сколько денег дадите», even when it follows a consent in the same turn.
@@ -1345,11 +1354,18 @@ function relativeVisitDate(text: string, timezone: string): string | undefined {
 }
 
 function limitChoicePatch(choice: AgentTurnResult["limitChoice"], input: Pick<AgentTurnInput, "text" | "currentTurnMessages" | "messages" | "pricing">, facts: ApplicationFacts): Partial<ApplicationFacts> {
-  if (facts.requestedProgram !== "without_storage" || facts.requestedAmount === undefined) return {};
+  if (!facts.requestedProgram || facts.requestedAmount === undefined) return {};
   const lastAssistant = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
-  if (!/могу\s+продолжить\s+либо[\s\S]{0,500}(?:перейти|стоянк)/iu.test(lastAssistant)) return {};
+  const singleProgrammeOffer = isSingleProgrammeLimitOffer(lastAssistant);
+  const dualProgrammeOffer = /могу\s+продолжить\s+либо[\s\S]{0,500}(?:перейти|стоянк)/iu.test(lastAssistant);
+  if (!singleProgrammeOffer && !dualProgrammeOffer) return {};
   const withoutLimit = input.pricing?.withoutStorage.publicMax;
   const parkingLimit = input.pricing?.parking.publicMax;
+  if (singleProgrammeOffer && choice === "keep_car") {
+    const selectedLimit = facts.requestedProgram === "parking" ? parkingLimit : withoutLimit;
+    return typeof selectedLimit === "number" ? { requestedAmount: selectedLimit } : {};
+  }
+  if (!dualProgrammeOffer || facts.requestedProgram !== "without_storage") return {};
   // The server made a two-option offer: retain the car with a lower amount,
   // or move it to parking. A terse negative response therefore rejects the
   // offered parking alternative, not the loan itself. The model handles all
@@ -1365,7 +1381,12 @@ function limitChoicePatch(choice: AgentTurnResult["limitChoice"], input: Pick<Ag
 }
 
 function isAmountLimitChoiceQuestion(text: string): boolean {
-  return /могу\s+продолжить\s+либо[\s\S]{0,500}(?:сумм\p{L}*\s+до|перейти)[\s\S]{0,500}(?:без\s+изъяти|стоянк|парковк)/iu.test(text);
+  return /могу\s+продолжить\s+либо[\s\S]{0,500}(?:сумм\p{L}*\s+до|перейти)[\s\S]{0,500}(?:без\s+изъяти|стоянк|парковк)/iu.test(text)
+    || isSingleProgrammeLimitOffer(text);
+}
+
+function isSingleProgrammeLimitOffer(text: string): boolean {
+  return /сумм\p{L}*\s+\d[\s\S]{0,180}не\s+проходит\.?(?:\s|\n)*могу\s+продолжить\s+на\s+сумм\p{L}*\s+до\s+\d/iu.test(text);
 }
 
 /** Outage-only protection for unequivocal one-word answers. Rich wording is
@@ -1374,6 +1395,12 @@ function limitChoiceFromClearReply(text: string): Exclude<AgentTurnResult["limit
   const normalized = text.trim().toLocaleLowerCase("ru-RU");
   if (/^(?:стоянк\p{L}*|парковк\p{L}*|на\s+стоянк\p{L}*|на\s+парковк\p{L}*)[.!\s]*$/u.test(normalized)) return "parking";
   if (/^(?:без\s+изъяти\p{L}*|уменьш\p{L}*\s+сумм\p{L}*|да|ага|ок(?:ей)?|хорошо|нет|неа|не\s+хочу|не\s+подходит)[.!\s]*$/u.test(normalized)) return "keep_car";
+  return "undecided";
+}
+
+function singleProgrammeLimitChoiceFromClearReply(text: string): Exclude<AgentTurnResult["limitChoice"], undefined> {
+  const normalized = text.trim().toLocaleLowerCase("ru-RU");
+  if (/^(?:да|ага|угу|ок(?:ей)?|хорошо|подходит|соглас(?:ен|на))[.!\s]*$/u.test(normalized)) return "keep_car";
   return "undecided";
 }
 
@@ -1906,13 +1933,16 @@ function serverWorkflowFollowUp(text: string | undefined, loanQuestionKind: Loan
       : "Подскажите, пожалуйста, Вашу прописку — Бишкек, Чуйская область или другой регион Кыргызстана.";
   }
   const nextQuestion = nextRequiredStageQuestion(facts, completion);
+  // An invalid corrected amount must interrupt even a completed/visited
+  // application. Completion flags for unrelated stages stay intact, so this
+  // check has to precede the terminal-question branch.
+  if (amountLimitReply) return amountLimitReply;
   if (completion.visit) return facts.clientClosed ? undefined : FINAL_QUESTIONS_PROMPT;
   const maximumChoiceFollowUpQuestion = maximumChoiceFollowUp(text, facts);
   if (maximumChoiceFollowUpQuestion) return maximumChoiceFollowUpQuestion;
   // This must take precedence over every later stage and over informational
   // questions. The client has an unresolved choice of amount/programme, so
   // no guarantor, documents or family prompt may be appended yet.
-  if (amountLimitReply) return amountLimitReply;
   if (isMaximumLimitQuestion(loanQuestionKind) && canCalculateMaximum) {
     // A maximum quote must not replace an already active later action such as
     // the guarantor question. It only asks for programme selection when the
@@ -2404,7 +2434,7 @@ function clarificationOf(question: string): string {
  * it is not an answer to the preceding binary question.
  */
 function unresolvedBinaryDecisionReply(
-  input: Pick<AgentTurnInput, "messages" | "text" | "currentTurnMessages">,
+  input: Pick<AgentTurnInput, "facts" | "messages" | "text" | "currentTurnMessages">,
   facts: ApplicationFacts,
   loanQuestionKind: LoanQuestionKind,
 ): string | undefined {
@@ -2413,7 +2443,7 @@ function unresolvedBinaryDecisionReply(
   // A limit/rate question can be phrased without a question mark ("а денег
   // сколько"). It is a new request, never an ambiguous answer to the
   // preceding binary stage.
-  if (!clientReply || /[?？]/u.test(clientReply) || isMaximumLimitQuestion(loanQuestionKind) || isLoanRateQuestion(loanQuestionKind)) return undefined;
+  if (!clientReply || /[?？]/u.test(clientReply) || detectMoneyMentions(clientReply).length > 0 || isMaximumLimitQuestion(loanQuestionKind) || isLoanRateQuestion(loanQuestionKind)) return undefined;
   const repeatQuestion = (): string | undefined => {
     const question = lastAssistantQuestion(lastAssistant);
     return question ? clarificationOf(question) : undefined;
@@ -2430,8 +2460,21 @@ function unresolvedBinaryDecisionReply(
   if (isOfficeConsentQuestion(lastAssistant) && facts.familyStatus === "married" && facts.spouseConsentAtOffice === undefined) {
     return repeatQuestion() ?? "Уточните, пожалуйста: Вам удобно оформить согласие при визите в офис?";
   }
-  if (isFinalQuestionsPrompt(lastAssistant) && !facts.clientClosed) return repeatQuestion() ?? clarificationOf(FINAL_QUESTIONS_PROMPT);
+  // A correction after the terminal question (amount, vehicle, programme,
+  // locality, etc.) is new lead data, not an unclear answer to «Есть ли ещё
+  // вопросы?». Let the recalculated workflow/limit response take priority.
+  if (isFinalQuestionsPrompt(lastAssistant) && !facts.clientClosed && !hasMaterialLeadFactChange(input.facts, facts)) return repeatQuestion() ?? clarificationOf(FINAL_QUESTIONS_PROMPT);
   return undefined;
+}
+
+function hasMaterialLeadFactChange(previous: ApplicationFacts, current: ApplicationFacts): boolean {
+  const keys: Array<keyof ApplicationFacts> = [
+    "vehicleMake", "vehicleModel", "vehicleYear", "vehicleValue", "vehicleValueSourceCurrency",
+    "requestedAmount", "requestedAmountSourceCurrency", "requestedProgram",
+    "residenceText", "residenceRegion", "residenceCategory",
+    "familyStatus", "vehicleBoughtDuringMarriage", "guarantorAvailable"
+  ];
+  return keys.some((key) => previous[key] !== current[key]);
 }
 
 function removeForbiddenMetaPhrases(reply: string): string {

@@ -56,11 +56,28 @@ export function effectiveFactsForTurn(input: {
   return result;
 }
 
-export function deriveStageCompletion(facts: ApplicationFacts): StageCompletion {
+/**
+ * Stage completion is a derived validation result, never a sticky workflow
+ * cursor.  Each call evaluates the current card from scratch, so a correction
+ * first invalidates the affected stage and only marks it complete again when
+ * it still satisfies the current programme and limit rules.
+ */
+export function deriveStageCompletion(facts: ApplicationFacts, settings: LoanPricingSettings = {}): StageCompletion {
   const vehicle = Boolean(facts.vehicleModel && facts.vehicleYear && facts.vehicleValue !== undefined);
-  const requestedAmount = vehicle && facts.requestedAmount !== undefined;
-  const program = requestedAmount && facts.requestedProgram !== undefined;
+  const requestedAmountProvided = vehicle && facts.requestedAmount !== undefined;
+  const programSelected = requestedAmountProvided && facts.requestedProgram !== undefined;
+  const program = programSelected;
   const residence = program && Boolean(facts.residenceRegion && facts.residenceCategory);
+  const selectedPricing = residence && facts.requestedProgram
+    ? (facts.requestedProgram === "without_storage"
+      ? calculateLoanPricing(facts, settings).withoutStorage
+      : calculateLoanPricing(facts, settings).parking)
+    : undefined;
+  // Before locality/programme data is sufficient for a calculation, an
+  // amount remains collected but unverified. Once the server can calculate a
+  // limit, an over-limit amount deliberately reopens this stage.
+  const requestedAmount = requestedAmountProvided
+    && (!selectedPricing || (selectedPricing.available && typeof selectedPricing.publicMax === "number" && facts.requestedAmount! <= selectedPricing.publicMax));
   const guarantorRequired = residence && facts.requestedProgram === "without_storage" && facts.residenceCategory === "OTHER_KG";
   const guarantor = residence && (!guarantorRequired || facts.guarantorAvailable === true);
   const documents = guarantor && (facts.documentsProvided === true || facts.declinedDocuments === true);

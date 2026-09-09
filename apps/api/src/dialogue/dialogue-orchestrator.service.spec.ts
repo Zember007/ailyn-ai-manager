@@ -1839,6 +1839,51 @@ describe("single-agent dialogue", () => {
     expect(output.reply).toContain("Сумма 1 500 000 сом по этой программе не проходит.");
   });
 
+  it("does not treat a corrected amount after the final question as an unclear final answer", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult,
+      hasMoney: true,
+      reply: "Поняла.",
+      leadCardPatch: { requestedAmount: 2_000_000 }
+    }) } }] }) } as any;
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "Есть ли у Вас ещё вопросы?", createdAt: "now" } as any],
+      facts: {
+        vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 2_000_000,
+        requestedAmount: 1_000_000, requestedProgram: "parking",
+        residenceText: "Ош", residenceRegion: "Другой регион Кыргызстана", residenceCategory: "OTHER_KG",
+        documentsProvided: true, declinedCarPhoto: true, familyStatus: "single", visitDate: "2026-09-15", visitTime: "17:00"
+      } as any,
+      settings: {}, text: "мне кстати всё-таки 2 млн нужно", attachments: []
+    });
+
+    expect(output.result?.leadCardPatch).toMatchObject({ requestedAmount: 2_000_000, requestedProgram: "parking" });
+    expect(output.reply).toContain("По программе со стоянкой доступно до 1 000 000 сом.");
+    expect(output.reply).toContain("Сумма 2 000 000 сом по этой программе не проходит.");
+    expect(output.reply).not.toContain("Уточните, пожалуйста: Есть ли у Вас ещё вопросы?");
+  });
+
+  it("uses the semantic classifier, with a regex fallback, to accept ok for a single-programme limit offer", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn()
+      .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ ...validResult, reply: "Поняла.", leadCardPatch: {} }) } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ choice: "undecided", hasOtherStageAnswer: false, question: null }) } }] }) } as any;
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "По программе со стоянкой доступно до 1 000 000 сом. Сумма 2 000 000 сом по этой программе не проходит. Могу продолжить на сумму до 1 000 000 сом.", createdAt: "now" } as any],
+      facts: {
+        vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 2_000_000,
+        requestedAmount: 2_000_000, requestedProgram: "parking",
+        residenceText: "Ош", residenceRegion: "Другой регион Кыргызстана", residenceCategory: "OTHER_KG"
+      } as any,
+      pricing: { minimumLoan: 50_000, parking: { available: true, publicMax: 1_000_000 }, withoutStorage: { available: true, publicMax: 800_000 } } as any,
+      settings: {}, text: "ок", attachments: []
+    });
+
+    expect(client.createChatCompletion).toHaveBeenCalledTimes(2);
+    expect(client.createChatCompletion.mock.calls[1][0].messages[0].content).toContain("меньшую сумму");
+    expect(output.result?.leadCardPatch).toMatchObject({ requestedProgram: "parking", requestedAmount: 1_000_000 });
+    expect(output.reply).not.toContain("Сумма 2 000 000 сом по этой программе не проходит.");
+  });
+
   it("persists a yes answer to the single guarantor-availability question", async () => {
     process.env.DATABASE_URL ??= "postgresql://test:test@localhost:5432/ailyn";
     process.env.REDIS_URL ??= "redis://localhost:6379";

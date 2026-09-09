@@ -126,4 +126,19 @@ describe("agent turn reconciliation pricing", () => {
       readyForVisit: false, visit: false
     });
   });
+
+  it("reopens only the amount stage when the current programme limit is exceeded", () => {
+    const completion = deriveStageCompletion({
+      vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 2_000_000,
+      requestedAmount: 2_000_000, requestedProgram: "parking",
+      residenceText: "Ош", residenceRegion: "Другой регион Кыргызстана", residenceCategory: "OTHER_KG",
+      documentsProvided: true, declinedCarPhoto: true, familyStatus: "single", visitDate: "2026-09-15", visitTime: "17:00"
+    } as any);
+
+    expect(completion).toMatchObject({
+      vehicle: true, requestedAmount: false, program: true, residence: true,
+      guarantor: true, documents: true, carPhoto: true, family: true,
+      readyForVisit: true, visit: true
+    });
+  });
 });
