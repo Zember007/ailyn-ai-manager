@@ -2234,11 +2234,16 @@ function spouseVisitAnswer(input: Pick<AgentTurnInput, "text" | "currentTurnMess
 
 function isIdentityQuestion(input: Pick<AgentTurnInput, "text" | "currentTurnMessages">): boolean {
   const text = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "").toLocaleLowerCase("ru-RU");
-  return /(?:ты|вы)\s+(?:бот|робот|ии)|(?:это|ты|вы)\s+(?:ai|ии)|(?:кто\s+(?:ты|вы)\s+(?:такой|такая)|жив(?:ой|ая)|настоящ(?:ий|ая))/iu.test(text);
+  return /(?:кто\s+(?:ты|вы)(?:\s+(?:такой|такая))?|чем\s+(?:(?:ты|вы)\s+)?занима(?:ешься|етесь)|зачем\s+(?:ты|вы)|(?:ты|вы)\s+(?:бот|робот|ии)|(?:это|ты|вы)\s+(?:ai|ии)|жив(?:ой|ая)|настоящ(?:ий|ая))/iu.test(text);
 }
 
 function enforceIdentityAnswer(reply: string, input: Pick<AgentTurnInput, "text" | "currentTurnMessages">): string {
-  return isIdentityQuestion(input) ? IDENTITY_REPLY : reply;
+  if (isIdentityQuestion(input)) return IDENTITY_REPLY;
+  // This text is an approved answer only to an explicit identity question.
+  // A model can otherwise emit it as a generic fallback for an unfamiliar
+  // spelling (for example a misspelled locality), which hijacks the active
+  // application stage and falsely redirects a new-loan client.
+  return reply.replace(IDENTITY_REPLY, "").replace(/[ \t]{2,}/gu, " ").trim();
 }
 
 function residencePatchFromExplicitClientText(input: Pick<AgentTurnInput, "text" | "currentTurnMessages" | "messages">, patch: Partial<ApplicationFacts>, previousFacts: ApplicationFacts): Partial<ApplicationFacts> {

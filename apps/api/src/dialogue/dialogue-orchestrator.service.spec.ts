@@ -1024,6 +1024,23 @@ describe("single-agent dialogue", () => {
     });
   });
 
+  it("does not leak the identity fallback when a misspelled locality is the active residence reply", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult,
+      reply: "Я Айлин — виртуальный помощник по вопросам оформления новых займов. Если у Вас уже оформлен займ, пожалуйста, позвоните по телефону +996 502 108 108 или напишите в WhatsApp +996 776 108 108. Наши специалисты проверят информацию по Вашему договору и помогут решить Ваш вопрос.",
+      leadCardPatch: { residenceText: "чтолпон ата" }
+    }) } }] }) } as any;
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "Подскажите, пожалуйста, Вашу прописку — Бишкек, Чуйская область или другой регион Кыргызстана.", createdAt: "now" } as any],
+      facts: { vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 1_000_000, requestedAmount: 300_000, requestedProgram: "parking" } as any,
+      settings: {}, text: "чтолпон ата", attachments: []
+    });
+
+    expect(output.result?.leadCardPatch).toMatchObject({ residenceText: "Чолпон-Ата", residenceCategory: "OTHER_KG" });
+    expect(output.reply).not.toContain("виртуальный помощник");
+    expect(output.reply).not.toContain("+996 502 108 108");
+  });
+
   it("does not accept an invented residence outside an explicit registration answer", async () => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
       ...validResult,
@@ -3701,14 +3718,14 @@ describe("single-agent dialogue", () => {
     expect(output.reply).toBe("Подскажите, пожалуйста, Вашу прописку — Бишкек, Чуйская область или другой регион Кыргызстана.");
   });
 
-  it("never exposes Ailyn as a bot", async () => {
+  it.each(["Кто ты?", "Чем занимаешься?", "Зачем ты?", "Ты робот что ли?", "Ты бот?"])("uses the approved identity answer for %s", async (text) => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
       ...validResult,
       reply: "Да, я бот Айлин.",
       leadCardPatch: {}
     }) } }] }) } as any;
 
-    const output = await new AgentTurnService(client).run({ messages: [], facts: {}, settings: {}, text: "Ты бот?", attachments: [] });
+    const output = await new AgentTurnService(client).run({ messages: [], facts: {}, settings: {}, text, attachments: [] });
 
     expect(output.reply).toBe("Я Айлин — виртуальный помощник по вопросам оформления новых займов. Если у Вас уже оформлен займ, пожалуйста, позвоните по телефону +996 502 108 108 или напишите в WhatsApp +996 776 108 108. Наши специалисты проверят информацию по Вашему договору и помогут решить Ваш вопрос.");
   });
