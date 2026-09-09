@@ -37,4 +37,13 @@ describe("generated documentation chunk quality", () => {
     expect(spouse.every((chunk) => !/5\.16\s+Вопросы о поручителе/u.test(chunk.text))).toBe(true);
     expect(guarantor.every((chunk) => !/5\.15\s+Вопросы о супруге/u.test(chunk.text))).toBe(true);
   });
+
+  it("indexes the approved FAQ about arriving with a spouse", () => {
+    const spouseVisit = generatedDocumentationChunks.find((chunk) => "retrievalQuestion" in chunk && chunk.retrievalQuestion === "Жену брать с собой?");
+
+    expect(spouseVisit).toMatchObject({
+      section: "5.15",
+      retrievalAnswer: "Если вы женаты, то для оформления займа нужна доверенность супруги/супруга у нотариуса либо уже готовое согласие на руках. Также доверенность можно оформить в нашем офисе при визите вместе с супругом/супругой."
+    });
+  });
 });

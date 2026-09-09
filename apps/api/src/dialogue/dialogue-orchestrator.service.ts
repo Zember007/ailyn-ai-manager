@@ -1,7 +1,7 @@
 import { Injectable } from "@nestjs/common";
 import type { ApplicationFacts } from "@ailyn/business-rules";
 import type { NormalizedMoneyValue } from "../ai/ai-provider.interface.js";
-import { AgentTurnService, type PendingMoneyClarificationDecision } from "./agent-turn.service.js";
+import { AgentTurnService, isClearMoneyConfirmationRejection, nextRequiredStageQuestion, suppressInactiveGuarantorPrompts, type PendingMoneyClarificationDecision } from "./agent-turn.service.js";
 import { attachmentFactsFromResult, deriveStageCompletion, effectiveFactsForTurn, selectedProgramLimit } from "./agent-turn-reconciliation.js";
 import type { InboundMessage } from "../channels/channel.interface.js";
 import { SettingsService } from "../settings/settings.service.js";
@@ -32,28 +32,40 @@ export class DialogueOrchestratorService {
     // batcher retry those same messages and duplicate them in history.
     const pendingInbounds = messages.map(toPendingInboundMessage);
     const turnMessages = [...conversation.messages, ...pendingInbounds];
+    // Use the persisted card as a server-side stage gate before calling any
+    // model. In particular, a previous guarantor question cannot survive in
+    // model context after the customer has already selected parking.
+    const modelMessages = suppressInactiveGuarantorPrompts(turnMessages, initialApplication.facts);
     const text = messages.map((message) => message.text?.trim()).filter((value): value is string => Boolean(value)).join("\n");
     const currentTurnMessages = messages.map((message, index) => ({ index: index + 1, text: message.text?.trim() ?? "" }));
     const attachments = messages.flatMap((message) => message.attachments);
     const settings = await this.settings.getValues();
     const classifyMoneyClarification = (this.agent as Partial<Pick<AgentTurnService, "classifyPendingMoneyClarification">>).classifyPendingMoneyClarification;
-    const moneyClarification = classifyMoneyClarification
-      ? await classifyMoneyClarification.call(this.agent, { text, messages: turnMessages, conversationId: conversation.id, signal: options.signal })
+    const classifiedMoneyClarification = classifyMoneyClarification
+      ? await classifyMoneyClarification.call(this.agent, { text, messages: modelMessages, conversationId: conversation.id, signal: options.signal })
       : undefined;
+    // Do not let an unavailable/undecided classifier route a bare "нет" to
+    // the KB. This is a deterministic response to the immediately preceding
+    // server confirmation, not a free-form semantic inference.
+    const lastAssistantMessage = [...modelMessages].reverse().find((message) => message.author === "ai")?.body ?? "";
+    const moneyClarification = isClearMoneyConfirmationRejection(lastAssistantMessage, text)
+      && (classifiedMoneyClarification === undefined || classifiedMoneyClarification.decision === "undecided")
+      ? { decision: "reject" as const }
+      : classifiedMoneyClarification;
     throwIfAborted(options.signal);
     // Money roles and FX must be known before the dialogue model builds its
     // answer. Previously this ran only after `run()` and only when the main
     // model set hasMoney; a newer client message could then cancel the second
     // call and leave a reply based on stale card facts.
-    const moneyMentioned = detectMoneyMentions(text).length > 0 || currencyOnlyForeignMoneyFromHistory(text, turnMessages).length > 0 || moneyClarification?.decision === "accept";
+    const moneyMentioned = detectMoneyMentions(text).length > 0 || currencyOnlyForeignMoneyFromHistory(text, modelMessages).length > 0 || moneyClarification?.decision === "accept";
     const modelNormalizedMoney = moneyMentioned && this.agent.normalizeMoney
-      ? await this.agent.normalizeMoney({ text, facts: initialApplication.facts, messages: turnMessages, conversationId: conversation.id, signal: options.signal })
+      ? await this.agent.normalizeMoney({ text, facts: initialApplication.facts, messages: modelMessages, conversationId: conversation.id, signal: options.signal })
       : [];
     throwIfAborted(options.signal);
     // The semantic normalizer owns flexible role interpretation. The
     // deterministic parser is deliberately a narrow supplemental path for an
     // empty/partial normalizer response and explicit confirmation in context.
-    const normalizedMoney = supplementNormalizedMoney(modelNormalizedMoney, text, initialApplication.facts, turnMessages, moneyClarification);
+    const normalizedMoney = supplementNormalizedMoney(modelNormalizedMoney, text, initialApplication.facts, modelMessages, moneyClarification);
     const currency = await resolveNormalizedMoneyFacts(normalizedMoney, this.integrations, initialApplication.facts);
     throwIfAborted(options.signal);
     const belowMinimumRequestedAmount = typeof currency.facts.requestedAmount === "number" && currency.facts.requestedAmount < 50_000
@@ -82,7 +94,7 @@ export class DialogueOrchestratorService {
     });
     let turn = await this.agent.run({
       conversationId: conversation.id,
-      messages: turnMessages,
+      messages: modelMessages,
       facts: normalizedFacts,
       settings,
       text,
@@ -96,14 +108,23 @@ export class DialogueOrchestratorService {
     });
     const knowledgeRequest = turn.result?.leadCardPatch.knowledgeRequest;
     if ((knowledgeRequest?.required ?? turn.result?.needsKnowledgeLookup) && turn.result) {
-      const workflowFollowUp = extractWorkflowFollowUp(turn.reply);
+      const { knowledgeRequest: _knowledgeRequest, ...turnFacts } = turn.result.leadCardPatch;
+      // The main model can omit the final canonical prompt while routing a
+      // factual question to knowledge. Do not let the KB answer terminate the
+      // application: derive the next required action from server-owned facts.
+      const workflowFollowUp = extractWorkflowFollowUp(turn.reply)
+        || nextRequiredStageQuestion(turnFacts, deriveStageCompletion(turnFacts))
+        // A completed application has no further collection action. The
+        // knowledge contract still receives a string in that terminal case.
+        || "";
+      const clientQuestion = turn.result.clientQuestion ?? text;
       const knowledge = await this.agent.answerWithKnowledge({
         conversationId: conversation.id,
-        messages: turnMessages,
+        messages: modelMessages,
         facts: normalizedFacts,
         settings,
-        text,
-        currentTurnMessages,
+        text: clientQuestion,
+        currentTurnMessages: turn.result.clientQuestion ? [{ index: 1, text: clientQuestion }] : currentTurnMessages,
         workflowFollowUp,
         signal: options.signal
       });
@@ -114,6 +135,30 @@ export class DialogueOrchestratorService {
         const reply = appendWorkflowFollowUp(knowledge.reply, workflowFollowUp);
         const result = { ...turn.result, reply };
         turn = { ...turn, result, reply, model: knowledge.model, promptVersion: `${turn.promptVersion}+knowledge` };
+      }
+    }
+    // The input model only interprets the turn. At this point the server has
+    // selected all facts, calculations, canonical workflow text and (when
+    // needed) the approved knowledge answer, so the output model receives a
+    // closed plan and cannot choose a new stage or invent a condition.
+    const renderClientReply = (this.agent as Partial<Pick<AgentTurnService, "renderClientReply">>).renderClientReply;
+    if (renderClientReply) {
+      const rendered = await renderClientReply.call(this.agent, {
+        // FX text is generated by the server too, so it must be part of the
+        // closed plan seen by the renderer rather than prefixed afterwards.
+        responsePlan: composeReply(turn.reply, currency.clientText),
+        clientMessage: text,
+        facts: { ...normalizedFacts, ...(turn.result?.leadCardPatch ?? {}) },
+        conversationId: conversation.id,
+        signal: options.signal
+      });
+      if (rendered.reply) {
+        turn = {
+          ...turn,
+          reply: rendered.reply,
+          ...(turn.result ? { result: { ...turn.result, reply: rendered.reply } } : {}),
+          ...(rendered.rendered ? { model: rendered.model, promptVersion: `${turn.promptVersion}+output` } : {})
+        };
       }
     }
     throwIfAborted(options.signal);
@@ -174,7 +219,10 @@ export class DialogueOrchestratorService {
       application = (await this.store.getApplication(application.id)) ?? application;
     }
     const validation = { passed: Boolean(turn.result), errors: turn.error ? [turn.error] : [] };
-    const reply = composeReply(turn.reply, currency.clientText);
+    // A real output renderer receives the complete plan including FX above.
+    // Keep the old composition path for test doubles and legacy callers that
+    // do not implement the renderer yet.
+    const reply = renderClientReply ? turn.reply : composeReply(turn.reply, currency.clientText);
     await this.store.addMessage(conversation, { author: "ai", body: reply, attachmentIds: [], attachments: [], metadata: { sourceMessageId: lastMessage.externalMessageId, routerAiModel: turn.model, promptVersion: turn.promptVersion, validation, trace: { singleModel: true, batchedClientMessages: messages.length, changedFactKeys, managerEvent, intent: turn.result?.intent, targetEvent: turn.result?.targetEvent } } });
     // Generate the private lead summary immediately after the booking reply
     // has been persisted and the visit facts have reached the lead card. A

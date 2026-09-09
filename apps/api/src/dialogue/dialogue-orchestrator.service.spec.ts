@@ -60,6 +60,102 @@ describe("single-agent dialogue", () => {
     expect(output.reply).not.toContain("Вас интересует займ без изъятия");
   });
 
+  it("adds the canonical amount prompt only once when the model repeats it", async () => {
+    const amountQuestion = "Какая сумма займа Вам необходима?";
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult,
+      reply: `${amountQuestion} ${amountQuestion}`,
+      leadCardPatch: {}
+    }) } }] }) } as any;
+
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "Подскажите, пожалуйста, модель и год выпуска автомобиля и ориентировочную стоимость автомобиля.", createdAt: "now" } as any],
+      facts: { vehicleModel: "Tank", vehicleYear: 2012, vehicleValue: 2_360_000 } as any,
+      settings: {}, text: "А сколько денег дадите?", attachments: []
+    });
+
+    expect(output.reply.match(/Какая сумма займа Вам необходима\?/gu)).toHaveLength(1);
+  });
+
+  it("does not let the input model repeat vehicle facts that the client just supplied", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult,
+      reply: "Танк 2012 года, стоимость около 27 тыс. долларов.",
+      leadCardPatch: {}
+    }) } }] }) } as any;
+
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "Подскажите модель автомобиля и стоимость.", createdAt: "now" } as any],
+      facts: { vehicleModel: "Tank", vehicleYear: 2012, vehicleValue: 2_360_000 } as any,
+      settings: {}, text: "танк 2012 года стоит 27 тыс долларов", attachments: []
+    });
+
+    expect(output.reply).not.toMatch(/танк\s+2012/iu);
+    expect(output.reply).not.toMatch(/27\s+тыс/iu);
+  });
+
+  it("removes a duplicate foreign-currency conversion from the input-model plan", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult,
+      reply: "6 тысяч евро — это около 600 тысяч сом.",
+      leadCardPatch: {}
+    }) } }] }) } as any;
+
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "Какая сумма займа Вам необходима?", createdAt: "now" } as any],
+      facts: { vehicleModel: "Tank", vehicleYear: 2012, vehicleValue: 2_360_000 } as any,
+      settings: {}, text: "6 тыщ евро", currencyConversions: [{}], attachments: []
+    });
+
+    expect(output.reply).not.toMatch(/около\s+600\s+тысяч\s+сом/iu);
+  });
+
+  it("does not invent a loan explanation for a bare negative to a guarantor question", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult,
+      reply: "Нет, это займ под залог автомобиля.",
+      leadCardPatch: {}
+    }) } }] }) } as any;
+
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "У Вас есть такой поручитель?", createdAt: "now" } as any],
+      facts: { vehicleModel: "Tank", vehicleYear: 2012, vehicleValue: 2_360_000, requestedAmount: 100_000, requestedProgram: "without_storage", residenceCategory: "OTHER_KG", residenceRegion: "Другой регион Кыргызстана" } as any,
+      settings: {}, text: "неа", attachments: []
+    });
+
+    expect(output.reply).not.toContain("это займ под залог автомобиля");
+  });
+
+  it("fails closed when the output renderer adds a fact outside the server plan", async () => {
+    const plan = "Поручитель обязателен для программы без изъятия в Вашем регионе. Можем рассмотреть программу с постановкой автомобиля на охраняемую стоянку?";
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ reply: `Нет, это займ под залог автомобиля. ${plan}` }) } }], model: "output-model" }) } as any;
+
+    const output = await new AgentTurnService(client).renderClientReply({ responsePlan: plan, clientMessage: "неа", facts: {} as any });
+
+    expect(output).toEqual({ reply: plan, model: "server-response-plan", rendered: false });
+  });
+
+  it("always sends the completed server plan through the output renderer", async () => {
+    const application = { id: "app", facts: {}, contactId: "contact", stage: "COLLECTING_VEHICLE", status: "need_more_data" } as any;
+    const conversation = { id: "conversation", messages: [], application, channel: "web-test" } as any;
+    const store = {
+      getOrCreateConversation: vi.fn().mockResolvedValue({ conversation, application }),
+      addMessage: vi.fn().mockImplementation(async (_conversation: unknown, message: any) => ({ id: message.metadata?.externalMessageId ?? "ai", author: message.author, body: message.body, createdAt: "now" })),
+      updateFacts: vi.fn().mockResolvedValue([]), saveAgentState: vi.fn(), getApplication: vi.fn().mockResolvedValue(application), getConversation: vi.fn().mockResolvedValue(conversation), addAttachment: vi.fn(), createManagerNotification: vi.fn()
+    } as any;
+    const serverPlan = "Поняла. Подскажите, пожалуйста, модель автомобиля.";
+    const agent = {
+      run: vi.fn().mockResolvedValue({ result: { ...validResult, reply: serverPlan, leadCardPatch: {} }, reply: serverPlan, model: "interpreter", promptVersion: "v1" }),
+      renderClientReply: vi.fn().mockResolvedValue({ reply: "Поняла. Подскажите, пожалуйста, модель автомобиля.", model: "output", rendered: true })
+    } as any;
+
+    const output = await new DialogueOrchestratorService(agent, store, { getValues: vi.fn().mockResolvedValue({}) } as any, { log: vi.fn() } as any)
+      .receive({ externalMessageId: "m", channel: "web-test", externalContactId: "c", text: "танк", attachments: [], timestamp: new Date() });
+
+    expect(agent.renderClientReply).toHaveBeenCalledWith(expect.objectContaining({ responsePlan: serverPlan, clientMessage: "танк" }));
+    expect(output.reply).toBe("Поняла. Подскажите, пожалуйста, модель автомобиля.");
+  });
+
   it("announces the residence limit once before the guarantor question", async () => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
       ...validResult,
@@ -88,6 +184,16 @@ describe("single-agent dialogue", () => {
     await expect(service.classifyPendingMoneyClarification({ text: "долларов", messages })).resolves.toEqual({ decision: "accept", currency: "USD" });
     await expect(service.classifyPendingMoneyClarification({ text: "нет", messages })).resolves.toEqual({ decision: "reject" });
     expect(client.createChatCompletion).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a clear money-confirmation rejection out of knowledge routing when its classifier is undecided", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ decision: "undecided", currency: null }) } }] }) } as any;
+    const result = await new AgentTurnService(client).classifyPendingMoneyClarification({
+      text: "нет",
+      messages: [{ author: "ai", body: "10 000 сом, верно?", createdAt: "now" } as any]
+    });
+
+    expect(result).toEqual({ decision: "reject" });
   });
 
   it("does not classify an ordinary amount question after a foreign-currency vehicle price", async () => {
@@ -158,6 +264,21 @@ describe("single-agent dialogue", () => {
     }));
     expect(output.reply).toContain("Необходимая сумма займа: 10 000 долларов США — ориентировочно 870 000 сом.");
     expect(output.reply).toContain("Вас интересует займ без изъятия автомобиля или с постановкой автомобиля на охраняемую стоянку?");
+  });
+
+  it("forces a bare no after an amount confirmation into the rejection branch before the main model", async () => {
+    const application = { id: "app", facts: { vehicleModel: "Tank", vehicleYear: 2012, vehicleValue: 2_360_000 }, contactId: "contact", stage: "COLLECTING_AMOUNT", status: "need_more_data" } as any;
+    const conversation = { id: "conversation", application, channel: "web-test", messages: [{ author: "ai", body: "6 000 сом, верно?", createdAt: "before" }] } as any;
+    const store = { getOrCreateConversation: vi.fn().mockResolvedValue({ conversation, application }), addMessage: vi.fn().mockResolvedValue({ id: "message", author: "client", body: "нет", createdAt: "now" }), updateFacts: vi.fn().mockResolvedValue([]), saveAgentState: vi.fn(), getApplication: vi.fn().mockResolvedValue(application), getConversation: vi.fn().mockResolvedValue(conversation), addAttachment: vi.fn(), createManagerNotification: vi.fn() } as any;
+    const agent = {
+      classifyPendingMoneyClarification: vi.fn().mockResolvedValue({ decision: "undecided" }),
+      run: vi.fn().mockResolvedValue({ result: { ...validResult, reply: "Тогда уточните, какую сумму вы имели в виду?", leadCardPatch: {} }, reply: "Тогда уточните, какую сумму вы имели в виду?", model: "one", promptVersion: "v1" })
+    } as any;
+
+    await new DialogueOrchestratorService(agent, store, { getValues: vi.fn().mockResolvedValue({}) } as any, { log: vi.fn() } as any)
+      .receive({ externalMessageId: "reject", channel: "web-test", externalContactId: "contact", text: "нет", attachments: [], timestamp: new Date() });
+
+    expect(agent.run).toHaveBeenCalledWith(expect.objectContaining({ moneyClarificationDecision: "reject" }));
   });
 
   it("assigns a bare amount to the requested loan after the amount question and rejects zero or a fabricated programme", async () => {
@@ -648,13 +769,15 @@ describe("single-agent dialogue", () => {
     expect(store.updateFacts).toHaveBeenCalledWith(application, expect.objectContaining({ requestedAmount: 200_000 }));
   });
 
-  it("routes an atypical question to the dedicated knowledge agent and never persists routing metadata", async () => {
+  it("appends the current server stage after a knowledge answer even when the workflow model omitted it", async () => {
     const application = { id: "app", facts: {}, contactId: "contact", stage: "NEW", status: "need_more_data" } as any;
     const conversation = { id: "conversation", messages: [], application, channel: "web-test" } as any;
     const store = { getOrCreateConversation: vi.fn().mockResolvedValue({ conversation, application }), addMessage: vi.fn().mockResolvedValue({ id: "inbound", author: "client", body: "а вы датчики на машину ставите", createdAt: "now" }), updateFacts: vi.fn().mockResolvedValue([]), saveAgentState: vi.fn(), getApplication: vi.fn().mockResolvedValue(application), getConversation: vi.fn().mockResolvedValue(conversation), addAttachment: vi.fn(), createManagerNotification: vi.fn() } as any;
     const agent = { run: vi.fn().mockResolvedValue({
       result: { ...validResult, leadCardPatch: { ...validResult.leadCardPatch, knowledgeRequest: { required: true, reason: "missing_approved_answer" } } },
-      reply: vehicleStageQuestion,
+      // A knowledge route can contain no canonical workflow question at all.
+      // The orchestrator, rather than the model, must restore the next stage.
+      reply: "Поняла.",
       model: "workflow-model",
       promptVersion: "v1"
     }), answerWithKnowledge: vi.fn().mockResolvedValue({
@@ -920,6 +1043,27 @@ describe("single-agent dialogue", () => {
     expect(output.result?.leadCardPatch.residenceCategory).toBeUndefined();
     expect(output.reply).toBe("Уточните, пожалуйста: это в Чуйской области?");
     expect(output.reply).not.toContain("доступно до");
+  });
+
+  it("explains the active new-application residence stage when the client says they already told it", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult,
+      reply: "К сожалению, у меня нет утверждённой информации по этому вопросу.",
+      leadCardPatch: { knowledgeRequest: { required: true, reason: "missing_approved_answer" } }
+    }) } }] }) } as any;
+
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "Подскажите, пожалуйста, Вашу прописку — Бишкек, Чуйская область или другой регион Кыргызстана.", createdAt: "now" } as any],
+      facts: {
+        vehicleModel: "Tank", vehicleYear: 2012, vehicleValue: 2_360_000, requestedAmount: 100_000, requestedProgram: "without_storage",
+        residenceText: "неизвестный аил", residenceNeedsClarification: true
+      } as any,
+      settings: {}, text: "я уже говорил", attachments: []
+    });
+
+    expect(output.result?.leadCardPatch.knowledgeRequest).toBeUndefined();
+    expect(output.reply).toBe("Понимаю. Мы оформляем новую заявку, и сейчас уточняем Вашу прописку для предварительного расчёта.\n\nПодскажите, пожалуйста, Вашу прописку — Бишкек, Чуйская область или другой регион Кыргызстана.");
+    expect(output.reply).not.toContain("это в Чуйской области");
   });
 
   it("accepts a Chuy category only after the semantic classifier confirms the clarification", async () => {
@@ -1409,6 +1553,190 @@ describe("single-agent dialogue", () => {
     expect(output.reply).toContain("программе со стоянкой");
   });
 
+  it("gives the parking-offer classifier its active question and accepts a contextual parking choice", async () => {
+    const parkingOffer = "Поручитель обязателен для программы без изъятия в Вашем регионе. Можем рассмотреть программу с постановкой автомобиля на охраняемую стоянку?";
+    const client = {
+      isConfigured: vi.fn().mockReturnValue(true),
+      createChatCompletion: vi.fn()
+        .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({
+          ...validResult,
+          reply: "Распознано.",
+          leadCardPatch: { requestedProgram: "parking" }
+        }) } }] })
+        .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ decision: "accept", question: null }) } }] })
+    } as any;
+    const facts = {
+      vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 1_740_000,
+      requestedAmount: 200_000, requestedProgram: "without_storage",
+      residenceRegion: "Другой регион Кыргызстана", residenceCategory: "OTHER_KG",
+      guarantorAvailable: false, guarantorAlternativeDeclined: false
+    } as any;
+
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: `К сожалению, нет. При наличии ареста оформить займ невозможно.\n\n${parkingOffer}`, createdAt: "now" } as any],
+      facts, settings: {}, text: "Понял, стоянка тогда", attachments: []
+    });
+
+    expect(JSON.parse(client.createChatCompletion.mock.calls[1][0].messages[1].content)).toMatchObject({
+      activeQuestion: parkingOffer,
+      clientReply: "Понял, стоянка тогда"
+    });
+    expect(output.result?.leadCardPatch).toMatchObject({ requestedProgram: "parking", guarantorAlternativeDeclined: false });
+    expect(output.reply).not.toContain("Можем рассмотреть программу с постановкой автомобиля на охраняемую стоянку?");
+    expect(output.reply).toContain("Пожалуйста, отправьте фото ID");
+  });
+
+  it("never reopens the guarantor stage after parking has been selected", async () => {
+    const staleGuarantorOffer = "Поручитель обязателен для программы без изъятия в Вашем регионе. Можем рассмотреть программу с постановкой автомобиля на охраняемую стоянку?";
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult,
+      reply: "Поняла. И Вам потребуется поручитель:\n- возраст от 25 лет\n- проживает в г. Бишкек или Чуйской области\n- должен лично присутствовать при выдаче займа и иметь с собой ID (паспорт)\nУ Вас есть такой поручитель?",
+      leadCardPatch: { requestedProgram: "parking" }
+    }) } }] }) } as any;
+
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: staleGuarantorOffer, createdAt: "now" } as any],
+      facts: {
+        vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 1_740_000,
+        requestedAmount: 200_000, requestedProgram: "parking",
+        residenceRegion: "Другой регион Кыргызстана", residenceCategory: "OTHER_KG"
+      } as any,
+      settings: {}, text: "Зачем если стоянка", attachments: []
+    });
+
+    expect(output.result?.leadCardPatch.requestedProgram).toBe("parking");
+    expect(client.createChatCompletion.mock.calls[0][0].messages[1].content).not.toContain(staleGuarantorOffer);
+    expect(output.reply).not.toMatch(/поручител/iu);
+    expect(output.reply).toContain("Пожалуйста, отправьте фото ID");
+  });
+
+  it("treats a client's parking correction as closing the guarantor branch", async () => {
+    const parkingOffer = "Поручитель обязателен для программы без изъятия в Вашем регионе. Можем рассмотреть программу с постановкой автомобиля на охраняемую стоянку?";
+    const client = {
+      isConfigured: vi.fn().mockReturnValue(true),
+      createChatCompletion: vi.fn()
+        .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ ...validResult, reply: parkingOffer, leadCardPatch: {} }) } }] })
+        .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ decision: "accept", question: null }) } }] })
+    } as any;
+
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: parkingOffer, createdAt: "now" } as any],
+      facts: {
+        vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 1_740_000,
+        requestedAmount: 200_000, requestedProgram: "without_storage",
+        residenceRegion: "Другой регион Кыргызстана", residenceCategory: "OTHER_KG",
+        guarantorAvailable: false, guarantorAlternativeDeclined: false
+      } as any,
+      settings: {}, text: "д стоянка же", attachments: []
+    });
+
+    expect(output.result?.leadCardPatch).toMatchObject({ requestedProgram: "parking", guarantorAlternativeDeclined: false });
+    expect(output.reply).not.toMatch(/поручител|постановкой автомобиля на охраняемую стоянку/iu);
+    expect(output.reply).toContain("Пожалуйста, отправьте фото ID");
+  });
+
+  it("switches to parking from a guarantor question before evaluating the guarantor answer", async () => {
+    const guarantorQuestion = "И Вам потребуется поручитель:\n- возраст от 25 лет\n- проживает в г. Бишкек или Чуйской области\n- должен лично присутствовать при выдаче займа и иметь с собой ID (паспорт)\nУ Вас есть такой поручитель?";
+    const client = {
+      isConfigured: vi.fn().mockReturnValue(true),
+      createChatCompletion: vi.fn()
+        .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({
+          ...validResult,
+          reply: "К сожалению, мы не сможем оформить займ, если населённый пункт находится за пределами Чуйской области. Подскажите, пожалуйста, правильно ли я понимаю, что этот населённый пункт находится за пределами Чуйской области? Подскажите, пожалуйста, это в Чуйской области?",
+          leadCardPatch: {}
+        }) } }] })
+        .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ program: "parking", hasOtherStageAnswer: false, question: null }) } }] })
+    } as any;
+
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: guarantorQuestion, createdAt: "now" } as any],
+      facts: {
+        vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 1_740_000,
+        requestedAmount: 200_000, requestedProgram: "without_storage",
+        residenceRegion: "Другой регион Кыргызстана", residenceCategory: "OTHER_KG"
+      } as any,
+      settings: {}, text: "давай стоянку тогда", attachments: []
+    });
+
+    expect(client.createChatCompletion).toHaveBeenCalledTimes(2);
+    expect(output.result?.leadCardPatch.requestedProgram).toBe("parking");
+    expect(output.result?.leadCardPatch.guarantorAvailable).toBeUndefined();
+    expect(output.reply).not.toMatch(/поручител/iu);
+    expect(output.reply).toContain("Пожалуйста, отправьте фото ID");
+  });
+
+  it("uses the residence normalizer to close a Chuy clarification after a clear negation", async () => {
+    const clarification = "Подскажите, пожалуйста, это в Чуйской области?";
+    const client = {
+      isConfigured: vi.fn().mockReturnValue(true),
+      createChatCompletion: vi.fn()
+        .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ ...validResult, reply: "Поняла.", leadCardPatch: {} }) } }] })
+        .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ decision: "reject", locality: null }) } }] })
+    } as any;
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: `Не смогла понять. Напишите, пожалуйста, подробнее.\n\n${clarification}`, createdAt: "now" } as any],
+      facts: {
+        vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 800_000,
+        requestedAmount: 100_000, requestedProgram: "without_storage",
+        residenceText: "неизвестный аил", residenceNeedsClarification: true
+      } as any,
+      settings: {}, text: "не в чуйской", attachments: []
+    });
+
+    expect(JSON.parse(client.createChatCompletion.mock.calls[1][0].messages[1].content)).toMatchObject({ activeQuestion: "Это в Чуйской области?", clientReply: "не в чуйской" });
+    expect(output.result?.leadCardPatch).toMatchObject({ residenceRegion: "Другой регион Кыргызстана", residenceCategory: "OTHER_KG", residenceNeedsClarification: false });
+    expect(output.reply).not.toMatch(/не\s+сможем\s+оформить/iu);
+    expect(output.reply).not.toMatch(/чуйской области\?/iu);
+    expect(output.reply).toContain("Пожалуйста, отправьте фото ID");
+  });
+
+  it("reopens the server limit choice when a changed vehicle price makes the requested amount unavailable", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult,
+      hasMoney: true,
+      reply: "Пожалуйста, отправьте фото ID и свидетельства о регистрации автомобиля с обеих сторон.",
+      leadCardPatch: { vehicleValue: 1_000_000 }
+    }) } }] }) } as any;
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "Пожалуйста, отправьте фото ID и свидетельства о регистрации автомобиля с обеих сторон.", createdAt: "now" } as any],
+      facts: {
+        vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 2_360_000,
+        requestedAmount: 870_000, requestedProgram: "without_storage",
+        residenceRegion: "Другой регион Кыргызстана", residenceCategory: "OTHER_KG",
+        guarantorAvailable: true, documentsProvided: true
+      } as any,
+      settings: {}, text: "машина теперь стоит 1 млн сом", attachments: []
+    });
+
+    expect(output.result?.leadCardPatch.vehicleValue).toBe(1_000_000);
+    expect(output.reply).toContain("Сумма 870 000 сом по этой программе не проходит.");
+    expect(output.reply).toContain("перейти на программу со стоянкой");
+    expect(output.reply).not.toContain("Пожалуйста, отправьте фото ID");
+  });
+
+  it("reopens the server limit choice when the requested amount is changed on a later stage", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult,
+      hasMoney: true,
+      reply: "Пожалуйста, отправьте фото ID и свидетельства о регистрации автомобиля с обеих сторон.",
+      leadCardPatch: { requestedAmount: 870_000 }
+    }) } }] }) } as any;
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "Пожалуйста, отправьте фото ID и свидетельства о регистрации автомобиля с обеих сторон.", createdAt: "now" } as any],
+      facts: {
+        vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 1_000_000,
+        requestedAmount: 200_000, requestedProgram: "without_storage",
+        residenceRegion: "Другой регион Кыргызстана", residenceCategory: "OTHER_KG",
+        guarantorAvailable: true, documentsProvided: true
+      } as any,
+      settings: {}, text: "мне всё-таки нужно 870 тыс сом", attachments: []
+    });
+
+    expect(output.result?.leadCardPatch.requestedAmount).toBe(870_000);
+    expect(output.reply).toContain("Сумма 870 000 сом по этой программе не проходит.");
+    expect(output.reply).not.toContain("Пожалуйста, отправьте фото ID");
+  });
+
   it("persists a yes answer to the single guarantor-availability question", async () => {
     process.env.DATABASE_URL ??= "postgresql://test:test@localhost:5432/ailyn";
     process.env.REDIS_URL ??= "redis://localhost:6379";
@@ -1507,7 +1835,7 @@ describe("single-agent dialogue", () => {
 
   it("answers a colloquial maximum-loan question in the same reply that accepts parking", async () => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn()
-      .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ ...validResult, reply: "Поняла.", leadCardPatch: {} }) } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ ...validResult, reply: "По программе без изъятия ставка определяется индивидуально после осмотра автомобиля. По программе со стоянкой ставка составляет 2,4% в месяц.", leadCardPatch: {} }) } }] })
       .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ decision: "accept", question: "сколько бабок дадите" }) } }] })
     } as any;
     const output = await new AgentTurnService(client).run({
@@ -1518,7 +1846,9 @@ describe("single-agent dialogue", () => {
     });
 
     expect(output.result?.leadCardPatch.requestedProgram).toBe("parking");
-    expect(output.reply).toContain("Со стоянкой: от 50 000 сом до 1 180 000 сом");
+    expect(output.reply).toContain("По программе со стоянкой доступно до 1 180 000 сом.");
+    expect(output.reply).toContain("Пожалуйста, отправьте фото ID и свидетельства о регистрации автомобиля с обеих сторон.");
+    expect(output.reply).not.toMatch(/ставк|2,4%/iu);
     expect(output.reply).not.toContain("Уточните, пожалуйста");
   });
 
@@ -1569,6 +1899,25 @@ describe("single-agent dialogue", () => {
     expect(output.reply).not.toContain("это в Чуйской области");
   });
 
+  it("never returns to residence after Karakol is classified, even if its stale clarification flag remains", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult,
+      reply: "К сожалению, у меня нет утверждённой информации по этому вопросу.",
+      leadCardPatch: {}
+    }) } }] }) } as any;
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "И Вам потребуется поручитель:\n- возраст от 25 лет\n- проживает в г. Бишкек или Чуйской области\n- должен лично присутствовать при выдаче займа и иметь с собой ID (паспорт)\nУ Вас есть такой поручитель?", createdAt: "now" } as any],
+      facts: {
+        vehicleModel: "Tank", vehicleYear: 2012, vehicleValue: 2_360_000, requestedAmount: 100_000, requestedProgram: "without_storage",
+        residenceText: "Каракол", residenceRegion: "Другой регион Кыргызстана", residenceCategory: "OTHER_KG", residenceNeedsClarification: true
+      } as any,
+      settings: {}, text: "фвывф", attachments: []
+    });
+
+    expect(output.reply).toContain("У Вас есть такой поручитель?");
+    expect(output.reply).not.toContain("это в Чуйской области");
+  });
+
   it("uses the model classifier for a rewritten parking question before falling back to a short yes", async () => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn()
       .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ ...validResult, reply: "Поняла.", leadCardPatch: {} }) } }] })
@@ -1589,6 +1938,33 @@ describe("single-agent dialogue", () => {
     expect(client.createChatCompletion.mock.calls[1][0].messages[0].content)
       .toContain("согласен ли он перейти на программу со стоянкой вместо поручителя");
     expect(output.result?.leadCardPatch).toMatchObject({ requestedProgram: "parking", guarantorAlternativeDeclined: false });
+  });
+
+  it("splits parking consent from a maximum-limit question and continues with the next stage", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn()
+      .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ ...validResult, reply: "Сумма займа определяется индивидуально.", leadCardPatch: {} }) } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ decision: "accept", question: "сколько максимум дадите?" }) } }] })
+    } as any;
+
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "Поручитель обязателен для программы без изъятия в Вашем регионе. Можем рассмотреть программу с постановкой автомобиля на охраняемую стоянку?", createdAt: "now" } as any],
+      facts: {
+        vehicleModel: "Tank", vehicleYear: 2012, vehicleValue: 2_360_000, requestedAmount: 200_000, requestedProgram: "without_storage",
+        residenceRegion: "Другой регион Кыргызстана", residenceCategory: "OTHER_KG", guarantorAvailable: false, guarantorAlternativeDeclined: false
+      } as any,
+      pricing: {
+        minimumLoan: 50_000, clientFacingMaximumField: "publicMax",
+        withoutStorage: { available: true, rawMax: 200_000, publicMax: 200_000 },
+        parking: { available: true, rawMax: 1_180_000, publicMax: 1_180_000, monthlyRate: 2.4, dailyParkingFee: 130 }
+      },
+      settings: {}, text: "ок а вообще сколько максимум дадите", attachments: []
+    });
+
+    expect(client.createChatCompletion.mock.calls[1][0].messages[0].content).toContain('"question":string|null');
+    expect(output.result?.leadCardPatch.requestedProgram).toBe("parking");
+    expect(output.result?.clientQuestion).toBe("сколько максимум дадите?");
+    expect(output.reply).toContain("По программе со стоянкой доступно до 1 180 000 сом.");
+    expect(output.reply).toContain("Пожалуйста, отправьте фото ID и свидетельства о регистрации автомобиля с обеих сторон.");
   });
 
   it("uses the model classifier for a rewritten parking question before falling back to a short no", async () => {
@@ -2342,6 +2718,26 @@ describe("single-agent dialogue", () => {
 
     expect(output.result?.leadCardPatch).toMatchObject({ requestedProgram: "without_storage", requestedAmount: 600_000 });
     expect(output.reply).toMatch(/продолжим по программе без изъятия на сумму 600 000 сом\./iu);
+    expect(output.reply).not.toContain("Могу продолжить либо");
+  });
+
+  it("normalizes a terse parking choice from the server amount-limit offer", async () => {
+    const offer = "По программе без изъятия доступно до 200 000 сом. Сумма 520 000 сом по этой программе не проходит. Со стоянкой при текущей стоимости автомобиля доступно до 1 180 000 сом. Могу продолжить либо на сумму до 200 000 сом без изъятия, либо перейти на программу со стоянкой и рассмотреть сумму до 1 180 000 сом.";
+    const client = {
+      isConfigured: vi.fn().mockReturnValue(true),
+      createChatCompletion: vi.fn()
+        .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ ...validResult, reply: "Поняла.", limitChoice: "undecided", leadCardPatch: {} }) } }] })
+        .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ choice: "parking", hasOtherStageAnswer: false, question: null }) } }] })
+    } as any;
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: offer, createdAt: "now" } as any],
+      facts: { requestedProgram: "without_storage", requestedAmount: 520_000 } as any,
+      pricing: { minimumLoan: 50_000, clientFacingMaximumField: "publicMax", withoutStorage: { available: true, rawMax: 200_000, publicMax: 200_000 }, parking: { available: true, rawMax: 1_180_000, publicMax: 1_180_000 } },
+      settings: {}, text: "стоянка", attachments: []
+    });
+
+    expect(JSON.parse(client.createChatCompletion.mock.calls[1][0].messages[1].content)).toMatchObject({ limitOffer: offer, clientReply: "стоянка" });
+    expect(output.result?.leadCardPatch).toMatchObject({ requestedProgram: "parking", requestedAmount: 520_000 });
     expect(output.reply).not.toContain("Могу продолжить либо");
   });
 

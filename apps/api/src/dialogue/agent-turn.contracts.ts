@@ -17,6 +17,8 @@ const applicationFactsPatchSchema = z.object({
 
 export const agentTurnResultSchema = z.object({
   reply: z.string().min(1).max(4000),
+  /** A question separated by a semantic yes/no classifier from the same client message. */
+  clientQuestion: z.string().min(1).max(1000).optional(),
   // This is a routing signal, not a lead-card fact. It lets the orchestrator
   // pay for money normalization only on turns that actually contain a value.
   hasMoney: z.boolean().default(false),

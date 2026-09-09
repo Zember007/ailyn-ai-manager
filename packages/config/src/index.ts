@@ -11,6 +11,8 @@ export interface AppConfig {
   aiProvider: "routerai";
   routerAiApiKey?: string;
   routerAiTextModel?: string;
+  /** Model which turns a server-owned response plan into client-facing prose. */
+  routerAiOutputModel?: string;
   routerAiKnowledgeModel?: string;
   routerAiVisionModel?: string;
   routerAiEvalModel?: string;
@@ -51,6 +53,7 @@ export function loadAppConfig(): AppConfig {
     aiProvider: "routerai",
     routerAiApiKey: optionalEnv("ROUTERAI_API_KEY"),
     routerAiTextModel: optionalEnv("ROUTERAI_TEXT_MODEL"),
+    routerAiOutputModel: optionalEnv("ROUTERAI_OUTPUT_MODEL"),
     routerAiKnowledgeModel: optionalEnv("ROUTERAI_KNOWLEDGE_MODEL"),
     routerAiVisionModel: optionalEnv("ROUTERAI_VISION_MODEL"),
     routerAiEvalModel: optionalEnv("ROUTERAI_EVAL_MODEL"),
