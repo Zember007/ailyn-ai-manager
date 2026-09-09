@@ -4326,11 +4326,14 @@ describe("single-agent dialogue", () => {
     expect(output.reply).not.toContain("всё ещё актуальна");
   });
 
-  it("extracts client and owner FIO from a combined ID and STS image when the dialogue response omitted them", async () => {
+  it("recognizes combined documents from a generic JPEG upload even when FIO is already known", async () => {
     const client = {
       isConfigured: vi.fn().mockReturnValue(true),
       createChatCompletion: vi.fn()
-        .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ ...validResult, reply: "Спасибо, документы получены.", leadCardPatch: {}, attachments: [{ attachmentId: "combined", type: "unknown", status: "received" }] }) } }] })
+        .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({
+          ...validResult, reply: "Спасибо, документы получены.", leadCardPatch: {}, attachments: [{ attachmentId: "combined", type: "unknown", status: "received" }],
+          dialogueState: { stage: "COLLECTING_DOCUMENTS", status: "need_more_data", nextAction: "collect_documents" }
+        }) } }] })
         .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({
           fullName: "Смолева Евгения Прокопьевна",
           ownerFullName: "Смолева Евгения Прокопьевна",
@@ -4338,9 +4341,13 @@ describe("single-agent dialogue", () => {
         }) } }] })
     } as any;
     const output = await new AgentTurnService(client).run({
-      messages: [{ author: "ai", body: "Пожалуйста, отправьте фото ID и свидетельства о регистрации автомобиля с обеих сторон.", createdAt: "now" } as any],
-      facts: { vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 1_000_000, requestedAmount: 400_000, requestedProgram: "parking", residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY" } as any,
-      settings: {}, text: "", attachments: [{ id: "combined", mimeType: "image/png", contentBase64: "iVBORw0KGgo=" }]
+      messages: [{ author: "ai", body: "Загрузите документы в чат.", createdAt: "now" } as any],
+      facts: {
+        vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 1_000_000, requestedAmount: 400_000,
+        requestedProgram: "parking", residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY",
+        fullName: "Смолева Евгения Прокопьевна", ownerFullName: "Смолева Евгения Прокопьевна"
+      } as any,
+      settings: {}, text: "", attachments: [{ id: "combined", fileName: "documents.jpeg", mimeType: "application/octet-stream", contentBase64: "/9j/2Q==" }]
     });
 
     expect(output.result?.leadCardPatch).toMatchObject({
@@ -4351,7 +4358,7 @@ describe("single-agent dialogue", () => {
     });
     expect(client.createChatCompletion).toHaveBeenCalledTimes(2);
     expect(client.createChatCompletion.mock.calls[1][0].messages[1].content).toEqual(expect.arrayContaining([
-      expect.objectContaining({ type: "image_url", image_url: expect.objectContaining({ detail: "high" }) })
+      expect.objectContaining({ type: "image_url", image_url: expect.objectContaining({ url: "data:image/jpeg;base64,/9j/2Q==", detail: "high" }) })
     ]));
   });
 

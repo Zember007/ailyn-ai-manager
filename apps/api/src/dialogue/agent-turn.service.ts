@@ -461,11 +461,16 @@ export class AgentTurnService {
   private async resolveDocumentIdentityFacts(parsed: AgentTurnResult, input: AgentTurnInput): Promise<AgentTurnResult> {
     const lastAssistant = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
     const imageAttachments = input.attachments.filter((attachment) =>
-      Boolean(attachment.contentBase64) && /^image\/(?:jpeg|png|webp|gif)$/iu.test(attachment.mimeType ?? "")
+      Boolean(attachment.contentBase64) && Boolean(imageAttachmentMediaType(attachment))
     );
     const hasClientName = Boolean(input.facts.fullName ?? parsed.leadCardPatch.fullName);
     const hasOwnerName = Boolean(input.facts.ownerFullName ?? parsed.leadCardPatch.ownerFullName);
-    if (!isDocumentRequest(lastAssistant) || imageAttachments.length === 0 || (hasClientName && hasOwnerName)) return parsed;
+    // The main reply may phrase the request differently, but the validated
+    // stage still says that these files are documents.  Do not use an already
+    // known FIO as a reason to skip the pass: recognition of document sides is
+    // a separate outcome and is needed for a later upload as well.
+    const documentStage = isDocumentRequest(lastAssistant) || parsed.dialogueState.stage === "COLLECTING_DOCUMENTS";
+    if (!documentStage || imageAttachments.length === 0) return parsed;
 
     try {
       const response = await this.client.createChatCompletion({
@@ -482,7 +487,7 @@ export class AgentTurnService {
               { type: "text" as const, text: JSON.stringify({ attachmentIds: imageAttachments.map((attachment) => attachment.id) }) },
               ...imageAttachments.map((attachment) => ({
                 type: "image_url" as const,
-                image_url: { url: `data:${attachment.mimeType};base64,${attachment.contentBase64}`, detail: "high" as const }
+                image_url: { url: `data:${imageAttachmentMediaType(attachment)};base64,${attachment.contentBase64}`, detail: "high" as const }
               }))
             ]
           }
@@ -3035,6 +3040,34 @@ function parseDocumentIdentityExtraction(value: string | undefined): {
   return { fullName: name("fullName"), ownerFullName: name("ownerFullName"), documents };
 }
 
+/**
+ * Some channels preserve binary content but label a photo as
+ * application/octet-stream.  Vision must receive a supported image media
+ * type, so prefer an explicit type and fall back to file extension/signature.
+ */
+function imageAttachmentMediaType(attachment: InboundAttachment): "image/jpeg" | "image/png" | "image/webp" | "image/gif" | undefined {
+  const mimeType = attachment.mimeType?.trim().toLowerCase();
+  if (mimeType === "image/jpeg" || mimeType === "image/jpg") return "image/jpeg";
+  if (mimeType === "image/png" || mimeType === "image/webp" || mimeType === "image/gif") return mimeType;
+
+  const fileName = attachment.fileName?.trim().toLowerCase() ?? "";
+  if (/\.(?:jpe?g)$/u.test(fileName)) return "image/jpeg";
+  if (/\.png$/u.test(fileName)) return "image/png";
+  if (/\.webp$/u.test(fileName)) return "image/webp";
+  if (/\.gif$/u.test(fileName)) return "image/gif";
+
+  try {
+    const header = Buffer.from(attachment.contentBase64 ?? "", "base64").subarray(0, 12);
+    if (header[0] === 0xff && header[1] === 0xd8 && header[2] === 0xff) return "image/jpeg";
+    if (header.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return "image/png";
+    if (header.subarray(0, 4).toString("ascii") === "GIF8") return "image/gif";
+    if (header.subarray(0, 4).toString("ascii") === "RIFF" && header.subarray(8, 12).toString("ascii") === "WEBP") return "image/webp";
+  } catch {
+    // Invalid base64 is rejected by the provider; it is not an image hint.
+  }
+  return undefined;
+}
+
 function buildMessage(input: Pick<AgentTurnInput, "messages" | "facts" | "settings" | "text" | "currentTurnMessages" | "pricing" | "attachments" | "currencyConversions" | "knowledgeLookup">, includeImages = true) {
   const settings = input.settings as Record<string, unknown>;
   const timezone = typeof settings.timezone === "string" ? settings.timezone : "Asia/Bishkek";
@@ -3075,7 +3108,8 @@ function buildMessage(input: Pick<AgentTurnInput, "messages" | "facts" | "settin
   const parts: Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string; detail: "high" } }> = [{ type: "text", text: JSON.stringify(context) }];
   for (const attachment of input.attachments) {
     parts.push({ type: "text", text: JSON.stringify({ attachment: { id: attachment.id, fileName: attachment.fileName, mimeType: attachment.mimeType, textContent: attachment.textContent, metadata: attachment.metadata } }) });
-    if (includeImages && attachment.contentBase64 && /^image\/(jpeg|png|webp|gif)$/i.test(attachment.mimeType ?? "")) parts.push({ type: "image_url", image_url: { url: `data:${attachment.mimeType};base64,${attachment.contentBase64}`, detail: "high" } });
+    const imageMediaType = imageAttachmentMediaType(attachment);
+    if (includeImages && attachment.contentBase64 && imageMediaType) parts.push({ type: "image_url", image_url: { url: `data:${imageMediaType};base64,${attachment.contentBase64}`, detail: "high" } });
   }
   return parts;
 }
