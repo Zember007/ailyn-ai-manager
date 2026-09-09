@@ -3972,6 +3972,43 @@ describe("single-agent dialogue", () => {
     expect(output.reply).toContain(`в ${visitTime}`);
   });
 
+  it("records a date-only visit reply and asks only for the time", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ ...validResult, reply: "Поняла.", leadCardPatch: {} }) } }] }) } as any;
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "Офис работает с понедельника по пятницу с 11:00 до 19:00. Для оформления нужно приехать не позднее 18:00. На какой день и время Вам удобно подъехать?", createdAt: "2026-09-09" } as any],
+      facts: {
+        vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 3_000_000,
+        requestedAmount: 600_000, requestedProgram: "without_storage",
+        residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY",
+        documentsProvided: true, documents: { car_photo: "received" }, familyStatus: "single"
+      } as any,
+      settings: {}, text: "6 октября", attachments: []
+    });
+
+    expect(output.result?.leadCardPatch).toEqual(expect.objectContaining({ visitRequested: true, visitDate: "2026-10-06" }));
+    expect(output.result?.leadCardPatch.visitTime).toBeUndefined();
+    expect(output.reply).toBe("Офис работает с понедельника по пятницу с 11:00 до 19:00. Для оформления нужно приехать не позднее 18:00. В какое время Вам удобно подъехать?");
+  });
+
+  it("records a time-only visit reply and asks only for the date", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ ...validResult, reply: "Поняла.", leadCardPatch: {} }) } }] }) } as any;
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "Офис работает с понедельника по пятницу с 11:00 до 19:00. Для оформления нужно приехать не позднее 18:00. В какое время Вам удобно подъехать?", createdAt: "2026-09-09" } as any],
+      facts: {
+        vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 3_000_000,
+        requestedAmount: 600_000, requestedProgram: "without_storage",
+        residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY",
+        documentsProvided: true, documents: { car_photo: "received" }, familyStatus: "single",
+        visitDate: "2026-10-06"
+      } as any,
+      settings: {}, text: "в 6", attachments: []
+    });
+
+    expect(output.result?.leadCardPatch).toEqual(expect.objectContaining({ visitRequested: true, visitDate: "2026-10-06", visitTime: "18:00" }));
+    expect(output.reply).toContain("записываю Вас на");
+    expect(output.reply).toContain("в 18:00");
+  });
+
   it("does not repeat the residence question after residence is stored in the lead", async () => {
     const repeatedResidenceQuestion = { ...validResult, reply: "Хорошо, продолжаем по программе без изъятия. Подскажите, пожалуйста, Ваша прописка — Бишкек, Чуйская область или другой регион Кыргызстана?" };
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify(repeatedResidenceQuestion) } }] }) } as any;

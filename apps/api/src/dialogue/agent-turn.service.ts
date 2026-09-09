@@ -1264,6 +1264,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   const vehicleNeedClarification = ambiguousVehicleNeedReply(input, effectiveFacts);
   const familyNotice = familyTransitionNotice(input, input.facts, effectiveFacts);
   const visitNotice = visitConfirmationNotice(input, input.facts, effectiveFacts);
+  const visitProgress = visitProgressReply(input.facts, effectiveFacts);
   const visitTimeClarification = visitTimeClarificationReply(input, effectiveFacts);
   const attachmentAcceptanceNotice = input.attachments.length > 0 ? "Фотографии получены." : undefined;
   const acceptedLimitNotice = acceptedLimitChoiceNotice(input.facts, effectiveFacts);
@@ -1284,7 +1285,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
       : undefined;
   const moneyRoleReply = moneyRoleClarificationReply(internalReply, input);
   const repeatedStageReply = repeatedResidenceStageExplanation(input, effectiveFacts, stageCompletion);
-  const workflowFollowUp = repeatedStageReply || rejectedMoneyClarification || belowMinimumReply || visitTimeClarification || hasPendingMoneyCurrencyClarification(internalReply)
+  const workflowFollowUp = repeatedStageReply || rejectedMoneyClarification || belowMinimumReply || visitProgress || visitTimeClarification || hasPendingMoneyCurrencyClarification(internalReply)
     ? undefined
     : serverWorkflowFollowUp(semanticText, loanQuestionKind, effectiveFacts, stageCompletion, requestedAmountLimit, workflowSelectedLimitNotice);
   const completionNotice = stageCompletion.visit && effectiveFacts.clientClosed
@@ -1294,7 +1295,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   // visit branch. The calculation itself is server-owned; after answering,
   // the normal workflow appender returns to the outstanding action.
   const optionalStageDeclineNotice = optionalStageDeclineNoticeForTurn(input.facts, effectiveFacts);
-  const directAnswer = repeatedStageReply ?? completionNotice ?? attachmentAcceptanceNotice ?? optionalStageDeclineNotice ?? visitNotice ?? visitTimeClarification ?? residenceLimitNotice ?? programmeChangeGuarantorNotice ?? maximumChoiceNotice ?? acceptedLimitNotice ?? (region10Answer ? [region10Answer, olderVehicleNotice].filter(Boolean).join("\n\n") : undefined) ?? olderVehicleNotice ?? maximumLoanInputReply ?? maximumLoanReply ?? spouseVisitAnswer(input) ?? familyNotice ?? unknownVehicleValueNotice ?? waitingForVehicleValueNotice;
+  const directAnswer = repeatedStageReply ?? completionNotice ?? attachmentAcceptanceNotice ?? optionalStageDeclineNotice ?? visitNotice ?? visitProgress ?? visitTimeClarification ?? residenceLimitNotice ?? programmeChangeGuarantorNotice ?? maximumChoiceNotice ?? acceptedLimitNotice ?? (region10Answer ? [region10Answer, olderVehicleNotice].filter(Boolean).join("\n\n") : undefined) ?? olderVehicleNotice ?? maximumLoanInputReply ?? maximumLoanReply ?? spouseVisitAnswer(input) ?? familyNotice ?? unknownVehicleValueNotice ?? waitingForVehicleValueNotice;
   // A direct approved FAQ outranks all free-form model prose. This prevents
   // plausible but unsupported claims such as a parking location or credit
   // eligibility from reaching the client. The final output renderer receives
@@ -1382,10 +1383,13 @@ function visitPatchFromClearReply(input: Pick<AgentTurnInput, "text" | "currentT
   const lastAssistant = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
   if (!isVisitSchedulingQuestion(lastAssistant)) return {};
   const text = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "").trim().toLocaleLowerCase("ru-RU");
+  const settings = input.settings as Record<string, unknown>;
+  const timezone = typeof settings.timezone === "string" ? settings.timezone : "Asia/Bishkek";
+  const visitDate = visitDateFromReply(text, timezone);
   // The time must be tied to «в» (or an explicit hour suffix), otherwise the
   // date day in «6 октября» is incorrectly treated as 18:00.
   const timeMatch = text.match(/(?:(?:^|[\s,])в\s+(\d{1,2})(?::(\d{2}))?|(?:^|[\s,])(\d{1,2})(?::(\d{2}))?\s*(?:час(?:а|ов)?|ч))\s*(утра|дня|вечера)?(?!\p{L})/iu);
-  if (!timeMatch) return {};
+  if (!timeMatch) return visitDate ? { visitRequested: true, visitDate } : {};
   let hour = Number(timeMatch[1] ?? timeMatch[3]);
   const minute = Number(timeMatch[2] ?? timeMatch[4] ?? "0");
   const dayPart = timeMatch[5] ?? "";
@@ -1393,15 +1397,15 @@ function visitPatchFromClearReply(input: Pick<AgentTurnInput, "text" | "currentT
   if (/(?:дня|вечера)/iu.test(dayPart) && hour < 12) hour += 12;
   else if (hour >= 1 && hour <= 8) hour += 12;
   if (hour < 11 || hour > 18 || minute > 59) return {};
-  const settings = input.settings as Record<string, unknown>;
-  const timezone = typeof settings.timezone === "string" ? settings.timezone : "Asia/Bishkek";
-  const visitDate = visitDateFromReply(text, timezone);
-  if (!visitDate) return {};
-  return { visitRequested: true, visitDate, visitTime: `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}` };
+  return {
+    visitRequested: true,
+    ...(visitDate ? { visitDate } : {}),
+    visitTime: `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`
+  };
 }
 
 function isVisitSchedulingQuestion(text: string): boolean {
-  return /(?:на\s+какой\s+день|день\s+и\s+время|когда\s+вам\s+удобно).{0,100}(?:подъехать|приехать)/iu.test(text);
+  return /(?:на\s+какой\s+день|день\s+и\s+время|когда\s+вам\s+удобно|в\s+какое\s+время).{0,100}(?:подъехать|приехать)/iu.test(text);
 }
 
 function isVisitSchedulingReply(input: Pick<AgentTurnInput, "text" | "currentTurnMessages" | "messages">, facts: ApplicationFacts): boolean {
@@ -1424,6 +1428,10 @@ function visitTimeClarificationReply(input: Pick<AgentTurnInput, "text" | "curre
     ? (input.settings as Record<string, unknown>).timezone as string
     : "Asia/Bishkek";
   if (!visitDateFromReply(text, timezone)) return undefined;
+  // The deterministic workflow now records a date-only reply and asks the
+  // next missing value itself. Do not replace that precise question with a
+  // generic clarification (and do not call every explicit date «tomorrow»).
+  if (facts.visitDate) return undefined;
   const hasExactTime = /(?:(?:^|[\s,])в\s+\d{1,2}(?::\d{2})?|(?:^|[\s,])\d{1,2}(?::\d{2})?\s*(?:час(?:а|ов)?|ч))(?!\p{L})/iu.test(text);
   if (hasExactTime) return undefined;
   return "Завтра подойдёт. Во сколько Вам удобно подъехать? Офис работает с понедельника по пятницу с 11:00 до 19:00, для оформления нужно приехать не позднее 18:00.";
@@ -1623,6 +1631,17 @@ function visitConfirmationNotice(input: Pick<AgentTurnInput, "settings">, previo
   const googleMaps = approvedOfficeUrl(settings.googleMapsUrl, DEFAULT_GOOGLE_MAPS_URL);
   void timezone;
   return `Поняла, записываю Вас на ${weekday}, ${displayDate}, в ${current.visitTime}.\nЗапись предварительная, её подтвердит менеджер.\nАдрес: ${address}\n2ГИС: ${twoGis}\nGoogle Maps: ${googleMaps}`;
+}
+
+/** Once a client has supplied exactly one half of a visit slot, the server
+ * owns the next prompt. This prevents a model acknowledgement plus a generic
+ * date-and-time question from reaching the client as two competing prompts. */
+function visitProgressReply(previous: ApplicationFacts, current: ApplicationFacts): string | undefined {
+  const dateChanged = previous.visitDate !== current.visitDate;
+  const timeChanged = previous.visitTime !== current.visitTime;
+  if (!dateChanged && !timeChanged) return undefined;
+  if (current.visitDate && current.visitTime) return undefined;
+  return nextRequiredStageQuestion(current);
 }
 
 function approvedOfficeAddress(value: unknown): string {
