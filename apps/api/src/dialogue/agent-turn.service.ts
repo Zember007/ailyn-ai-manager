@@ -1122,7 +1122,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   // after monetary rounding.
   const schedulingVisitReply = isVisitSchedulingReply(input, input.facts);
   const rawModelPatch = {
-    ...(schedulingVisitReply ? {} : modelMoneyPatchForTurn(modelFactsWithoutResidence, input, parsed.hasMoney)),
+    ...(schedulingVisitReply ? {} : modelMoneyPatchForTurn(modelFactsWithoutResidence, input, parsed.hasMoney, loanQuestionKind)),
     ...residencePatchFromExplicitClientText(input, leadCardFacts, input.facts),
     ...requestedAmountResetPatch(input),
     ...maximumLoanAmountPatch(input, input.facts),
@@ -1786,7 +1786,7 @@ function resolveLoanQuestionKind(modelKind: LoanQuestionKind, text: string | und
   // «А максимум сколько денег дадите?» can receive a FAQ about interest.
   const normalized = text?.toLocaleLowerCase("ru-RU") ?? "";
   const asksRate = /(?:ставк\p{L}*|процент\p{L}*|сколько\s*%)/iu.test(normalized);
-  const asksLimit = /(?:скольк\p{L}*[^?!]{0,40}(?:денег|деньг|баб|лав[еэ]|сом|дад\p{L}*|получ\p{L}*)|(?:лимит|максимум|макс|потолок)\p{L}*|(?:денег|деньг|баб|лав[еэ])[^?!]{0,40}(?:скольк\p{L}*|дад\p{L}*|можно|получ\p{L}*)|от\s+скольк\p{L}*|до\s+скольк\p{L}*(?:\s+дад\p{L}*)?)/iu.test(normalized);
+  const asksLimit = /(?:дадите|скольк\p{L}*[^?!]{0,40}(?:денег|деньг|баб|лав[еэ]|сом|дад\p{L}*|получ\p{L}*)|(?:лимит|максимум|макс|потолок)\p{L}*|(?:денег|деньг|баб|лав[еэ])[^?!]{0,40}(?:скольк\p{L}*|дад\p{L}*|можно|получ\p{L}*)|от\s+скольк\p{L}*|до\s+скольк\p{L}*(?:\s+дад\p{L}*)?)/iu.test(normalized);
   if (asksLimit && asksRate) return "maximum_limit_and_rate";
   if (asksLimit) return "maximum_limit";
   if (asksRate) return "loan_rate";
@@ -1817,10 +1817,12 @@ function requestsMinimumLoanAmount(text: string | undefined): boolean {
 function maximumLoanInputExplanation(kind: LoanQuestionKind, facts: ApplicationFacts): string | undefined {
   if (!isMaximumLimitQuestion(kind)) return undefined;
   if (hasMaximumLoanCalculationInputs(facts)) return undefined;
-  const hasVehicleInputs = Boolean(facts.vehicleModel && facts.vehicleYear && facts.vehicleValue !== undefined);
-  return hasVehicleInputs
-    ? "Максимальную сумму смогу рассчитать после получения Вашей прописки."
-    : "Максимальную сумму смогу рассчитать после получения данных об автомобиле и Вашей прописки.";
+  const missing = [
+    !facts.vehicleModel || !facts.vehicleYear ? "модель и год выпуска автомобиля" : undefined,
+    facts.vehicleValue === undefined ? "ориентировочная стоимость автомобиля" : undefined,
+    !facts.residenceRegion || !facts.residenceCategory ? "Ваша прописка" : undefined
+  ].filter((value): value is string => Boolean(value));
+  return `Чтобы рассчитать максимальную сумму, нужны: ${missing.join(", ")}.`;
 }
 
 function maximumLoanRangeReply(kind: LoanQuestionKind, pricing: LoanPricing | undefined, facts: ApplicationFacts): string | undefined {
@@ -2865,8 +2867,12 @@ function enforceOptionalStageRefusalMessage(reply: string, input: Pick<AgentTurn
   return reply;
 }
 
-function modelMoneyPatchForTurn(patch: Partial<ApplicationFacts>, input: Pick<AgentTurnInput, "text" | "currentTurnMessages" | "pricing">, hasMoney: boolean): Partial<ApplicationFacts> {
+function modelMoneyPatchForTurn(patch: Partial<ApplicationFacts>, input: Pick<AgentTurnInput, "text" | "currentTurnMessages" | "pricing">, hasMoney: boolean, loanQuestionKind: LoanQuestionKind): Partial<ApplicationFacts> {
   const result = Object.fromEntries(Object.entries(patch).filter(([key]) => !unnormalizedMoneyFactKeys.has(key))) as Partial<ApplicationFacts>;
+  // A number next to «дадите» is part of a question about the available
+  // limit, not proof of either the car's value or the amount the client wants
+  // to request. Do not let an extraction model turn that question into facts.
+  if (isMaximumLimitQuestion(loanQuestionKind)) return result;
   const foreignCurrencyMentioned = /(?:\busd\b|\$|dollars?|доллар|\beur(?:o)?s?\b|€|евро|\bkzt\b|₸|тенге|\brub\b|₽|руб)/iu.test(input.text ?? "");
   // For KGS-only turns the main agent is the fast-path money parser. It
   // understands conversational spellings and returns the normalized number;

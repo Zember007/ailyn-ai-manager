@@ -2696,7 +2696,7 @@ describe("single-agent dialogue", () => {
 
     expect(output.result?.leadCardPatch.vehicleValue).toBe(2_620_000);
     expect(output.result?.leadCardPatch.residenceText).toBeUndefined();
-    expect(output.reply).toContain("Максимальную сумму смогу рассчитать после получения Вашей прописки");
+    expect(output.reply).toContain("Чтобы рассчитать максимальную сумму, нужны: Ваша прописка.");
     expect(output.reply).not.toContain("Чуйской области?");
   });
 
@@ -2897,6 +2897,25 @@ describe("single-agent dialogue", () => {
     expect(output.reply).not.toMatch(/ставка определяется|2,4%|срок займа/iu);
   });
 
+  it("treats a number next to 'дадите' as a limit question, not the vehicle price", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult,
+      loanQuestionKind: "none",
+      hasMoney: true,
+      leadCardPatch: { vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 1_000_000, requestedAmount: 1_000_000 }
+    }) } }] }) } as any;
+    const output = await new AgentTurnService(client).run({
+      messages: [], facts: {}, settings: {}, text: "камри 2022 г 1 млн дадите?", attachments: []
+    });
+
+    expect(output.result?.loanQuestionKind).toBe("maximum_limit");
+    expect(output.result?.leadCardPatch).toMatchObject({ vehicleModel: "Camry", vehicleYear: 2022 });
+    expect(output.result?.leadCardPatch.vehicleValue).toBeUndefined();
+    expect(output.result?.leadCardPatch.requestedAmount).toBeUndefined();
+    expect(output.reply).toContain("ориентировочная стоимость автомобиля");
+    expect(output.reply).toContain("Ваша прописка");
+  });
+
   it.each([
     "сколько бабок дашь", "Сколько дадите", "Денег сколько", "сколько вообще дадите", "а денег сколько", "Какие лимиты", "Лимиты",
     "От сколько", "До скольки", "До скольки даете"
@@ -2947,18 +2966,21 @@ describe("single-agent dialogue", () => {
     expect(output.reply).toContain("ставка 2,4% в месяц");
   });
 
-  it("collects vehicle data before registration for an explicit maximum-loan preference", async () => {
+  it("explains which facts are needed for a maximum question before collecting vehicle data", async () => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
       ...validResult, reply: "Распознано.", leadCardPatch: {}
     }) } }] }) } as any;
     const output = await new AgentTurnService(client).run({
-      messages: [], facts: {}, settings: {}, text: "Мне нужна максимальная сумма займа", attachments: []
+      messages: [], facts: {}, settings: {}, text: "сколько денег по максимуму дадите", attachments: []
     });
 
-    expect(output.result?.leadCardPatch).toMatchObject({ requestedMaximumAmount: true });
+    expect(output.result?.loanQuestionKind).toBe("maximum_limit");
+    expect(output.result?.leadCardPatch.requestedAmount).toBeUndefined();
+    expect(output.result?.leadCardPatch.requestedProgram).toBeUndefined();
+    expect(output.reply).toContain("Чтобы рассчитать максимальную сумму");
     expect(output.reply).toContain("модель и год выпуска автомобиля");
     expect(output.reply).toContain("ориентировочную стоимость автомобиля");
-    expect(output.reply).not.toContain("Вашу прописку");
+    expect(output.reply).toContain("Ваша прописка");
   });
 
   it("defers an explicit maximum-loan preference until residence is known, then uses the parking maximum", async () => {
