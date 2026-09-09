@@ -378,12 +378,13 @@ function supplementNormalizedMoney(values: NormalizedMoneyValue[], text: string,
     result.push(value);
     present.add(value.field);
   }
-  // An explicit correction of the desired loan is not an ambiguous bare
-  // number.  Do not let either normalizer role overwrite the car price on
-  // phrases such as «не 200, а 500» or «я хочу 500к».
-  return isRequestedAmountCorrectionText(text)
-    ? result.filter((value) => value.field !== "vehicleValue")
-    : result;
+  // Once a car price exists, changing it requires an explicit price/car cue.
+  // A later bare number is always the requested loan amount; otherwise a
+  // model that emits both roles can silently rewrite collateral valuation.
+  const mayReplaceVehicleValue = currentFacts.vehicleValue === undefined || isExplicitVehicleValueCorrectionText(text);
+  return mayReplaceVehicleValue
+    ? result
+    : result.filter((value) => value.field !== "vehicleValue");
 }
 
 /** A narrow role guard for a correction of the amount requested by client. */
@@ -391,7 +392,17 @@ function isRequestedAmountCorrectionText(text: string): boolean {
   const normalized = text.toLocaleLowerCase("ru-RU");
   const amount = String.raw`\d[\d\s.,]*(?:к|кк|тыс\.?|тысяч\p{L}*|млн|миллион\p{L}*)?`;
   return new RegExp(
-    String.raw`(?:(?:не|вместо)\s+${amount}\s+(?:а|а\s+не)\s+${amount}|(?:я\s+)?(?:всё\s*[- ]?таки\s+)?(?:хочу|мне\s+(?:нужно|надо)|нужно|надо|требуется)\s+(?:сумм\p{L}*\s+)?${amount}|(?:мне\s+)?(?:кстати\s+)?(?:всё\s*[- ]?таки\s+)?${amount}\s+(?:нужно|надо))`,
+    String.raw`(?:(?:не|вместо)\s+${amount}\s+(?:а|а\s+не)\s+${amount}|(?:я\s+)?(?:всё\s*[- ]?таки\s+)?(?:хочу|мне\s+(?:нужно|надо)|нужно|надо|требуется)\s+(?:сумм\p{L}*\s+)?${amount}|мне\s+(?:всё\s*[- ]?таки\s+)?(?:нужно|надо)\s+(?:сумм\p{L}*\s+)?${amount}|(?:мне\s+)?(?:кстати\s+)?(?:всё\s*[- ]?таки\s+)?${amount}\s+(?:нужно|надо))`,
+    "iu"
+  ).test(normalized);
+}
+
+/** A persisted vehicle price is changed only by an unmistakable price cue. */
+function isExplicitVehicleValueCorrectionText(text: string): boolean {
+  const normalized = text.toLocaleLowerCase("ru-RU");
+  const amount = String.raw`\d[\d\s.,]*(?:к|кк|тыс\.?|тысяч\p{L}*|млн|миллион\p{L}*)?`;
+  return new RegExp(
+    String.raw`(?:стоимост\p{L}*|цен\p{L}*|оцен\p{L}*|стоит)\s*(?:авто|машин\p{L}*|тачк\p{L}*)?[^.!?]{0,50}${amount}|(?:авто|машин\p{L}*|тачк\p{L}*)[^.!?]{0,40}${amount}`,
     "iu"
   ).test(normalized);
 }

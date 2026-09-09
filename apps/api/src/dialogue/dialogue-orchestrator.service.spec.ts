@@ -772,6 +772,32 @@ describe("single-agent dialogue", () => {
     expect(store.updateFacts).toHaveBeenCalledWith(application, expect.objectContaining({ vehicleValue: 3_000_000, requestedAmount: 500_000 }));
   });
 
+  it("does not overwrite a known car price when the client says they need 600 thousand", async () => {
+    const application = { id: "app", facts: { vehicleValue: 3_000_000, requestedAmount: 200_000 }, contactId: "contact", stage: "SCHEDULING_VISIT", status: "need_more_data" } as any;
+    const conversation = { id: "conversation", messages: [], application, channel: "web-test" } as any;
+    const store = {
+      getOrCreateConversation: vi.fn().mockResolvedValue({ conversation, application }),
+      addMessage: vi.fn().mockResolvedValue({ id: "inbound", author: "client", body: "", createdAt: "now" }),
+      updateFacts: vi.fn().mockResolvedValue(["requestedAmount"]), saveAgentState: vi.fn(), getApplication: vi.fn().mockResolvedValue(application),
+      getConversation: vi.fn().mockResolvedValue(conversation), addAttachment: vi.fn(), createManagerNotification: vi.fn()
+    } as any;
+    const agent = {
+      normalizeMoney: vi.fn().mockResolvedValue([
+        { field: "vehicleValue", amount: 600_000, currency: "KGS", confidence: 0.99 },
+        { field: "requestedAmount", amount: 600_000, currency: "KGS", confidence: 0.99 }
+      ]),
+      run: vi.fn(async (input: any) => ({ result: { ...validResult, leadCardPatch: input.facts }, reply: "Проверяю лимит.", model: "one", promptVersion: "v1" }))
+    } as any;
+
+    await new DialogueOrchestratorService(agent, store, { getValues: vi.fn().mockResolvedValue({}) } as any, { log: vi.fn() } as any)
+      .receive({ externalMessageId: "amount-correction", channel: "web-test", externalContactId: "c", text: "мне надо все-таки 600 000", attachments: [], timestamp: new Date() });
+
+    expect(agent.run).toHaveBeenCalledWith(expect.objectContaining({
+      facts: expect.objectContaining({ vehicleValue: 3_000_000, requestedAmount: 600_000 })
+    }));
+    expect(store.updateFacts).toHaveBeenCalledWith(application, expect.objectContaining({ vehicleValue: 3_000_000, requestedAmount: 600_000 }));
+  });
+
   it("waits for money normalization and FX resolution before running the dialogue agent", async () => {
     const application = { id: "app", facts: {}, contactId: "contact", stage: "NEW", status: "need_more_data" } as any;
     const conversation = { id: "conversation", messages: [], application, channel: "web-test" } as any;
