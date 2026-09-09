@@ -150,13 +150,13 @@ export function formatMoney(value: number): string {
   return new Intl.NumberFormat("ru-RU").format(value).replace(/\u00a0/g, " ");
 }
 
-/** Public and persisted som amounts are always rounded down to 10,000. */
+/** Public and persisted som amounts are normally rounded down to 10,000. */
 export function roundSomAmount(value: number): number {
   if (!Number.isFinite(value)) return value;
-  // Preserve a positive amount below the 10,000 rounding increment so the
-  // minimum-loan validation can reject it honestly instead of turning it
-  // into a misleading zero in the lead card.
-  if (value > 0 && value < 10_000) return value;
+  // Preserve a below-minimum amount exactly until the client confirms or
+  // corrects it. Rounding 15,000 down to 10,000 changes the value being
+  // clarified and makes a currency correction refer to the wrong amount.
+  if (value > 0 && value < 50_000) return value;
   return Math.floor(value / 10_000) * 10_000;
 }
 

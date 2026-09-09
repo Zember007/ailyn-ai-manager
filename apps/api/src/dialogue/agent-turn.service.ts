@@ -50,8 +50,17 @@ type AgentTurnInput = {
   knowledgeLookup?: boolean;
   attachments: InboundAttachment[];
   currencyConversions?: unknown[];
+  /** Dedicated classifier result for an active monetary confirmation. */
+  moneyClarificationDecision?: "accept" | "reject";
+  /** A normalized current-turn amount held outside persisted facts until its minimum is confirmed. */
+  minimumRequestedAmountCandidate?: number;
   conversationId?: string;
   signal?: AbortSignal;
+};
+
+export type PendingMoneyClarificationDecision = {
+  decision: "accept" | "reject" | "undecided";
+  currency?: Exclude<NormalizedMoneyValue["currency"], "KGS">;
 };
 
 @Injectable()
@@ -61,12 +70,47 @@ export class AgentTurnService {
 
   constructor(private readonly client: RouterAiClient, private readonly logs?: BackendLogsService) {}
 
+  async classifyPendingMoneyClarification(input: { text?: string; messages: Stage1Message[]; conversationId?: string; signal?: AbortSignal }): Promise<PendingMoneyClarificationDecision | undefined> {
+    const lastAssistantMessage = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
+    const clientReply = input.text?.trim() ?? "";
+    if (!this.client.isConfigured() || !clientReply || !hasPendingMoneyCurrencyClarification(lastAssistantMessage)) return undefined;
+    const model = this.config.routerAiNormalizerModel ?? this.config.routerAiTextModel ?? "routerai-text-model-not-configured";
+    try {
+      const response = await this.client.createChatCompletion({
+        model,
+        temperature: 0,
+        max_tokens: 30,
+        reasoning: { enabled: false },
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: "Определи смысл ответа клиента только относительно денежного уточнения AI. Верни строго JSON {\"decision\":\"accept\"|\"reject\"|\"undecided\",\"currency\":\"USD\"|\"EUR\"|\"KZT\"|\"RUB\"|null}. Подтверждение суммы, в том числе ответ только названием валюты, означает accept. Отрицание или исправление суммы без нового числа означает reject. Укажи currency только если клиент явно назвал валюту в текущем ответе; иначе null. Нейтральный или неясный ответ — undecided. Не добавляй текст." },
+          { role: "user", content: JSON.stringify({ lastAssistantQuestion: lastAssistantMessage, clientReply }) }
+        ]
+      }, { timeoutMs: this.config.routerAiTimeoutMs, signal: input.signal });
+      const parsed = parseAgentJson(response.choices?.[0]?.message?.content);
+      const decision = parsed.decision;
+      const currency = parsed.currency;
+      if (decision !== "accept" && decision !== "reject" && decision !== "undecided") return undefined;
+      return {
+        decision,
+        ...(currency === "USD" || currency === "EUR" || currency === "KZT" || currency === "RUB"
+          ? explicitlyMentionsCurrency(clientReply, currency) ? { currency } : {}
+          : {})
+      };
+    } catch (error) {
+      if (input.signal?.aborted) throw error;
+      this.logger.warn(`Money-clarification classifier unavailable: ${formatError(error)}`);
+      return undefined;
+    }
+  }
+
   async normalizeMoney(input: { text?: string; facts: ApplicationFacts; messages: Stage1Message[]; conversationId?: string; signal?: AbortSignal }): Promise<NormalizedMoneyValue[]> {
     if (!this.client.isConfigured() || !input.text?.trim()) return [];
     const model = this.config.routerAiNormalizerModel ?? this.config.routerAiTextModel ?? "routerai-text-model-not-configured";
     const normalizerContext = {
       currentMessage: input.text,
-      lastAssistantMessage: [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? ""
+      lastAssistantMessage: [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "",
+      pendingMoneyField: pendingMoneyFieldFromHistory(input.messages)
     };
     try {
       const response = await this.client.createChatCompletion({
@@ -336,9 +380,35 @@ export class AgentTurnService {
   }
 
   private async resolveSemanticClarifications(parsed: AgentTurnResult, input: AgentTurnInput): Promise<AgentTurnResult> {
-    const residenceNormalized = await this.normalizeResidenceLocality(parsed, input);
+    const programNormalized = await this.resolveProgramDecision(parsed, input);
+    const residenceNormalized = await this.normalizeResidenceLocality(programNormalized, input);
     const officeResolved = await this.resolveOfficeConsent(await this.resolveGuarantorDecision(await this.resolveResidenceClarification(residenceNormalized, input), input), input);
     return this.resolveFinalQuestionsDecision(officeResolved, input);
+  }
+
+  private async resolveProgramDecision(parsed: AgentTurnResult, input: AgentTurnInput): Promise<AgentTurnResult> {
+    const lastAssistant = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
+    if (!isProgramSelectionQuestion(lastAssistant)) return parsed;
+    const clientReply = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "").trim();
+    if (!clientReply) return parsed;
+    try {
+      const response = await this.client.createChatCompletion({
+        model: this.config.routerAiTextModel ?? "routerai-text-model-not-configured",
+        temperature: 0, max_tokens: 40, reasoning: { enabled: false }, response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: "Определи ответ клиента на последний вопрос AI о программе займа. Верни строго JSON {\"program\":\"without_storage\"|\"parking\"|null,\"hasOtherStageAnswer\":boolean,\"question\":string|null}. Короткие «без», «без из», «оставить у себя» означают without_storage; «со», «на стоянку», «парковка» — parking только в контексте этого вопроса. Если в реплике есть вопрос или ответ на другой этап, поставь hasOtherStageAnswer=true и верни question, если он есть. Не придумывай выбор." },
+          { role: "user", content: JSON.stringify({ lastAssistantQuestion: lastAssistant, clientReply }) }
+        ]
+      }, { timeoutMs: this.config.routerAiTimeoutMs, signal: input.signal });
+      const program = parseAgentJson(response.choices?.[0]?.message?.content).program;
+      if (program !== "without_storage" && program !== "parking") return parsed;
+      return { ...parsed, leadCardPatch: { ...parsed.leadCardPatch, requestedProgram: program } };
+    } catch (error) {
+      if (input.signal?.aborted) throw error;
+      this.logger.warn(`Program classifier unavailable: ${formatError(error)}`);
+      const program = programFromShortReply(clientReply);
+      return program ? { ...parsed, leadCardPatch: { ...parsed.leadCardPatch, requestedProgram: program } } : parsed;
+    }
   }
 
   private async resolveFinalQuestionsDecision(parsed: AgentTurnResult, input: AgentTurnInput): Promise<AgentTurnResult> {
@@ -385,12 +455,17 @@ export class AgentTurnService {
     const directResolution = resolveKyrgyzstanLocality(currentReply);
     if (!currentReply || directResolution?.match === "exact") return parsed;
     const lastAssistant = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
-    // Never spend or consume the locality normalizer while another binary
-    // stage is awaiting its answer.
-    if (isGuarantorQuestion(lastAssistant) || isGuarantorParkingAlternativeQuestion(lastAssistant) || isOfficeConsentQuestion(lastAssistant) || isResidenceClarificationQuestion(lastAssistant)) return parsed;
+    // A free-form spelling can be normalized only as the answer to the
+    // explicit registration question. In every other stage a model-supplied
+    // locality would let it invent residence from an unrelated reply.
+    if (!isResidenceCollectionQuestion(lastAssistant)
+      || isGuarantorQuestion(lastAssistant)
+      || isGuarantorParkingAlternativeQuestion(lastAssistant)
+      || isOfficeConsentQuestion(lastAssistant)
+      || isResidenceClarificationQuestion(lastAssistant)) return parsed;
     const modelCandidate = parsed.leadCardPatch.residenceText;
     const modelRecognizedLocality = typeof modelCandidate === "string" && modelCandidate.trim() && modelCandidate !== input.facts.residenceText;
-    if (!modelRecognizedLocality && !/(?:пропис|зарегистрирован|место\s+жительств)/iu.test(lastAssistant)) return parsed;
+    if (!modelRecognizedLocality) return parsed;
     try {
       const response = await this.client.createChatCompletion({
         model: this.config.routerAiTextModel ?? "routerai-text-model-not-configured",
@@ -418,7 +493,7 @@ export class AgentTurnService {
 
   private async resolveResidenceClarification(parsed: AgentTurnResult, input: AgentTurnInput): Promise<AgentTurnResult> {
     const lastAssistant = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
-    if (!isResidenceClarificationQuestion(lastAssistant)) return parsed;
+    if (!isResidenceClarificationQuestion(lastAssistant) || !hasUnresolvedResidence(input.facts)) return parsed;
     const currentReply = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "").trim();
     if (!currentReply) return parsed;
     try {
@@ -469,7 +544,7 @@ export class AgentTurnService {
         response_format: { type: "json_object" },
         messages: [
           { role: "system", content: parkingAlternative
-            ? "Определи смысл ответа клиента только относительно последнего вопроса AI: согласен ли он перейти на программу со стоянкой вместо поручителя. Верни строго JSON {\"decision\":\"accept\"|\"reject\"|\"undecided\"}. Определяй ответ на этот вопрос по первой ясной части реплики даже если после неё клиент задал отдельный вопрос: «ок. а сколько денег дадите» — accept. Нейтральная, несвязанная, оценочная или бессмысленная реплика без ясного согласия или отказа — undecided. Не додумывай согласие или отказ. Не добавляй текст."
+            ? "Определи смысл ответа клиента только относительно последнего вопроса AI: согласен ли он перейти на программу со стоянкой вместо поручителя. Верни строго JSON {\"decision\":\"accept\"|\"reject\"|\"undecided\",\"question\":string|null}. Определяй ответ на этот вопрос по первой ясной части реплики даже если после неё клиент задал отдельный вопрос: «ок. а сколько денег дадите» — decision=accept. В question верни дословно отдельный вопрос клиента без части согласия; если вопроса нет — null. Нейтральная, несвязанная, оценочная или бессмысленная реплика без ясного согласия или отказа — undecided. Не додумывай согласие или отказ. Не добавляй текст."
             : "Определи смысл ответа клиента только относительно последнего вопроса AI: есть ли у него требуемый поручитель. Верни строго JSON {\"decision\":\"accept\"|\"reject\"|\"undecided\"}. Ответы «найду», «приведу», «организую», «будет человек», обещание найти или привести поручителя означают accept. Отсутствие поручителя или отказ искать — reject. Нейтральная, несвязанная, оценочная или бессмысленная реплика без ясного смысла — undecided. Не додумывай согласие или отказ. Не добавляй текст." },
           { role: "user", content: JSON.stringify({ lastAssistantQuestion: lastAssistant, clientReply: currentReply }) }
         ]
@@ -622,6 +697,40 @@ function explicitlyMentionsCurrency(text: string | undefined, currency: Exclude<
   return patterns[currency].test(source);
 }
 
+function pendingMoneyFieldFromHistory(messages: Stage1Message[]): "vehicleValue" | "requestedAmount" | undefined {
+  const lastAssistantIndex = [...messages].map((message) => message.author).lastIndexOf("ai");
+  if (lastAssistantIndex < 0) return undefined;
+  for (let index = lastAssistantIndex; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.author !== "ai") continue;
+    if (/(?:какая\s+)?сумм\p{L}*\s+займ/iu.test(message.body)) return "requestedAmount";
+    if (/(?:ориентировочн\p{L}*\s+)?стоимост\p{L}*\s+автомобил/iu.test(message.body)) return "vehicleValue";
+  }
+  return undefined;
+}
+
+function hasPendingMoneyCurrencyClarification(reply: string): boolean {
+  const amount = "\\d[\\d\\s.,]*(?:тыс\\p{L}*|млн\\p{L}*)?\\s*(?:сом\\p{L}*|доллар\\p{L}*|евро|тенге|руб\\p{L}*)";
+  const confirmation = "(?:верно|правильно|имели\\s+в\\s+виду|это\\s+сумм\\p{L}*)";
+  return new RegExp(`(?:${amount}[^?]{0,80}${confirmation}|${confirmation}[^?]{0,80}${amount})\\s*\\?`, "iu").test(reply);
+}
+
+function pendingBelowMinimumAmount(reply: string, minimumLoan: number): number | undefined {
+  return resolveMoneyFacts({ text: reply, currentFacts: {} }).mentions
+    .map((mention) => mention.normalizedAmount)
+    .find((value) => value > 0 && value < minimumLoan);
+}
+
+function moneyRoleClarificationReply(modelReply: string, input: Pick<AgentTurnInput, "text" | "currentTurnMessages">): string | undefined {
+  const text = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "").trim();
+  if (/(?:желаем\p{L}*|нужн\p{L}*)\s+сумм\p{L}*(?:\s+займ\p{L}*)?|сумм\p{L}*\s+займ\p{L}*/iu.test(text) && !/\d/u.test(text)) {
+    return "Какая сумма займа Вам необходима?";
+  }
+  return /это\s+(?:ориентировочн\p{L}*\s+)?стоимост\p{L}*\s+автомобил\p{L}*\s+или\s+желаем\p{L}*\s+сумм\p{L}*\s+займ/iu.test(modelReply)
+    ? "Подскажите, это ориентировочная стоимость автомобиля или желаемая сумма займа?"
+    : undefined;
+}
+
 function isFetchFailure(error: unknown): boolean {
   return error instanceof Error && /fetch failed|network|econnreset|enotfound|timeout|aborted/i.test(`${error.name}: ${error.message}`);
 }
@@ -698,6 +807,23 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     ...(isClearCarPhotoRefusal(input) ? { declinedCarPhoto: true } : {})
   };
   const lastAssistantReply = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
+  const minimumLoan = input.pricing?.minimumLoan ?? 50_000;
+  const currentRequestedAmount = typeof rawModelPatch.requestedAmount === "number"
+    ? rawModelPatch.requestedAmount
+    : input.minimumRequestedAmountCandidate ?? input.facts.requestedAmount;
+  const isPendingMoneyClarification = hasPendingMoneyCurrencyClarification(lastAssistantReply);
+  const hasBelowMinimumRequestedAmount = typeof currentRequestedAmount === "number" && currentRequestedAmount < minimumLoan;
+  const confirmedBelowMinimumAmount = hasBelowMinimumRequestedAmount
+    && isPendingMoneyClarification
+    && input.moneyClarificationDecision === "accept";
+  const requiresBelowMinimumConfirmation = hasBelowMinimumRequestedAmount && !isPendingMoneyClarification;
+  if (requiresBelowMinimumConfirmation || confirmedBelowMinimumAmount) {
+    // Never persist or use an amount below the product minimum. It is held
+    // only long enough to ask for confirmation, then discarded even after a
+    // client confirms that the low som amount was intentional.
+    delete rawModelPatch.requestedAmount;
+    if (requiresBelowMinimumConfirmation) delete rawModelPatch.requestedProgram;
+  }
   const acceptedGuarantorParkingAlternative = isActiveGuarantorParkingAlternative(lastAssistantReply, input.facts)
     && rawModelPatch.requestedProgram === "parking";
   if (!hasExplicitProgramSelection(input) && !acceptedGuarantorParkingAlternative) delete rawModelPatch.requestedProgram;
@@ -712,8 +838,11 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     ...attachmentFactsFromResult(input.facts, parsed.attachments),
     ...(input.attachments.length > 0 ? { documentsProvided: true } : {})
   };
+  const factsWithoutBelowMinimumAmount = requiresBelowMinimumConfirmation || confirmedBelowMinimumAmount
+    ? { ...input.facts, requestedAmount: undefined, requestedAmountSourceCurrency: undefined }
+    : input.facts;
   const candidateFacts = effectiveFactsForTurn({
-    previous: input.facts,
+    previous: factsWithoutBelowMinimumAmount,
     modelPatch: candidateModelPatch,
     explicitFacts: {},
     currencyFacts: {},
@@ -729,7 +858,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     : omitVisitFacts(candidateModelPatch);
   const effectiveFacts = modelPatch === candidateModelPatch
     ? candidateFacts
-    : effectiveFactsForTurn({ previous: input.facts, modelPatch, explicitFacts: {}, currencyFacts: {}, attachmentFacts });
+    : effectiveFactsForTurn({ previous: factsWithoutBelowMinimumAmount, modelPatch, explicitFacts: {}, currencyFacts: {}, attachmentFacts });
   const stageCompletion = deriveStageCompletion(effectiveFacts);
   const mandatoryKnowledgeAnswer = selectRelevantDocumentation({
     facts: input.facts,
@@ -752,6 +881,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   const requestedAmountLimit = requestedAmountLimitReply(pricing, effectiveFacts);
   const selectedLimitNotice = selectedProgramLimitNotice(input.facts, effectiveFacts, pricing);
   const residenceLimitNotice = residenceLimitNoticeForTurn(input.facts, effectiveFacts, pricing);
+  const workflowSelectedLimitNotice = residenceLimitNotice ? undefined : selectedLimitNotice;
   const unknownVehicleValueNotice = unknownVehicleValueReply(input, effectiveFacts);
   const waitingForVehicleValueNotice = waitingForVehicleValueReply(input, effectiveFacts);
   const vehicleNeedClarification = ambiguousVehicleNeedReply(input, effectiveFacts);
@@ -765,7 +895,19 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   // The model interprets the client, but it never owns the application
   // workflow. It may answer a direct question (or ask for KB routing); this
   // boundary supplies the one and only next application question.
-  const workflowFollowUp = serverWorkflowFollowUp(input.text, effectiveFacts, stageCompletion, requestedAmountLimit, selectedLimitNotice);
+  const lastMoneyClarificationQuestion = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
+  const rejectedMoneyClarification = input.moneyClarificationDecision === "reject" && hasPendingMoneyCurrencyClarification(lastMoneyClarificationQuestion);
+  const rejectedBelowMinimumAmount = rejectedMoneyClarification
+    && pendingBelowMinimumAmount(lastMoneyClarificationQuestion, minimumLoan) !== undefined;
+  const belowMinimumReply = requiresBelowMinimumConfirmation
+    ? `${formatSomMoney(currentRequestedAmount!)} сом, верно?`
+    : confirmedBelowMinimumAmount || rejectedBelowMinimumAmount
+      ? `Минимальная сумма займа — ${formatSomMoney(minimumLoan)} сом. Назовите, пожалуйста, сумму не меньше ${formatSomMoney(minimumLoan)} сом.`
+      : undefined;
+  const moneyRoleReply = moneyRoleClarificationReply(parsed.reply, input);
+  const workflowFollowUp = rejectedMoneyClarification || belowMinimumReply || hasPendingMoneyCurrencyClarification(parsed.reply)
+    ? undefined
+    : serverWorkflowFollowUp(input.text, effectiveFacts, stageCompletion, requestedAmountLimit, workflowSelectedLimitNotice);
   const completionNotice = stageCompletion.visit && effectiveFacts.clientClosed
     ? "Спасибо за обращение. Ожидайте звонка менеджера, он подтвердит время визита."
     : undefined;
@@ -797,9 +939,11 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     // The model is the sole owner of conversational meaning and client prose.
     // A limit warning answers a client-provided amount, but must never erase
     // an unrelated FAQ answer from the same turn.
-    reply: normalizeVehicleRegistrationTerminology(vehicleNeedClarification
+    reply: normalizeVehicleRegistrationTerminology(belowMinimumReply ?? moneyRoleReply ?? (rejectedMoneyClarification
+      ? "Тогда уточните, какую сумму вы имели в виду?"
+      : vehicleNeedClarification
       ? enforceFirstContactGreeting(vehicleNeedClarification, input)
-      : unresolvedBinaryDecisionReply(input, effectiveFacts) ?? modelReply)
+      : unresolvedBinaryDecisionReply(input, effectiveFacts) ?? modelReply))
   };
 }
 
@@ -978,6 +1122,12 @@ function replacePrematureVisitQuestion(reply: string, facts: ApplicationFacts, s
 function guardWorkflowStageOrder(reply: string, facts: ApplicationFacts, completion = deriveStageCompletion(facts)): string {
   const nextQuestion = nextRequiredStageQuestion(facts, completion);
   if (!nextQuestion || facts.residenceRegion || facts.residenceCategory) return reply;
+  // A guarantor is meaningful only after server-owned residence resolution.
+  // Remove model prose that assumes an unverified OTHER_KG category, not only
+  // its follow-up question, before we append the actual residence stage.
+  const replyWithoutPrematureGuarantor = !completion.residence
+    ? reply.replace(/\s*[^.!?\n]{0,220}поручител[^.!?\n]*[.!?]?/giu, "").replace(/[ \t]{2,}/gu, " ").trim()
+    : reply;
   const residenceQuestion = /\s*подскажите,?\s+(?:пожалуйста,?\s+)?(?:вашу?\s+)?пропис\p{L}*[^\n]*?(?:[?!.]|$)/iu;
   const prematureQuestion = !completion.vehicle
     ? residenceQuestion
@@ -990,8 +1140,8 @@ function guardWorkflowStageOrder(reply: string, facts: ApplicationFacts, complet
           : !completion.guarantor
             ? /\s*(?:пожалуйста,?\s*)?(?:отправьте|пришлите)[^?!.\n]*(?:ID|документ|СТС)[^?!.\n]*[?!.]?/iu
             : undefined;
-  if (!prematureQuestion || !prematureQuestion.test(reply)) return reply;
-  const withoutPrematureQuestion = reply.replace(prematureQuestion, "").replace(/[ \t]{2,}/gu, " ").trim();
+  if (!prematureQuestion || !prematureQuestion.test(replyWithoutPrematureGuarantor)) return replyWithoutPrematureGuarantor;
+  const withoutPrematureQuestion = replyWithoutPrematureGuarantor.replace(prematureQuestion, "").replace(/[ \t]{2,}/gu, " ").trim();
   return withoutPrematureQuestion || nextQuestion;
 }
 
@@ -1005,7 +1155,7 @@ export function nextRequiredStageQuestion(facts: ApplicationFacts, completion = 
   }
   if (!completion.requestedAmount) return "Какая сумма займа Вам необходима?";
   if (!completion.program) return "Вас интересует займ без изъятия автомобиля или с постановкой автомобиля на охраняемую стоянку?";
-  if (!completion.residence) return facts.residenceNeedsClarification
+  if (!completion.residence) return hasUnresolvedResidence(facts)
     ? "Подскажите, пожалуйста, это в Чуйской области?"
     : "Подскажите, пожалуйста, Вашу прописку — Бишкек, Чуйская область или другой регион Кыргызстана.";
   if (!completion.guarantor) {
@@ -1034,7 +1184,7 @@ function nextFamilyStageQuestion(facts: ApplicationFacts): string {
 }
 
 function asksMaximumLoan(text: string | undefined): boolean {
-  return /(?:сколько[^.!?]{0,40}(?:денег|дадут|дадите)|максим|лимит|доступн[^.!?]{0,30}сумм|\d[^.!?]{0,24}дадите)/iu.test(text ?? "");
+  return /(?:скольк(?:о|а)?|скок|скока)[^.!?]{0,40}(?:денег|баб(?:ок|ла)?|дадут|дадите|есть)|(?:какие?|каковы?)[^.!?]{0,24}лимит|лимит(?:ы|а)?|по\s+максимум(?:у)?|максимальн|доступн[^.!?]{0,30}сумм|\d[^.!?]{0,24}дадите/iu.test(text ?? "");
 }
 
 /** A concise answer to the amount question, not a general limit question. */
@@ -1126,6 +1276,10 @@ function removeModelLimitClaim(reply: string): string {
   return reply
     .split(/(?<=[?!.])(?=\s|$)/gu)
     .filter((sentence) => {
+      // A limit choice must be resolved before the next guarantor stage. The
+      // model sometimes emits the whole guarantor block ahead of the server
+      // calculation in the same reply; drop it atomically.
+      if (/поручител/iu.test(sentence)) return false;
       const isLimitOrEligibilityClaim = /(?:по\s+(?:этой\s+)?программе|лимит|поручител)/iu.test(sentence);
       const isRejection = /(?:не\s+проход|не\s+подход|не\s+доступ|не\s+получится|доступно\s+до)/iu.test(sentence);
       return !(isLimitOrEligibilityClaim && isRejection);
@@ -1338,7 +1492,16 @@ function enforceFirstContactGreeting(reply: string, input: Pick<AgentTurnInput, 
     .replace(/^(?:я\s+менеджер\s+по\s+оформлению\s+новых\s+займов\s+автоломбарда\s+«Молодой»[.!?]\s*)+/iu, "")
     .trim();
   if (hasPriorAssistantMessage) return rest || reply;
+  // A bare greeting is not a request for free-form assistance. Keep first
+  // contact fully server-owned so the model cannot add «Как я могу помочь?»
+  // or another unasked offer before the required vehicle question.
+  if (isGreetingOnly(input)) return officialGreeting;
   return [officialGreeting, rest].filter(Boolean).join("\n\n");
+}
+
+function isGreetingOnly(input: Pick<AgentTurnInput, "text" | "currentTurnMessages">): boolean {
+  const text = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "").trim();
+  return /^(?:привет|хай|здравствуйте|добрый\s+(?:день|вечер)|салам(?:атсызбы)?|hello|hi)[!,.\s]*$/iu.test(text);
 }
 
 function removeRepeatedProgramExplanation(reply: string, facts: ApplicationFacts, input: Pick<AgentTurnInput, "messages" | "text" | "currentTurnMessages">): string {
@@ -1384,6 +1547,7 @@ function residencePatchFromExplicitClientText(input: Pick<AgentTurnInput, "text"
   const text = input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text;
   const lastAssistant = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
   if (isResidenceClarificationQuestion(lastAssistant)) {
+    if (!hasUnresolvedResidence(previousFacts)) return {};
     if (patch.residenceRegion && patch.residenceCategory && patch.residenceNeedsClarification === false) return {};
     return {
       residenceText: previousFacts.residenceText ?? text?.trim(),
@@ -1392,14 +1556,16 @@ function residencePatchFromExplicitClientText(input: Pick<AgentTurnInput, "text"
       residenceNeedsClarification: true
     };
   }
-  // The main input is tried first. If it was an unusual spelling, the
-  // preceding AI normalizer may have produced a canonical name; that name is
-  // still only a lookup key here, never a model-supplied region decision.
-  const normalizedModelLocality = patch.residenceText !== previousFacts.residenceText
+  const isResidenceCollectionStage = isResidenceCollectionQuestion(lastAssistant);
+  const clientLocality = resolveKyrgyzstanLocality(text);
+  // The main model can provide a spelling hint only in direct response to a
+  // registration question. It cannot turn an unrelated message such as
+  // «давай 200» into a locality it remembered or guessed from history.
+  const normalizedModelLocality = isResidenceCollectionStage && patch.residenceText !== previousFacts.residenceText
     ? resolveKyrgyzstanLocality(patch.residenceText)
     : undefined;
-  const locality = resolveKyrgyzstanLocality(text) ?? normalizedModelLocality;
-  const shortLocalityCorrection = Boolean(locality && (text?.trim().split(/\s+/u).length ?? 0) <= 3);
+  const locality = clientLocality ?? normalizedModelLocality;
+  const shortLocalityCorrection = Boolean(locality && (clientLocality || isResidenceCollectionStage) && (text?.trim().split(/\s+/u).length ?? 0) <= 3);
   // A bare locality after any earlier answer is a client correction, not a
   // reference to the old residence. Its canonical category must supersede a
   // stale OTHER_KG value before the guarantor gate is evaluated.
@@ -1411,13 +1577,10 @@ function residencePatchFromExplicitClientText(input: Pick<AgentTurnInput, "text"
       residenceNeedsClarification: false
     };
   }
-  const followsResidenceQuestion = Boolean(
-    previousFacts.vehicleModel && previousFacts.vehicleYear && previousFacts.vehicleValue !== undefined &&
-    previousFacts.requestedAmount !== undefined && previousFacts.requestedProgram &&
-    !previousFacts.residenceRegion && !previousFacts.residenceCategory
-  );
-  const mayBeResidence = followsResidenceQuestion || /(?:прописан|прописка|регистрац(?:ия|ии)|живу)/iu.test(text ?? "");
-  if (!mayBeResidence) return {};
+  // Outside the explicit registration stage, only an actual locality in the
+  // client message can change residence. Do not store a vague phrase as an
+  // unresolved residence: the server will ask its clear stage question.
+  if (!isResidenceCollectionStage && !clientLocality) return {};
   if (!locality) return {
     residenceText: text?.trim(),
     residenceRegion: undefined,
@@ -1437,6 +1600,14 @@ function residencePatchFromExplicitClientText(input: Pick<AgentTurnInput, "text"
 
 function isResidenceClarificationQuestion(text: string): boolean {
   return /это\s+в\s+чуйской\s+области/iu.test(text);
+}
+
+function hasUnresolvedResidence(facts: ApplicationFacts): boolean {
+  return facts.residenceNeedsClarification === true && !facts.residenceRegion && !facts.residenceCategory;
+}
+
+function isResidenceCollectionQuestion(text: string): boolean {
+  return /(?:пропис|зарегистрирован|место\s+жительств)/iu.test(text);
 }
 
 function familyPatchFromClearReply(input: Pick<AgentTurnInput, "text" | "currentTurnMessages" | "messages">, facts: ApplicationFacts, modelPatch: Partial<ApplicationFacts>): Partial<ApplicationFacts> {
@@ -1615,7 +1786,7 @@ function unresolvedBinaryDecisionReply(input: Pick<AgentTurnInput, "messages" | 
     const question = lastAssistantQuestion(lastAssistant);
     return question ? clarificationOf(question) : undefined;
   };
-  if (isResidenceClarificationQuestion(lastAssistant) && facts.residenceNeedsClarification) {
+  if (isResidenceClarificationQuestion(lastAssistant) && hasUnresolvedResidence(facts)) {
     return repeatQuestion() ?? "Уточните, пожалуйста: это в Чуйской области?";
   }
   if (isActiveGuarantorParkingAlternative(lastAssistant, facts)) {
@@ -1824,9 +1995,22 @@ function modelMoneyPatchForTurn(patch: Partial<ApplicationFacts>, input: Pick<Ag
   return result;
 }
 
-function hasExplicitProgramSelection(input: Pick<AgentTurnInput, "text" | "currentTurnMessages">): boolean {
+function hasExplicitProgramSelection(input: Pick<AgentTurnInput, "text" | "currentTurnMessages" | "messages">): boolean {
   const text = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "");
-  return /(?:без\s+изъяти|со\s+стоянк|на\s+стоянк|парковк)/iu.test(text);
+  if (/(?:без\s+изъяти|со\s+стоянк|на\s+стоянк|парковк)/iu.test(text)) return true;
+  const lastAssistant = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
+  return isProgramSelectionQuestion(lastAssistant) && programFromShortReply(text) !== undefined;
+}
+
+function isProgramSelectionQuestion(text: string): boolean {
+  return /вас\s+интересует[^?!\n]*(?:без\s+изъятия|стоянк)/iu.test(text);
+}
+
+function programFromShortReply(text: string): "without_storage" | "parking" | undefined {
+  const normalized = text.trim().toLocaleLowerCase("ru-RU");
+  if (/^(?:без|без\s+из|без\s+изъят\p{L}*|остав(?:ить|лю)\s+(?:у\s+себя|машин\p{L}*\s+себе))[.!\s]*$/iu.test(normalized)) return "without_storage";
+  if (/^(?:со|со\s+стоянк\p{L}*|на\s+стоянк\p{L}*|парковк\p{L}*)[.!\s]*$/iu.test(normalized)) return "parking";
+  return undefined;
 }
 
 function removeUnaskedProgramDetails(reply: string, input: Pick<AgentTurnInput, "text" | "currentTurnMessages">): string {

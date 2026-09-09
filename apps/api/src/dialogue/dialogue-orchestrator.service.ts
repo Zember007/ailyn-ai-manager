@@ -1,7 +1,7 @@
 import { Injectable } from "@nestjs/common";
 import type { ApplicationFacts } from "@ailyn/business-rules";
 import type { NormalizedMoneyValue } from "../ai/ai-provider.interface.js";
-import { AgentTurnService } from "./agent-turn.service.js";
+import { AgentTurnService, type PendingMoneyClarificationDecision } from "./agent-turn.service.js";
 import { attachmentFactsFromResult, deriveStageCompletion, effectiveFactsForTurn, selectedProgramLimit } from "./agent-turn-reconciliation.js";
 import type { InboundMessage } from "../channels/channel.interface.js";
 import { SettingsService } from "../settings/settings.service.js";
@@ -36,11 +36,16 @@ export class DialogueOrchestratorService {
     const currentTurnMessages = messages.map((message, index) => ({ index: index + 1, text: message.text?.trim() ?? "" }));
     const attachments = messages.flatMap((message) => message.attachments);
     const settings = await this.settings.getValues();
+    const classifyMoneyClarification = (this.agent as Partial<Pick<AgentTurnService, "classifyPendingMoneyClarification">>).classifyPendingMoneyClarification;
+    const moneyClarification = classifyMoneyClarification
+      ? await classifyMoneyClarification.call(this.agent, { text, messages: turnMessages, conversationId: conversation.id, signal: options.signal })
+      : undefined;
+    throwIfAborted(options.signal);
     // Money roles and FX must be known before the dialogue model builds its
     // answer. Previously this ran only after `run()` and only when the main
     // model set hasMoney; a newer client message could then cancel the second
     // call and leave a reply based on stale card facts.
-    const moneyMentioned = detectMoneyMentions(text).length > 0;
+    const moneyMentioned = detectMoneyMentions(text).length > 0 || currencyOnlyForeignMoneyFromHistory(text, turnMessages).length > 0 || moneyClarification?.decision === "accept";
     const modelNormalizedMoney = moneyMentioned && this.agent.normalizeMoney
       ? await this.agent.normalizeMoney({ text, facts: initialApplication.facts, messages: turnMessages, conversationId: conversation.id, signal: options.signal })
       : [];
@@ -48,14 +53,20 @@ export class DialogueOrchestratorService {
     // The semantic normalizer owns flexible role interpretation. The
     // deterministic parser is deliberately a narrow supplemental path for an
     // empty/partial normalizer response and explicit confirmation in context.
-    const normalizedMoney = supplementNormalizedMoney(modelNormalizedMoney, text, initialApplication.facts, turnMessages);
+    const normalizedMoney = supplementNormalizedMoney(modelNormalizedMoney, text, initialApplication.facts, turnMessages, moneyClarification);
     const currency = await resolveNormalizedMoneyFacts(normalizedMoney, this.integrations, initialApplication.facts);
     throwIfAborted(options.signal);
+    const belowMinimumRequestedAmount = typeof currency.facts.requestedAmount === "number" && currency.facts.requestedAmount < 50_000
+      ? currency.facts.requestedAmount
+      : undefined;
+    // Keep an invalid low amount out of persisted facts. The agent receives it
+    // separately only to form the confirmation or minimum-loan response.
+    const currencyFactsForTurn = belowMinimumRequestedAmount === undefined ? currency.facts : {};
     const normalizedFacts = effectiveFactsForTurn({
       previous: initialApplication.facts,
       modelPatch: {},
       explicitFacts: {},
-      currencyFacts: currency.facts,
+      currencyFacts: currencyFactsForTurn,
       attachmentFacts: {}
     });
     await this.logs.log("dialogue.money-resolution", "Money values resolved for lead card", {
@@ -78,6 +89,8 @@ export class DialogueOrchestratorService {
       currentTurnMessages,
       pricing: calculateLoanPricing(normalizedFacts, settings),
       currencyConversions: currency.conversions,
+      moneyClarificationDecision: moneyClarification?.decision === "accept" || moneyClarification?.decision === "reject" ? moneyClarification.decision : undefined,
+      minimumRequestedAmountCandidate: belowMinimumRequestedAmount,
       attachments,
       signal: options.signal
     });
@@ -125,7 +138,7 @@ export class DialogueOrchestratorService {
         // the dialogue never asks for a replacement set.
         ...(attachments.length > 0 ? { documentsProvided: true } : {})
       };
-      const reconciledFacts = effectiveFactsForTurn({ previous: initialApplication.facts, modelPatch, explicitFacts: {}, currencyFacts: currency.facts, attachmentFacts });
+      const reconciledFacts = effectiveFactsForTurn({ previous: initialApplication.facts, modelPatch, explicitFacts: {}, currencyFacts: currencyFactsForTurn, attachmentFacts });
       const effectiveFacts = { ...reconciledFacts, stageCompletion: deriveStageCompletion(reconciledFacts) };
       const preliminaryLimit = selectedProgramLimit(effectiveFacts, settings);
       changedFactKeys = await this.store.updateFacts(application, effectiveFacts);
@@ -226,9 +239,12 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
   }
 }
 
-function supplementNormalizedMoney(values: NormalizedMoneyValue[], text: string, currentFacts: ApplicationFacts, messages: Stage1Message[] = []): NormalizedMoneyValue[] {
+function supplementNormalizedMoney(values: NormalizedMoneyValue[], text: string, currentFacts: ApplicationFacts, messages: Stage1Message[] = [], moneyClarification?: PendingMoneyClarificationDecision): NormalizedMoneyValue[] {
   const expectedField = expectedMoneyFieldFromLastQuestion(messages);
-  const result = values.filter((value) => value.amount > 0 && (!expectedField || value.field === expectedField));
+  const classifiedValue = moneyValueFromClarificationDecision(text, messages, moneyClarification);
+  const result = classifiedValue
+    ? [classifiedValue]
+    : values.filter((value) => value.amount > 0 && (!expectedField || value.field === expectedField));
   const present = new Set(result.map((value) => value.field));
   const mentions = detectMoneyMentions(text);
   const resolved = resolveMoneyFacts({ text, currentFacts });
@@ -269,13 +285,31 @@ function supplementNormalizedMoney(values: NormalizedMoneyValue[], text: string,
     result.push(value);
     present.add(value.field);
   }
+  // A client may correct only the currency after the agent repeats the exact
+  // amount for confirmation: «10 тысяч сом, верно?» → «долларов». The
+  // number is not a new fact from history; it is the immediately pending
+  // confirmation, and the current message supplies its explicit currency.
+  for (const value of currencyOnlyForeignMoneyFromHistory(text, messages)) {
+    if (present.has(value.field)) continue;
+    result.push(value);
+    present.add(value.field);
+  }
   return result;
 }
 
 function expectedMoneyFieldFromLastQuestion(messages: Stage1Message[]): "vehicleValue" | "requestedAmount" | undefined {
-  const lastAssistantQuestion = [...messages].reverse().find((message) => message.author === "ai")?.body ?? "";
-  if (/(?:какая\s+)?сумм\p{L}*\s+займ/iu.test(lastAssistantQuestion)) return "requestedAmount";
-  if (/(?:ориентировочн\p{L}*\s+)?стоимост\p{L}*\s+автомобил/iu.test(lastAssistantQuestion)) return "vehicleValue";
+  const lastAssistantIndex = [...messages].map((message) => message.author).lastIndexOf("ai");
+  if (lastAssistantIndex < 0) return undefined;
+  return pendingMoneyFieldFromHistory(messages, lastAssistantIndex);
+}
+
+function pendingMoneyFieldFromHistory(messages: Stage1Message[], startIndex: number): "vehicleValue" | "requestedAmount" | undefined {
+  for (let index = startIndex; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.author !== "ai") continue;
+    if (/(?:какая\s+)?сумм\p{L}*\s+займ/iu.test(message.body)) return "requestedAmount";
+    if (/(?:ориентировочн\p{L}*\s+)?стоимост\p{L}*\s+автомобил/iu.test(message.body)) return "vehicleValue";
+  }
   return undefined;
 }
 
@@ -296,6 +330,53 @@ function confirmedForeignMoneyFromHistory(text: string, messages: Stage1Message[
     .filter((item) => item.currency && item.currency !== "KGS")
     .sort((left, right) => right.confidence - left.confidence)[0];
   return mention ? [{ field, amount: mention.normalizedAmount, currency: mention.currency!, confidence: mention.confidence }] : [];
+}
+
+function currencyOnlyForeignMoneyFromHistory(text: string, messages: Stage1Message[]): NormalizedMoneyValue[] {
+  const currency = explicitForeignCurrencyOnly(text);
+  if (!currency) return [];
+  const lastAssistantIndex = [...messages].map((message) => message.author).lastIndexOf("ai");
+  if (lastAssistantIndex < 0) return [];
+  const question = messages[lastAssistantIndex]?.body ?? "";
+  if (!isPendingMoneyCurrencyClarificationQuestion(question)) return [];
+  const amount = detectMoneyMentions(question)
+    .map((mention) => mention.normalizedAmount)
+    .find((value) => value > 0);
+  const field = pendingMoneyFieldFromHistory(messages, lastAssistantIndex);
+  return amount && field ? [{ field, amount, currency, confidence: 0.99 }] : [];
+}
+
+function moneyValueFromClarificationDecision(text: string, messages: Stage1Message[], decision: PendingMoneyClarificationDecision | undefined): NormalizedMoneyValue | undefined {
+  if (decision?.decision !== "accept") return undefined;
+  const lastAssistantIndex = [...messages].map((message) => message.author).lastIndexOf("ai");
+  if (lastAssistantIndex < 0) return undefined;
+  const question = messages[lastAssistantIndex]?.body ?? "";
+  if (!isPendingMoneyCurrencyClarificationQuestion(question)) return undefined;
+  const amount = detectMoneyMentions(question)
+    .map((mention) => mention.normalizedAmount)
+    .find((value) => value > 0);
+  const field = pendingMoneyFieldFromHistory(messages, lastAssistantIndex);
+  const explicitCurrency = decision.currency && explicitForeignCurrencyOnly(text) === decision.currency
+    ? decision.currency
+    : undefined;
+  return amount && field
+    ? { field, amount, currency: explicitCurrency ?? "KGS", confidence: 0.99 }
+    : undefined;
+}
+
+function explicitForeignCurrencyOnly(text: string): ForeignMoneyCurrencyCode | undefined {
+  const source = text.trim().toLocaleLowerCase("ru-RU");
+  if (/^(?:в\s+)?(?:usd|\$|доллар\p{L}*)[.!\s]*$/u.test(source)) return "USD";
+  if (/^(?:в\s+)?(?:eur(?:o)?|€|евро)[.!\s]*$/u.test(source)) return "EUR";
+  if (/^(?:в\s+)?(?:kzt|₸|тенге)[.!\s]*$/u.test(source)) return "KZT";
+  if (/^(?:в\s+)?(?:rub|₽|руб\p{L}*)[.!\s]*$/u.test(source)) return "RUB";
+  return undefined;
+}
+
+function isPendingMoneyCurrencyClarificationQuestion(text: string): boolean {
+  const amount = "\\d[\\d\\s.,]*(?:тыс\\p{L}*|млн\\p{L}*)?\\s*(?:сом\\p{L}*|доллар\\p{L}*|евро|тенге|руб\\p{L}*)";
+  const confirmation = "(?:верно|правильно|имели\\s+в\\s+виду|это\\s+сумм\\p{L}*)";
+  return new RegExp(`(?:${amount}[^?]{0,80}${confirmation}|${confirmation}[^?]{0,80}${amount})\\s*\\?`, "iu").test(text);
 }
 
 /** Keep the conversational order: greeting/introduction first, then the
