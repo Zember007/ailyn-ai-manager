@@ -57,7 +57,10 @@ export class DialogueOrchestratorService {
     // answer. Previously this ran only after `run()` and only when the main
     // model set hasMoney; a newer client message could then cancel the second
     // call and leave a reply based on stale card facts.
-    const moneyMentioned = detectMoneyMentions(text).length > 0 || currencyOnlyForeignMoneyFromHistory(text, modelMessages).length > 0 || moneyClarification?.decision === "accept";
+    // A correction may use two bare numbers («не 200, а 500») without a
+    // currency suffix. It is still a money turn: send it to the semantic
+    // normalizer instead of silently leaving the old requested amount.
+    const moneyMentioned = detectMoneyMentions(text).length > 0 || isRequestedAmountCorrectionText(text) || currencyOnlyForeignMoneyFromHistory(text, modelMessages).length > 0 || moneyClarification?.decision === "accept";
     const modelNormalizedMoney = moneyMentioned && this.agent.normalizeMoney
       ? await this.agent.normalizeMoney({ text, facts: initialApplication.facts, messages: modelMessages, conversationId: conversation.id, signal: options.signal })
       : [];
@@ -375,7 +378,22 @@ function supplementNormalizedMoney(values: NormalizedMoneyValue[], text: string,
     result.push(value);
     present.add(value.field);
   }
-  return result;
+  // An explicit correction of the desired loan is not an ambiguous bare
+  // number.  Do not let either normalizer role overwrite the car price on
+  // phrases such as «не 200, а 500» or «я хочу 500к».
+  return isRequestedAmountCorrectionText(text)
+    ? result.filter((value) => value.field !== "vehicleValue")
+    : result;
+}
+
+/** A narrow role guard for a correction of the amount requested by client. */
+function isRequestedAmountCorrectionText(text: string): boolean {
+  const normalized = text.toLocaleLowerCase("ru-RU");
+  const amount = String.raw`\d[\d\s.,]*(?:к|кк|тыс\.?|тысяч\p{L}*|млн|миллион\p{L}*)?`;
+  return new RegExp(
+    String.raw`(?:(?:не|вместо)\s+${amount}\s+(?:а|а\s+не)\s+${amount}|(?:я\s+)?(?:всё\s*[- ]?таки\s+)?(?:хочу|мне\s+(?:нужно|надо)|нужно|надо|требуется)\s+(?:сумм\p{L}*\s+)?${amount}|(?:мне\s+)?(?:кстати\s+)?(?:всё\s*[- ]?таки\s+)?${amount}\s+(?:нужно|надо))`,
+    "iu"
+  ).test(normalized);
 }
 
 function expectedMoneyFieldFromLastQuestion(messages: Stage1Message[]): "vehicleValue" | "requestedAmount" | undefined {

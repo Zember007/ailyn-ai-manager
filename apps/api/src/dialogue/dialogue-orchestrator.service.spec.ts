@@ -744,6 +744,34 @@ describe("single-agent dialogue", () => {
     expect(store.updateFacts).toHaveBeenCalledWith(application, expect.objectContaining({ requestedAmount: 1_500_000, requestedAmountSourceCurrency: undefined }));
   });
 
+  it("treats a plain desired-amount correction as requested amount, never as a new car price", async () => {
+    const application = { id: "app", facts: { vehicleValue: 3_000_000, requestedAmount: 200_000 }, contactId: "contact", stage: "SCHEDULING_VISIT", status: "need_more_data" } as any;
+    const conversation = { id: "conversation", messages: [], application, channel: "web-test" } as any;
+    const store = {
+      getOrCreateConversation: vi.fn().mockResolvedValue({ conversation, application }),
+      addMessage: vi.fn().mockResolvedValue({ id: "inbound", author: "client", body: "", createdAt: "now" }),
+      updateFacts: vi.fn().mockResolvedValue(["requestedAmount"]), saveAgentState: vi.fn(), getApplication: vi.fn().mockResolvedValue(application),
+      getConversation: vi.fn().mockResolvedValue(conversation), addAttachment: vi.fn(), createManagerNotification: vi.fn()
+    } as any;
+    const agent = {
+      // Simulate the bad semantic normalizer assigning the same correction to
+      // both roles. The orchestrator must enforce the unambiguous wording.
+      normalizeMoney: vi.fn().mockResolvedValue([
+        { field: "vehicleValue", amount: 500_000, currency: "KGS", confidence: 0.99 },
+        { field: "requestedAmount", amount: 500_000, currency: "KGS", confidence: 0.99 }
+      ]),
+      run: vi.fn(async (input: any) => ({ result: { ...validResult, leadCardPatch: input.facts }, reply: "Проверяю лимит.", model: "one", promptVersion: "v1" }))
+    } as any;
+
+    await new DialogueOrchestratorService(agent, store, { getValues: vi.fn().mockResolvedValue({}) } as any, { log: vi.fn() } as any)
+      .receive({ externalMessageId: "amount-correction", channel: "web-test", externalContactId: "c", text: "я хочу все-таки не 200, а 500", attachments: [], timestamp: new Date() });
+
+    expect(agent.run).toHaveBeenCalledWith(expect.objectContaining({
+      facts: expect.objectContaining({ vehicleValue: 3_000_000, requestedAmount: 500_000 })
+    }));
+    expect(store.updateFacts).toHaveBeenCalledWith(application, expect.objectContaining({ vehicleValue: 3_000_000, requestedAmount: 500_000 }));
+  });
+
   it("waits for money normalization and FX resolution before running the dialogue agent", async () => {
     const application = { id: "app", facts: {}, contactId: "contact", stage: "NEW", status: "need_more_data" } as any;
     const conversation = { id: "conversation", messages: [], application, channel: "web-test" } as any;
@@ -1864,7 +1892,9 @@ describe("single-agent dialogue", () => {
       ...validResult,
       hasMoney: true,
       reply: "Поняла.",
-      leadCardPatch: { requestedAmount: 2_000_000 }
+      // Regression: a semantic model must not turn «мне нужно 2 млн» into
+      // both the loan amount and a replacement vehicle price.
+      leadCardPatch: { requestedAmount: 2_000_000, vehicleValue: 500_000 }
     }) } }] }) } as any;
     const output = await new AgentTurnService(client).run({
       messages: [{ author: "ai", body: "Есть ли у Вас ещё вопросы?", createdAt: "now" } as any],
@@ -1878,6 +1908,7 @@ describe("single-agent dialogue", () => {
     });
 
     expect(output.result?.leadCardPatch).toMatchObject({ requestedAmount: 2_000_000, requestedProgram: "parking" });
+    expect(output.result?.leadCardPatch.vehicleValue).toBe(2_000_000);
     expect(output.reply).toContain("По программе со стоянкой доступно до 1 000 000 сом.");
     expect(output.reply).toContain("Сумма 2 000 000 сом по этой программе не проходит.");
     expect(output.reply).not.toContain("Уточните, пожалуйста: Есть ли у Вас ещё вопросы?");

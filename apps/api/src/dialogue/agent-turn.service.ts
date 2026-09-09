@@ -2842,7 +2842,7 @@ function enforceOptionalStageRefusalMessage(reply: string, input: Pick<AgentTurn
   return reply;
 }
 
-function modelMoneyPatchForTurn(patch: Partial<ApplicationFacts>, input: Pick<AgentTurnInput, "text" | "pricing">, hasMoney: boolean): Partial<ApplicationFacts> {
+function modelMoneyPatchForTurn(patch: Partial<ApplicationFacts>, input: Pick<AgentTurnInput, "text" | "currentTurnMessages" | "pricing">, hasMoney: boolean): Partial<ApplicationFacts> {
   const result = Object.fromEntries(Object.entries(patch).filter(([key]) => !unnormalizedMoneyFactKeys.has(key))) as Partial<ApplicationFacts>;
   const foreignCurrencyMentioned = /(?:\busd\b|\$|dollars?|доллар|\beur(?:o)?s?\b|€|евро|\bkzt\b|₸|тенге|\brub\b|₽|руб)/iu.test(input.text ?? "");
   // For KGS-only turns the main agent is the fast-path money parser. It
@@ -2853,13 +2853,28 @@ function modelMoneyPatchForTurn(patch: Partial<ApplicationFacts>, input: Pick<Ag
     input.pricing?.withoutStorage.publicMax,
     input.pricing?.parking.publicMax
   ].filter((value): value is number => typeof value === "number"));
+  const text = input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "";
+  const requestedAmountCorrection = isRequestedAmountCorrectionText(text);
   for (const key of ["vehicleValue", "requestedAmount"] as const) {
+    // The model occasionally assigns the same corrected number to both
+    // money fields. A client correcting what they want to borrow cannot
+    // change the already known market value of the vehicle by implication.
+    if (key === "vehicleValue" && requestedAmountCorrection) continue;
     const value = patch[key];
     if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) continue;
     const rounded = roundSomAmount(value);
     if (modelOwnsKgsMoney || offeredPublicLimits.has(rounded)) result[key] = rounded;
   }
   return result;
+}
+
+function isRequestedAmountCorrectionText(text: string): boolean {
+  const normalized = text.toLocaleLowerCase("ru-RU");
+  const amount = String.raw`\d[\d\s.,]*(?:к|кк|тыс\.?|тысяч\p{L}*|млн|миллион\p{L}*)?`;
+  return new RegExp(
+    String.raw`(?:(?:не|вместо)\s+${amount}\s+(?:а|а\s+не)\s+${amount}|(?:я\s+)?(?:всё\s*[- ]?таки\s+)?(?:хочу|мне\s+(?:нужно|надо)|нужно|надо|требуется)\s+(?:сумм\p{L}*\s+)?${amount}|(?:мне\s+)?(?:кстати\s+)?(?:всё\s*[- ]?таки\s+)?${amount}\s+(?:нужно|надо))`,
+    "iu"
+  ).test(normalized);
 }
 
 function hasExplicitProgramSelection(input: Pick<AgentTurnInput, "text" | "currentTurnMessages" | "messages">): boolean {
