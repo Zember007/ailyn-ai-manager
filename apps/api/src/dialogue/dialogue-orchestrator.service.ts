@@ -497,22 +497,24 @@ export function composeReply(modelReply: string, currencyText?: string): string 
 }
 
 /**
- * If a later sentence repeats an earlier sentence with at least three words,
- * keep the later (usually canonical server) wording and remove the first.
- * Comparison is exact after case, whitespace, and punctuation normalization;
- * similar sentences are intentionally untouched.
+ * If a later sentence repeats any consecutive fragment of at least three
+ * words from an earlier sentence, keep the later (usually canonical server)
+ * wording and remove the first. Comparison is exact after case, whitespace,
+ * and punctuation normalization.
  */
 export function removeEarlierDuplicateSentences(reply: string): string {
   const sentences = reply.match(/[^.!?]+[.!?]+|[^.!?]+$/gu) ?? [];
-  const firstByText = new Map<string, number>();
+  const firstByFragment = new Map<string, number>();
   const remove = new Set<number>();
   for (const [index, sentence] of sentences.entries()) {
     const words = sentence.toLocaleLowerCase("ru-RU").match(/[\p{L}\p{N}]+/gu) ?? [];
     if (words.length < 3) continue;
-    const key = words.join(" ");
-    const first = firstByText.get(key);
-    if (first !== undefined) remove.add(first);
-    firstByText.set(key, index);
+    for (let start = 0; start <= words.length - 3; start += 1) {
+      const key = words.slice(start, start + 3).join(" ");
+      const first = firstByFragment.get(key);
+      if (first !== undefined) remove.add(first);
+      firstByFragment.set(key, index);
+    }
   }
   return sentences
     .filter((_, index) => !remove.has(index))

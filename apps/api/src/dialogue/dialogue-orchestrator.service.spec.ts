@@ -2683,6 +2683,23 @@ describe("single-agent dialogue", () => {
     expect(output.reply.match(/У Вас есть такой поручитель\?/gu)).toHaveLength(1);
   });
 
+  it("does not persist a money value hallucinated from a prior FX conversion", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult, hasMoney: true, loanQuestionKind: "maximum_limit", reply: "Распознано.",
+      leadCardPatch: { vehicleValue: 26_200_000 }
+    }) } }] }) } as any;
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "Стоимость автомобиля: 30 000 долларов США — ориентировочно 2 620 000 сом. Подскажите, пожалуйста, Вашу прописку — Бишкек, Чуйская область или другой регион Кыргызстана.", createdAt: "now" } as any],
+      facts: { vehicleModel: "Corolla", vehicleYear: 2022, vehicleValue: 2_620_000, vehicleValueSourceCurrency: "USD" } as any,
+      settings: {}, text: "сколько дадите", attachments: []
+    });
+
+    expect(output.result?.leadCardPatch.vehicleValue).toBe(2_620_000);
+    expect(output.result?.leadCardPatch.residenceText).toBeUndefined();
+    expect(output.reply).toContain("Максимальную сумму смогу рассчитать после получения Вашей прописки");
+    expect(output.reply).not.toContain("Чуйской области?");
+  });
+
   it.each(["а мене сколько максимум дадите", "сколько денег дадите"])("answers %s as a maximum-limit question even when the model misses it", async (text) => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
       ...validResult, loanQuestionKind: "none", reply: "К сожалению, у меня нет утверждённой информации.", leadCardPatch: {}
@@ -4212,7 +4229,15 @@ describe("single-agent dialogue", () => {
     );
   });
 
-  it("keeps similar sentences and short duplicates intact", () => {
+  it("removes the earlier sentence when a three-word fragment is repeated", () => {
+    expect(removeEarlierDuplicateSentences(
+      "Для оформления нужно подъехать не позднее 18:00. Офис работает с понедельника по пятницу. Для оформления нужно приехать не позднее 18:00."
+    )).toBe(
+      "Офис работает с понедельника по пятницу. Для оформления нужно приехать не позднее 18:00."
+    );
+  });
+
+  it("keeps sentences without a shared three-word fragment and short duplicates intact", () => {
     expect(removeEarlierDuplicateSentences("Приезжайте до 18:00. Приезжайте до 17:00. Да. Да.")).toBe("Приезжайте до 18:00. Приезжайте до 17:00. Да. Да.");
   });
 

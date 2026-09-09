@@ -2342,6 +2342,10 @@ function isVehicleRestrictionStatement(text: string): boolean {
 function isPlausibleResidenceStatement(text: string, isResidenceCollectionStage: boolean): boolean {
   if (isVehicleRestrictionStatement(text)) return false;
   if (/(?:пропис\p{L}*|зарегистрир\p{L}*|регистрац\p{L}*|место\s+жительств\p{L}*)/iu.test(text)) return true;
+  // A client question is never an unnamed settlement. Without this guard a
+  // reply like «сколько дадите» to the residence prompt was persisted as a
+  // locality and immediately converted into the spurious Chuy yes/no branch.
+  if (/[?？]/u.test(text) || /(?:скольк\p{L}*|дад\p{L}*|получ\p{L}*|деньг\p{L}*|сумм\p{L}*|займ\p{L}*)/iu.test(text)) return false;
   // A bare city/locality can be a valid answer to the canonical collection
   // question, but a multiword car-status phrase cannot be stored as one.
   return isResidenceCollectionStage && /^[\p{L}-]+(?:\s+[\p{L}-]+){0,2}[.!?\s]*$/u.test(text.trim());
@@ -2867,7 +2871,12 @@ function modelMoneyPatchForTurn(patch: Partial<ApplicationFacts>, input: Pick<Ag
   // For KGS-only turns the main agent is the fast-path money parser. It
   // understands conversational spellings and returns the normalized number;
   // foreign currency remains exclusive to the dedicated converter.
-  const modelOwnsKgsMoney = hasMoney && !foreignCurrencyMentioned;
+  // The main model sees assistant history and can echo a previously
+  // converted amount. Accept KGS from it only when this client turn actually
+  // contains a money mention; otherwise a repeated 2.62m can be multiplied
+  // by an FX rate again on the following question.
+  const clientHasMoneyMention = detectMoneyMentions(input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "").length > 0;
+  const modelOwnsKgsMoney = hasMoney && clientHasMoneyMention && !foreignCurrencyMentioned;
   const offeredPublicLimits = new Set([
     input.pricing?.withoutStorage.publicMax,
     input.pricing?.parking.publicMax
