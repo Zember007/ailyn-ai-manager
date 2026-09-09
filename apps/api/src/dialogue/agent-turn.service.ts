@@ -1384,7 +1384,7 @@ function visitPatchFromClearReply(input: Pick<AgentTurnInput, "text" | "currentT
   const text = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "").trim().toLocaleLowerCase("ru-RU");
   // The time must be tied to «в» (or an explicit hour suffix), otherwise the
   // date day in «6 октября» is incorrectly treated as 18:00.
-  const timeMatch = text.match(/(?:\bв\s+(\d{1,2})(?::(\d{2}))?|\b(\d{1,2})(?::(\d{2}))?\s*(?:час(?:а|ов)?|ч))\s*(утра|дня|вечера)?\b/iu);
+  const timeMatch = text.match(/(?:(?:^|[\s,])в\s+(\d{1,2})(?::(\d{2}))?|(?:^|[\s,])(\d{1,2})(?::(\d{2}))?\s*(?:час(?:а|ов)?|ч))\s*(утра|дня|вечера)?(?!\p{L})/iu);
   if (!timeMatch) return {};
   let hour = Number(timeMatch[1] ?? timeMatch[3]);
   const minute = Number(timeMatch[2] ?? timeMatch[4] ?? "0");
@@ -1409,7 +1409,7 @@ function isVisitSchedulingReply(input: Pick<AgentTurnInput, "text" | "currentTur
   const lastAssistant = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
   if (!isVisitSchedulingQuestion(lastAssistant)) return false;
   const text = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "").trim();
-  return /(?:сегодня|завтра|\b\d{1,2}\s+(?:январ\p{L}*|феврал\p{L}*|март\p{L}*|апрел\p{L}*|мая|июн\p{L}*|июл\p{L}*|август\p{L}*|сентябр\p{L}*|к?октябр\p{L}*|ноябр\p{L}*|декабр\p{L}*))/iu.test(text);
+  return /(?:сегодня|завтра|(?:^|[^\p{L}\d])\d{1,2}\s+(?:январ\p{L}*|феврал\p{L}*|март\p{L}*|апрел\p{L}*|мая|июн\p{L}*|июл\p{L}*|август\p{L}*|сентябр\p{L}*|(?:октябр|котябр)\p{L}*|ноябр\p{L}*|декабр\p{L}*)(?!\p{L}))/iu.test(text);
 }
 
 /** A relative day is useful context, but «утром» is not a schedulable time.
@@ -1424,7 +1424,7 @@ function visitTimeClarificationReply(input: Pick<AgentTurnInput, "text" | "curre
     ? (input.settings as Record<string, unknown>).timezone as string
     : "Asia/Bishkek";
   if (!visitDateFromReply(text, timezone)) return undefined;
-  const hasExactTime = /(?:\bв\s+\d{1,2}(?::\d{2})?|\b\d{1,2}(?::\d{2})?\s*(?:час(?:а|ов)?|ч))\b/iu.test(text);
+  const hasExactTime = /(?:(?:^|[\s,])в\s+\d{1,2}(?::\d{2})?|(?:^|[\s,])\d{1,2}(?::\d{2})?\s*(?:час(?:а|ов)?|ч))(?!\p{L})/iu.test(text);
   if (hasExactTime) return undefined;
   return "Завтра подойдёт. Во сколько Вам удобно подъехать? Офис работает с понедельника по пятницу с 11:00 до 19:00, для оформления нужно приехать не позднее 18:00.";
 }
@@ -1433,7 +1433,7 @@ function visitDateFromReply(text: string, timezone: string): string | undefined 
   const relative = relativeVisitDate(text, timezone);
   if (relative) return relative;
 
-  const monthMatch = text.match(/\b(\d{1,2})\s+(январ\p{L}*|феврал\p{L}*|март\p{L}*|апрел\p{L}*|мая|июн\p{L}*|июл\p{L}*|август\p{L}*|сентябр\p{L}*|к?октябр\p{L}*|ноябр\p{L}*|декабр\p{L}*)\b/iu);
+  const monthMatch = text.match(/(?:^|[^\p{L}\d])(\d{1,2})\s+(январ\p{L}*|феврал\p{L}*|март\p{L}*|апрел\p{L}*|мая|июн\p{L}*|июл\p{L}*|август\p{L}*|сентябр\p{L}*|(?:октябр|котябр)\p{L}*|ноябр\p{L}*|декабр\p{L}*)(?!\p{L})/iu);
   if (!monthMatch) return undefined;
   const monthToken = monthMatch[2].toLocaleLowerCase("ru-RU");
   const month = russianMonthIndex(monthToken);
@@ -1461,7 +1461,7 @@ function russianMonthIndex(value: string): number | undefined {
   if (/^июл/iu.test(value)) return 6;
   if (/^август/iu.test(value)) return 7;
   if (/^сентябр/iu.test(value)) return 8;
-  if (/^к?октябр/iu.test(value)) return 9;
+  if (/^(?:октябр|котябр)/iu.test(value)) return 9;
   if (/^ноябр/iu.test(value)) return 10;
   if (/^декабр/iu.test(value)) return 11;
   return undefined;

@@ -2652,6 +2652,43 @@ describe("single-agent dialogue", () => {
     expect(output.reply.match(/У Вас есть такой поручитель\?/gu)).toHaveLength(1);
   });
 
+  it.each(["а мене сколько максимум дадите", "сколько денег дадите"])("answers %s as a maximum-limit question even when the model misses it", async (text) => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult, loanQuestionKind: "none", reply: "К сожалению, у меня нет утверждённой информации.", leadCardPatch: {}
+    }) } }] }) } as any;
+    const output = await new AgentTurnService(client).run({
+      messages: [],
+      facts: {
+        vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 1_900_000,
+        residenceText: "Ош", residenceRegion: "Другой регион Кыргызстана", residenceCategory: "OTHER_KG"
+      } as any,
+      settings: {}, text, attachments: []
+    });
+
+    expect(output.result?.loanQuestionKind).toBe("maximum_limit");
+    expect(output.reply).toContain("Без изъятия: от 50 000 сом до 200 000 сом");
+    expect(output.reply).toContain("Со стоянкой: от 50 000 сом до 950 000 сом");
+    expect(output.reply).not.toMatch(/ставк|процент|утверждённой информации/iu);
+  });
+
+  it("never answers with a rate when a model misclassifies an explicit maximum question", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult, loanQuestionKind: "loan_rate", reply: "По стоянке ставка 2,4%.", leadCardPatch: {}
+    }) } }] }) } as any;
+    const output = await new AgentTurnService(client).run({
+      messages: [],
+      facts: {
+        vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 1_900_000,
+        residenceText: "Ош", residenceRegion: "Другой регион Кыргызстана", residenceCategory: "OTHER_KG"
+      } as any,
+      settings: {}, text: "а мене сколько максимум дадите", attachments: []
+    });
+
+    expect(output.result?.loanQuestionKind).toBe("maximum_limit");
+    expect(output.reply).toContain("Без изъятия: от 50 000 сом до 200 000 сом");
+    expect(output.reply).not.toMatch(/ставк|процент|2,4%/iu);
+  });
+
   it("reopens a closed visit after any later message instead of repeating the closing acknowledgement", async () => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
       ...validResult, reply: "Распознано.", leadCardPatch: {}
@@ -3890,7 +3927,7 @@ describe("single-agent dialogue", () => {
         vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 3_000_000,
         requestedAmount: 600_000, requestedProgram: "without_storage",
         residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY",
-        declinedDocuments: true, declinedCarPhoto: true, familyStatus: "single"
+        documentsProvided: true, documents: { car_photo: "received" }, familyStatus: "single"
       } as any,
       settings: {}, text, attachments: []
     });
