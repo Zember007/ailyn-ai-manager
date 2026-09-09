@@ -49,7 +49,7 @@ export function deriveStageCompletion(facts: ApplicationFacts): StageCompletion 
   const requestedAmount = vehicle && facts.requestedAmount !== undefined;
   const program = requestedAmount && facts.requestedProgram !== undefined;
   const residence = program && Boolean(facts.residenceRegion && facts.residenceCategory) && !facts.residenceNeedsClarification;
-  const guarantorRequired = residence && facts.requestedProgram === "without_storage" && facts.residenceCategory === "OTHER_KG" && (facts.vehicleValue ?? 0) >= 1_000_000;
+  const guarantorRequired = residence && facts.requestedProgram === "without_storage" && facts.residenceCategory === "OTHER_KG";
   const guarantor = residence && (!guarantorRequired || facts.guarantorAvailable === true);
   const documents = guarantor && (facts.documentsProvided === true || facts.declinedDocuments === true);
   const carPhoto = documents && (facts.documents?.car_photo === "received" || facts.declinedCarPhoto === true);

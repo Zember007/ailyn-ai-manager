@@ -132,7 +132,13 @@ export class DialogueOrchestratorService {
         // The knowledge model is the only author of factual company answers.
         // Never prefix it with the workflow model's prose: that prose may be
         // plausible but unsupported and would reintroduce a hallucination.
-        const reply = appendWorkflowFollowUp(knowledge.reply, workflowFollowUp);
+        // A combined limit-and-rate question has a server-calculated limit
+        // plan plus a rate answer from the approved knowledge base. Preserve
+        // the former; only the latter may supply interest-rate wording.
+        const responsePlan = turn.result.loanQuestionKind === "maximum_limit_and_rate"
+          ? [turn.reply, knowledge.reply].filter(Boolean).join("\n\n")
+          : knowledge.reply;
+        const reply = appendWorkflowFollowUp(responsePlan, workflowFollowUp);
         const result = { ...turn.result, reply };
         turn = { ...turn, result, reply, model: knowledge.model, promptVersion: `${turn.promptVersion}+knowledge` };
       }

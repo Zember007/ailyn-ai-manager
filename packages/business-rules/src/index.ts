@@ -81,6 +81,8 @@ export interface ApplicationFacts {
   reportedInvalidVehicleYear?: number | null;
   vehicleValue?: number;
   requestedAmount?: number;
+  /** The client explicitly wants the largest available loan; resolved after required facts are known. */
+  requestedMaximumAmount?: boolean;
   /** Audit-only source currency; lead-card monetary values remain KGS. */
   vehicleValueSourceCurrency?: "KGS" | "USD" | "EUR" | "KZT" | "RUB";
   requestedAmountSourceCurrency?: "KGS" | "USD" | "EUR" | "KZT" | "RUB";
@@ -597,8 +599,6 @@ function requiresGuarantor(facts: ApplicationFacts, settings: BusinessRuleSettin
   const category = resolvedResidenceCategory(facts);
   return Boolean(
     category === "OTHER_KG" &&
-      facts.vehicleValue &&
-      facts.vehicleValue >= settings.otherRegionMinVehicleValue &&
       facts.requestedProgram === "without_storage"
   );
 }

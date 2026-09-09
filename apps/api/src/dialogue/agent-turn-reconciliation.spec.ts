@@ -85,4 +85,23 @@ describe("agent turn reconciliation pricing", () => {
       guarantor: true, documents: false, readyForVisit: false, visit: false
     });
   });
+
+  it("resets the amount stage and every dependent stage when a new preference invalidates amount and programme", () => {
+    const facts = effectiveFactsForTurn({
+      previous: {
+        vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 2_000_000,
+        requestedAmount: 200_000, requestedProgram: "without_storage",
+        residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY",
+        documentsProvided: true, documents: { car_photo: "received" }, familyStatus: "single"
+      },
+      modelPatch: { requestedMaximumAmount: true, requestedAmount: undefined, requestedProgram: undefined },
+      explicitFacts: {}, currencyFacts: {}, attachmentFacts: {}
+    });
+
+    expect(deriveStageCompletion(facts)).toMatchObject({
+      vehicle: true, requestedAmount: false, program: false, residence: false,
+      guarantor: false, documents: false, carPhoto: false, family: false,
+      readyForVisit: false, visit: false
+    });
+  });
 });

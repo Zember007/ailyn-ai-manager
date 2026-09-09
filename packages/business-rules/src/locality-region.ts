@@ -120,7 +120,7 @@ for (const [name, category] of supplementaryAdministrativeLocalities) {
 }
 
 const regionalWords: Array<[RegExp, LocalityRegionResolution]> = [
-  [/(?:^|\s)(?:бишкек|bishkek)(?:$|\s)/u, { category: "BISHKEK_CHUY", residenceRegion: "Бишкек", locality: "Бишкек", match: "exact" }],
+  [/(?:^|\s)(?:бишкек(?:е|а)?|bishkek)(?:$|\s)/u, { category: "BISHKEK_CHUY", residenceRegion: "Бишкек", locality: "Бишкек", match: "exact" }],
   [/(?:^|\s)(?:чу[йи](?:ская)?|chuy(?:skaya)?|chui(?:skaya)?)(?:$|\s)/u, { category: "BISHKEK_CHUY", residenceRegion: "Чуйская область", locality: "Чуйская область", match: "exact" }],
   [/(?:^|\s)ошская(?:\s+область)?(?:$|\s)/u, { category: "OTHER_KG", residenceRegion: "Другой регион Кыргызстана", locality: "Ошская область", match: "exact" }],
   [/(?:^|\s)баткенская(?:\s+область)?(?:$|\s)/u, { category: "OTHER_KG", residenceRegion: "Другой регион Кыргызстана", locality: "Баткенская область", match: "exact" }],

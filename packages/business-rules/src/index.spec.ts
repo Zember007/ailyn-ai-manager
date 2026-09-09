@@ -149,6 +149,22 @@ describe("business rules", () => {
     expect(result.requiredStatements.join(" ")).toContain("25");
   });
 
+  it("requires a guarantor for every other-region without-storage application regardless of vehicle value", () => {
+    const result = evaluateApplication({
+      vehicleMake: "Toyota",
+      vehicleModel: "Camry",
+      vehicleYear: 2021,
+      vehicleValue: 430_000,
+      requestedAmount: 100_000,
+      requestedProgram: "without_storage",
+      residenceRegion: "Ош",
+      residenceCategory: "OTHER_KG"
+    });
+
+    expect(result.nextAction).toBe("check_guarantor");
+    expect(result.requiredFacts).toContain("guarantorAvailable");
+  });
+
   it("flags loan amount below confirmed minimum", () => {
     const result = evaluateApplication({
       vehicleMake: "Toyota",
