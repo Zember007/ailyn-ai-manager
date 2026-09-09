@@ -313,9 +313,6 @@ export function evaluateApplication(
 
   if (facts.vehicleYear && settings.currentYear - facts.vehicleYear > 15) {
     rulesApplied.push("vehicle_older_than_15_individual_review");
-    flowStatements.push(
-      "По общему правилу мы принимаем в залог автомобили старше 15 лет только на стоянку, но если Вы планируете получить займ без изъятия, то мы готовы рассмотреть Вашу заявку индивидуально."
-    );
   }
 
   if (facts.requestedAmount !== undefined && facts.requestedAmount < settings.minimumLoan) {

@@ -23,6 +23,7 @@ const MAX_LOG_VALUE_LENGTH = 4000;
 const DEFAULT_OFFICE_ADDRESS = "Б. Молодой Гвардии, 22, Бишкек";
 const DEFAULT_TWO_GIS_URL = "https://go.2gis.com/Y34m4";
 const DEFAULT_GOOGLE_MAPS_URL = "https://maps.app.goo.gl/9xiWLVvdyRgn3Sx4A";
+export const OLDER_VEHICLE_PROGRAM_NOTICE = "По общему правилу мы принимаем в залог автомобили старше 15 лет только на стоянку, но если вы планируете получить займ без изъятия, то мы готовы рассмотреть вашу заявку индивидуально.";
 // The complete lead card keeps durable facts, while a compact recent tail is
 // enough to resolve conversational references. Keeping this bounded is one of
 // the few latency levers that does not weaken application validation.
@@ -447,16 +448,18 @@ export class AgentTurnService {
 
   private async resolveGuarantorDecision(parsed: AgentTurnResult, input: AgentTurnInput): Promise<AgentTurnResult> {
     const lastAssistant = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
-    const parkingAlternative = isGuarantorParkingAlternativeQuestion(lastAssistant);
+    const parkingAlternative = isActiveGuarantorParkingAlternative(lastAssistant, input.facts);
     const guarantorQuestion = isGuarantorQuestion(lastAssistant);
     if (!parkingAlternative && !guarantorQuestion) return parsed;
-    // normalizeAgentPayload carries existing facts into every model patch.
-    // Only a value that differs from the persisted fact is an actual main
-    // model decision; carried values must still go to semantic recognition.
-    if (parkingAlternative && (parsed.leadCardPatch.requestedProgram !== input.facts.requestedProgram || parsed.leadCardPatch.guarantorAlternativeDeclined !== input.facts.guarantorAlternativeDeclined)) return parsed;
-    if (guarantorQuestion && parsed.leadCardPatch.guarantorAvailable !== input.facts.guarantorAvailable) return parsed;
     const currentReply = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "").trim();
     if (!currentReply) return parsed;
+    // The dedicated classifier, rather than the prose-producing model, owns
+    // the answer to an active yes/no stage. Preserve every unrelated patch,
+    // but reset this stage until the classifier (or its outage fallback)
+    // resolves it.
+    const classifierBase = parkingAlternative
+      ? { ...parsed, leadCardPatch: { ...parsed.leadCardPatch, requestedProgram: input.facts.requestedProgram, guarantorAlternativeDeclined: input.facts.guarantorAlternativeDeclined } }
+      : { ...parsed, leadCardPatch: { ...parsed.leadCardPatch, guarantorAvailable: input.facts.guarantorAvailable, guarantorAlternativeDeclined: input.facts.guarantorAlternativeDeclined } };
     try {
       const response = await this.client.createChatCompletion({
         model: this.config.routerAiTextModel ?? "routerai-text-model-not-configured",
@@ -466,23 +469,23 @@ export class AgentTurnService {
         response_format: { type: "json_object" },
         messages: [
           { role: "system", content: parkingAlternative
-            ? "Определи смысл ответа клиента только относительно последнего вопроса AI: согласен ли он перейти на программу со стоянкой вместо поручителя. Верни строго JSON {\"decision\":\"accept\"|\"reject\"|\"undecided\"}. Нейтральная, несвязанная, оценочная или бессмысленная реплика без ясного смысла — undecided. Не додумывай согласие или отказ. Не добавляй текст."
+            ? "Определи смысл ответа клиента только относительно последнего вопроса AI: согласен ли он перейти на программу со стоянкой вместо поручителя. Верни строго JSON {\"decision\":\"accept\"|\"reject\"|\"undecided\"}. Определяй ответ на этот вопрос по первой ясной части реплики даже если после неё клиент задал отдельный вопрос: «ок. а сколько денег дадите» — accept. Нейтральная, несвязанная, оценочная или бессмысленная реплика без ясного согласия или отказа — undecided. Не додумывай согласие или отказ. Не добавляй текст."
             : "Определи смысл ответа клиента только относительно последнего вопроса AI: есть ли у него требуемый поручитель. Верни строго JSON {\"decision\":\"accept\"|\"reject\"|\"undecided\"}. Ответы «найду», «приведу», «организую», «будет человек», обещание найти или привести поручителя означают accept. Отсутствие поручителя или отказ искать — reject. Нейтральная, несвязанная, оценочная или бессмысленная реплика без ясного смысла — undecided. Не додумывай согласие или отказ. Не добавляй текст." },
           { role: "user", content: JSON.stringify({ lastAssistantQuestion: lastAssistant, clientReply: currentReply }) }
         ]
       }, { timeoutMs: this.config.routerAiTimeoutMs, signal: input.signal });
       const decision = parseAgentJson(response.choices?.[0]?.message?.content).decision;
       if (decision === "accept") return parkingAlternative
-        ? { ...parsed, leadCardPatch: { ...parsed.leadCardPatch, requestedProgram: "parking", guarantorAlternativeDeclined: false } }
-        : { ...parsed, leadCardPatch: { ...parsed.leadCardPatch, guarantorAvailable: true, guarantorAlternativeDeclined: false } };
+        ? { ...classifierBase, leadCardPatch: { ...classifierBase.leadCardPatch, requestedProgram: "parking", guarantorAlternativeDeclined: false } }
+        : { ...classifierBase, leadCardPatch: { ...classifierBase.leadCardPatch, guarantorAvailable: true, guarantorAlternativeDeclined: false } };
       if (decision === "reject") return parkingAlternative
-        ? { ...parsed, leadCardPatch: { ...parsed.leadCardPatch, guarantorAlternativeDeclined: true } }
-        : { ...parsed, leadCardPatch: { ...parsed.leadCardPatch, guarantorAvailable: false, guarantorAlternativeDeclined: false } };
+        ? { ...classifierBase, leadCardPatch: { ...classifierBase.leadCardPatch, requestedProgram: input.facts.requestedProgram, guarantorAlternativeDeclined: true } }
+        : { ...classifierBase, leadCardPatch: { ...classifierBase.leadCardPatch, guarantorAvailable: false, guarantorAlternativeDeclined: false } };
     } catch (error) {
       if (input.signal?.aborted) throw error;
       this.logger.warn(`Guarantor classifier unavailable: ${formatError(error)}`);
     }
-    return parsed;
+    return classifierBase;
   }
 
   private async resolveOfficeConsent(parsed: AgentTurnResult, input: AgentTurnInput): Promise<AgentTurnResult> {
@@ -658,6 +661,16 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   // contains no number for the normalizer, while the main model must still be
   // able to commit the public limit that the client just accepted.
   const { knowledgeRequest: modelKnowledgeRequest, ...leadCardFacts } = parsed.leadCardPatch;
+  // Residence affects eligibility and cannot be inferred from free-form
+  // model prose. The deterministic locality boundary below is its sole
+  // writer; retain the model candidate only as a lookup hint there.
+  const {
+    residenceText: _modelResidenceText,
+    residenceRegion: _modelResidenceRegion,
+    residenceCategory: _modelResidenceCategory,
+    residenceNeedsClarification: _modelResidenceNeedsClarification,
+    ...modelFactsWithoutResidence
+  } = leadCardFacts;
   // The dedicated knowledge model is always used for a factual question,
   // including a deterministic FAQ match: it adapts the approved answer to
   // the client's wording. A later fallback protects that match if the model
@@ -673,8 +686,9 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
       ? { required: true as const, reason: "missing_approved_answer" as const }
       : undefined);
   const rawModelPatch = {
-    ...modelMoneyPatchForTurn(leadCardFacts, input, parsed.hasMoney),
+    ...modelMoneyPatchForTurn(modelFactsWithoutResidence, input, parsed.hasMoney),
     ...residencePatchFromExplicitClientText(input, leadCardFacts, input.facts),
+    ...maximumLoanAmountPatch(input, input.facts),
     ...guarantorPatchFromClearReply(input, input.facts, leadCardFacts),
     ...limitChoicePatch(parsed.limitChoice, input, input.facts),
     ...familyPatchFromClearReply(input, input.facts, leadCardFacts),
@@ -683,7 +697,10 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     ...(isClearDocumentsRefusal(input) ? { declinedDocuments: true } : {}),
     ...(isClearCarPhotoRefusal(input) ? { declinedCarPhoto: true } : {})
   };
-  if (!hasExplicitProgramSelection(input)) delete rawModelPatch.requestedProgram;
+  const lastAssistantReply = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
+  const acceptedGuarantorParkingAlternative = isActiveGuarantorParkingAlternative(lastAssistantReply, input.facts)
+    && rawModelPatch.requestedProgram === "parking";
+  if (!hasExplicitProgramSelection(input) && !acceptedGuarantorParkingAlternative) delete rawModelPatch.requestedProgram;
   const region10PolicyQuestion = isRegion10PolicyQuestion(input);
   const candidateModelPatch = region10PolicyQuestion
     ? Object.fromEntries(Object.entries(rawModelPatch).filter(([key]) => key !== "vehicleRegistrationRegion")) as Partial<ApplicationFacts>
@@ -734,6 +751,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   const loanRateReply = loanRateReplyForProgram(input.text, effectiveFacts);
   const requestedAmountLimit = requestedAmountLimitReply(pricing, effectiveFacts);
   const selectedLimitNotice = selectedProgramLimitNotice(input.facts, effectiveFacts, pricing);
+  const residenceLimitNotice = residenceLimitNoticeForTurn(input.facts, effectiveFacts, pricing);
   const unknownVehicleValueNotice = unknownVehicleValueReply(input, effectiveFacts);
   const waitingForVehicleValueNotice = waitingForVehicleValueReply(input, effectiveFacts);
   const vehicleNeedClarification = ambiguousVehicleNeedReply(input, effectiveFacts);
@@ -741,6 +759,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   const visitNotice = visitConfirmationNotice(input, input.facts, effectiveFacts);
   const attachmentAcceptanceNotice = input.attachments.length > 0 ? "Фотографии получены." : undefined;
   const acceptedLimitNotice = acceptedLimitChoiceNotice(input.facts, effectiveFacts);
+  const maximumChoiceNotice = maximumLoanChoiceNotice(input, input.facts, effectiveFacts);
   const olderVehicleNotice = olderVehicleProgramNotice(input, effectiveFacts);
   const region10Answer = isRegion10PolicyQuestion(input) ? "Автомобили с регионом 10 у нас не принимаются в залог по правилам компании." : undefined;
   // The model interprets the client, but it never owns the application
@@ -750,7 +769,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   const completionNotice = stageCompletion.visit && effectiveFacts.clientClosed
     ? "Спасибо за обращение. Ожидайте звонка менеджера, он подтвердит время визита."
     : undefined;
-  const directAnswer = completionNotice ?? attachmentAcceptanceNotice ?? visitNotice ?? acceptedLimitNotice ?? (region10Answer ? [region10Answer, olderVehicleNotice].filter(Boolean).join("\n\n") : undefined) ?? olderVehicleNotice ?? spouseVisitAnswer(input) ?? familyNotice ?? loanRateReply ?? maximumLoanInputReply ?? maximumLoanReply ?? unknownVehicleValueNotice ?? waitingForVehicleValueNotice;
+  const directAnswer = completionNotice ?? attachmentAcceptanceNotice ?? visitNotice ?? residenceLimitNotice ?? maximumChoiceNotice ?? acceptedLimitNotice ?? (region10Answer ? [region10Answer, olderVehicleNotice].filter(Boolean).join("\n\n") : undefined) ?? olderVehicleNotice ?? spouseVisitAnswer(input) ?? familyNotice ?? loanRateReply ?? maximumLoanInputReply ?? maximumLoanReply ?? unknownVehicleValueNotice ?? waitingForVehicleValueNotice;
   // A direct approved FAQ outranks all free-form model prose. This prevents
   // plausible but unsupported claims such as a parking location or credit
   // eligibility from reaching the client.
@@ -868,6 +887,15 @@ function acceptedLimitChoiceNotice(previous: ApplicationFacts, current: Applicat
   return `Поняла, продолжим по программе ${program} на сумму ${formatSomMoney(current.requestedAmount)} сом.`;
 }
 
+function maximumLoanChoiceNotice(input: Pick<AgentTurnInput, "text" | "currentTurnMessages">, previous: ApplicationFacts, current: ApplicationFacts): string | undefined {
+  if (previous.requestedAmount === current.requestedAmount || current.requestedAmount === undefined || !current.requestedProgram) return undefined;
+  const text = input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text;
+  const program = current.requestedProgram === "parking" ? "со стоянкой" : "без изъятия";
+  if (requestsMaximumLoanAmount(text)) return `По программе ${program} доступно до ${formatSomMoney(current.requestedAmount)} сом.`;
+  if (requestsMinimumLoanAmount(text)) return `Минимальная сумма займа — ${formatSomMoney(current.requestedAmount)} сом.`;
+  return undefined;
+}
+
 function removeUnaskedLimitProse(reply: string, input: Pick<AgentTurnInput, "text" | "currentTurnMessages">): string {
   const text = input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "";
   if (asksMaximumLoan(text)) return reply;
@@ -887,9 +915,8 @@ function removeUnaskedCurrencyProse(reply: string, input: Pick<AgentTurnInput, "
 
 function olderVehicleProgramNotice(input: Pick<AgentTurnInput, "messages" | "settings">, facts: ApplicationFacts): string | undefined {
   if (!facts.vehicleYear || new Date().getFullYear() - facts.vehicleYear <= 15) return undefined;
-  const notice = "По общему правилу мы принимаем в залог автомобили старше 15 лет только на стоянку, но если вы планируете получить займ без изъятия, то мы готовы рассмотреть вашу заявку индивидуально.";
-  const alreadyExplained = input.messages.some((message) => message.author === "ai" && /автомобил\p{L}*\s+старше\s+15\s+лет[\s\S]{0,180}(?:только\s+на\s+стоянк|индивидуально)/iu.test(message.body));
-  return alreadyExplained ? undefined : notice;
+  const alreadyExplained = input.messages.some((message) => message.author === "ai" && message.body.includes(OLDER_VEHICLE_PROGRAM_NOTICE));
+  return alreadyExplained ? undefined : OLDER_VEHICLE_PROGRAM_NOTICE;
 }
 
 function visitConfirmationNotice(input: Pick<AgentTurnInput, "settings">, previous: ApplicationFacts, current: ApplicationFacts): string | undefined {
@@ -1010,6 +1037,15 @@ function asksMaximumLoan(text: string | undefined): boolean {
   return /(?:сколько[^.!?]{0,40}(?:денег|дадут|дадите)|максим|лимит|доступн[^.!?]{0,30}сумм|\d[^.!?]{0,24}дадите)/iu.test(text ?? "");
 }
 
+/** A concise answer to the amount question, not a general limit question. */
+function requestsMaximumLoanAmount(text: string | undefined): boolean {
+  return /^(?:максимальн\p{L}*|по\s+максимум(?:у)?|максимум)[.!\s]*$/iu.test(text?.trim() ?? "");
+}
+
+function requestsMinimumLoanAmount(text: string | undefined): boolean {
+  return /^(?:минимальн\p{L}*|по\s+минимум(?:у)?|минимум)[.!\s]*$/iu.test(text?.trim() ?? "");
+}
+
 function asksLoanRate(text: string | undefined): boolean {
   return /(?:процент|ставк)/iu.test(text ?? "");
 }
@@ -1038,6 +1074,25 @@ function maximumLoanRangeReply(input: Pick<AgentTurnInput, "text" | "pricing">, 
     `Без изъятия: от 50 000 сом до ${formatSomMoney(withoutStorage.publicMax)} сом`,
     `Со стоянкой: от 50 000 сом до ${formatSomMoney(parking.publicMax)} сом`
   ].join("\n");
+}
+
+function maximumLoanAmountPatch(input: Pick<AgentTurnInput, "text" | "currentTurnMessages" | "pricing" | "settings">, facts: ApplicationFacts): Partial<ApplicationFacts> {
+  const text = input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text;
+  if (!facts.requestedProgram) return {};
+  const pricing = input.pricing ?? calculateLoanPricing(facts, input.settings as LoanPricingSettings);
+  if (requestsMinimumLoanAmount(text)) return { requestedAmount: pricing.minimumLoan };
+  if (!requestsMaximumLoanAmount(text)) return {};
+  const selectedPricing = facts.requestedProgram === "without_storage" ? pricing.withoutStorage : pricing.parking;
+  return selectedPricing?.available && typeof selectedPricing.publicMax === "number"
+    ? { requestedAmount: selectedPricing.publicMax }
+    : {};
+}
+
+function maximumChoiceFollowUp(text: string | undefined, facts: ApplicationFacts): string | undefined {
+  if (!requestsMaximumLoanAmount(text)) return undefined;
+  if (!facts.requestedProgram) return "Вас интересует займ без изъятия автомобиля или с постановкой автомобиля на охраняемую стоянку?";
+  if (!facts.residenceRegion || !facts.residenceCategory) return "Подскажите, пожалуйста, Вашу прописку — Бишкек, Чуйская область или другой регион Кыргызстана.";
+  return undefined;
 }
 
 function requestedAmountLimitReply(pricing: LoanPricing | undefined, facts: ApplicationFacts): string | undefined {
@@ -1112,6 +1167,19 @@ function selectedProgramLimitNotice(previous: ApplicationFacts, current: Applica
   if (!selectedPricing.available || typeof selectedPricing.publicMax !== "number") return undefined;
   const programName = current.requestedProgram === "without_storage" ? "без изъятия" : "со стоянкой";
   return `По программе ${programName} доступно до ${formatSomMoney(selectedPricing.publicMax)} сом.`;
+}
+
+function residenceLimitNoticeForTurn(previous: ApplicationFacts, current: ApplicationFacts, pricing: LoanPricing): string | undefined {
+  const residenceChanged = previous.residenceRegion !== current.residenceRegion || previous.residenceCategory !== current.residenceCategory;
+  if (!residenceChanged || !current.requestedProgram || !current.residenceRegion || !current.residenceCategory) return undefined;
+  const selectedPricing = current.requestedProgram === "without_storage" ? pricing.withoutStorage : pricing.parking;
+  if (!selectedPricing.available || typeof selectedPricing.publicMax !== "number") return undefined;
+  const limit = formatSomMoney(selectedPricing.publicMax);
+  const program = current.requestedProgram === "without_storage" ? "без изъятия" : "со стоянкой";
+  const prefix = current.residenceCategory === "OTHER_KG"
+    ? `В связи с тем, что Вы прописаны за пределами Чуйской области, по программе ${program} Вам доступно до ${limit} сом.`
+    : `Для Вашей прописки в ${current.residenceRegion === "Чуйская область" ? "Чуйской области" : "Бишкеке"} по программе ${program} Вам доступно до ${limit} сом.`;
+  return requiresGuarantorForFacts(current) ? `${prefix}\n\n${GUARANTOR_REQUIREMENTS}` : prefix;
 }
 
 function removeQuestionsForKnownLeadFacts(reply: string, facts: ApplicationFacts, previousFacts: ApplicationFacts = {}): string {
@@ -1196,6 +1264,8 @@ function serverWorkflowFollowUp(text: string | undefined, facts: ApplicationFact
   const canCalculateMaximum = facts.vehicleModel && facts.vehicleYear && facts.vehicleValue !== undefined && facts.residenceRegion && facts.residenceCategory;
   const nextQuestion = nextRequiredStageQuestion(facts, completion);
   if (completion.visit) return facts.clientClosed ? undefined : FINAL_QUESTIONS_PROMPT;
+  const maximumChoiceFollowUpQuestion = maximumChoiceFollowUp(text, facts);
+  if (maximumChoiceFollowUpQuestion) return maximumChoiceFollowUpQuestion;
   // This must take precedence over every later stage and over informational
   // questions. The client has an unresolved choice of amount/programme, so
   // no guarantor, documents or family prompt may be appended yet.
@@ -1457,7 +1527,15 @@ function isGuarantorQuestion(text: string): boolean {
 }
 
 function isGuarantorParkingAlternativeQuestion(text: string): boolean {
-  return /(?:поручител.{0,160}(?:стоянк|охраняемую\s+стоянк)|(?:стоянк|охраняемую\s+стоянк).{0,160}поручител)/iu.test(text);
+  const question = lastAssistantQuestion(text) ?? text;
+  return /(?:можем|можно|давайте|готовы|предлагаем).{0,80}(?:рассмотреть|перейти|выбрать|оформить).{0,160}(?:стоянк|постановк\p{L}*\s+автомобил)/iu.test(question);
+}
+
+function isActiveGuarantorParkingAlternative(text: string, facts: ApplicationFacts): boolean {
+  return requiresGuarantorForFacts(facts)
+    && facts.guarantorAvailable === false
+    && !facts.guarantorAlternativeDeclined
+    && isGuarantorParkingAlternativeQuestion(text);
 }
 
 function clearAffirmation(text: string): boolean {
@@ -1476,7 +1554,7 @@ function guarantorPatchFromClearReply(
   if (!requiresGuarantorForFacts(facts)) return {};
   const lastAssistantReply = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
   const text = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "").trim().toLocaleLowerCase("ru-RU");
-  if (isGuarantorParkingAlternativeQuestion(lastAssistantReply)) {
+  if (isActiveGuarantorParkingAlternative(lastAssistantReply, facts)) {
     // The semantic classifier (or the main model) has already interpreted
     // this exact reply. Regexes are intentionally only the outage/undecided
     // fallback and cannot replace that decision.
@@ -1492,7 +1570,7 @@ function guarantorPatchFromClearReply(
   return {};
 }
 
-const GUARANTOR_REQUIREMENTS = "Для вашей прописки требуется поручитель\n- возраст от 25 лет\n- проживает в г. Бишкек или Чуйской области\n- должен лично присутствовать при выдаче займа и иметь с собой ID (паспорт)\nУ Вас есть такой поручитель?";
+const GUARANTOR_REQUIREMENTS = "И Вам потребуется поручитель:\n- возраст от 25 лет\n- проживает в г. Бишкек или Чуйской области\n- должен лично присутствовать при выдаче займа и иметь с собой ID (паспорт)\nУ Вас есть такой поручитель?";
 const GUARANTOR_PARKING_ALTERNATIVE = "Поручитель обязателен для программы без изъятия в Вашем регионе. Можем рассмотреть программу с постановкой автомобиля на охраняемую стоянку?";
 const FINAL_QUESTIONS_PROMPT = "Есть ли у Вас ещё вопросы?";
 
@@ -1540,7 +1618,7 @@ function unresolvedBinaryDecisionReply(input: Pick<AgentTurnInput, "messages" | 
   if (isResidenceClarificationQuestion(lastAssistant) && facts.residenceNeedsClarification) {
     return repeatQuestion() ?? "Уточните, пожалуйста: это в Чуйской области?";
   }
-  if (isGuarantorParkingAlternativeQuestion(lastAssistant) && facts.guarantorAvailable === false && !facts.guarantorAlternativeDeclined && facts.requestedProgram === "without_storage") {
+  if (isActiveGuarantorParkingAlternative(lastAssistant, facts)) {
     return repeatQuestion() ?? clarificationOf(GUARANTOR_PARKING_ALTERNATIVE);
   }
   if (isGuarantorQuestion(lastAssistant) && requiresGuarantorForFacts(facts) && facts.guarantorAvailable === undefined) {
@@ -1666,7 +1744,7 @@ function isRegion10PolicyQuestion(input: Pick<AgentTurnInput, "text" | "currentT
   return /почему[^.!?]{0,80}(?:под\s*)?(?:10\s*)?регион|(?:10\s*)?регион[^.!?]{0,80}почему/u.test(text);
 }
 
-function appendContinuationAfterRegion10PolicyQuestion(reply: string, input: Pick<AgentTurnInput, "text" | "currentTurnMessages">, facts: ApplicationFacts): string {
+function appendContinuationAfterRegion10PolicyQuestion(reply: string, input: Pick<AgentTurnInput, "text" | "currentTurnMessages" | "messages" | "settings">, facts: ApplicationFacts): string {
   const messages = input.currentTurnMessages ?? (input.text === undefined ? [] : [{ index: 1, text: input.text }]);
   const exactPolicyAnswer = "Автомобили с регионом 10 у нас не принимаются в залог по правилам компании.";
   const officialGreeting = "Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10.";
@@ -1674,11 +1752,11 @@ function appendContinuationAfterRegion10PolicyQuestion(reply: string, input: Pic
   const answer = hasGreeting ? reply.trimStart().slice(officialGreeting.length).trim() : reply.trim();
   if (messages.filter((message) => message.text.trim()).length < 2 || !isRegion10PolicyQuestion(input) || answer !== exactPolicyAnswer) return reply;
   if (!facts.vehicleModel || !facts.vehicleYear || !facts.vehicleValue || !facts.requestedAmount || facts.requestedProgram) return reply;
-  const over15 = new Date().getFullYear() - facts.vehicleYear > 15;
-  const ageNotice = over15
-    ? " По автомобилю: ему больше 15 лет, поэтому по общему правилу принимаем в залог только на стоянку, а без изъятия можем рассмотреть индивидуально."
-    : "";
-  const continuation = `${exactPolicyAnswer}${ageNotice} Подскажите, пожалуйста, Вас интересует займ без изъятия автомобиля или с постановкой автомобиля на охраняемую стоянку?`;
+  const continuation = [
+    exactPolicyAnswer,
+    olderVehicleProgramNotice(input, facts),
+    "Подскажите, пожалуйста, Вас интересует займ без изъятия автомобиля или с постановкой автомобиля на охраняемую стоянку?"
+  ].filter(Boolean).join("\n\n");
   return hasGreeting ? `${officialGreeting}\n\n${continuation}` : continuation;
 }
 

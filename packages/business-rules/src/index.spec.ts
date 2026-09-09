@@ -175,7 +175,7 @@ describe("business rules", () => {
 
     expect(result.status).not.toBe("refuse");
     expect(result.rulesApplied).toContain("vehicle_older_than_15_individual_review");
-    expect(result.requiredStatements.join(" ")).toContain("старше 15 лет");
+    expect(result.requiredStatements.join(" ")).not.toContain("старше 15 лет");
   });
 
   it("offers parking when an other-region client has no guarantor", () => {
