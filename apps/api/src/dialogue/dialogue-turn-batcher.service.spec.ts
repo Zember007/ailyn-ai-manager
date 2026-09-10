@@ -90,6 +90,43 @@ describe("DialogueTurnBatcherService", () => {
     }
   });
 
+  it("retains knowledge answers to consecutive unpunctuated questions before the final limit answer", async () => {
+    vi.useFakeTimers();
+    try {
+      const replies = [
+        "Да, у нас можно выпить кофе.",
+        "Да, с собакой можно.",
+        "Без изъятия: от 50 000 сом до 200 000 сом\nСо стоянкой: от 50 000 сом до 1 090 000 сом\n\nПожалуйста, отправьте фото ID и свидетельства о регистрации автомобиля с обеих сторон."
+      ];
+      const finalResult = { reply: replies[2] } as any;
+      const orchestrator = {
+        receiveBatch: vi.fn().mockImplementation((_messages: unknown[], _options: unknown) => Promise.resolve({
+          reply: replies.shift(), needsKnowledgeLookup: replies.length >= 1
+        })),
+        publishDeferredBatchReply: vi.fn().mockImplementation((_result: any, reply: string) => Promise.resolve({ ...finalResult, reply }))
+      } as any;
+      const batcher = new DialogueTurnBatcherService(orchestrator);
+      const common = { channel: "web-test" as const, externalContactId: "client", externalConversationId: "chat", attachments: [], timestamp: new Date() };
+
+      const first = batcher.enqueue({ ...common, externalMessageId: "1", text: "а кофе есть" });
+      const second = batcher.enqueue({ ...common, externalMessageId: "2", text: "с собоакой можноэ" });
+      const third = batcher.enqueue({ ...common, externalMessageId: "3", text: "сколько по максимому" });
+      await vi.advanceTimersByTimeAsync(650);
+
+      const expected = [
+        "Да, у нас можно выпить кофе.",
+        "Да, с собакой можно.",
+        "Без изъятия: от 50 000 сом до 200 000 сом\nСо стоянкой: от 50 000 сом до 1 090 000 сом\n\nПожалуйста, отправьте фото ID и свидетельства о регистрации автомобиля с обеих сторон."
+      ].join("\n\n");
+      await expect(Promise.all([first, second, third])).resolves.toEqual([
+        { ...finalResult, reply: expected }, { ...finalResult, reply: expected }, { ...finalResult, reply: expected }
+      ]);
+      expect(orchestrator.publishDeferredBatchReply).toHaveBeenCalledWith(expect.anything(), expected, "3");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("drops an intermediate guarantor prompt when the final batched message chooses parking", async () => {
     vi.useFakeTimers();
     try {

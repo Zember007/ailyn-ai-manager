@@ -166,6 +166,24 @@ describe("single-agent dialogue", () => {
     expect(output).toEqual({ reply: plan, model: "server-response-plan", rendered: false });
   });
 
+  it.each(["а кофе есть", "с собоакой можноэ"])("routes an unpunctuated factual question to knowledge instead of treating it as a documents reply: %s", async (text) => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult, reply: "Распознано.", leadCardPatch: {}
+    }) } }] }) } as any;
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "Пожалуйста, отправьте фото ID и свидетельства о регистрации автомобиля с обеих сторон.", createdAt: "now" } as any],
+      facts: {
+        vehicleModel: "Corolla", vehicleYear: 2010, vehicleValue: 2_180_000,
+        requestedAmount: 200_000, requestedProgram: "parking",
+        residenceRegion: "Другой регион Кыргызстана", residenceCategory: "OTHER_KG"
+      } as any,
+      settings: {}, text, attachments: []
+    });
+
+    expect(output.result?.needsKnowledgeLookup).toBe(true);
+    expect(output.result?.leadCardPatch.knowledgeRequest).toMatchObject({ required: true });
+  });
+
   it("always sends the completed server plan through the output renderer", async () => {
     const application = { id: "app", facts: {}, contactId: "contact", stage: "COLLECTING_VEHICLE", status: "need_more_data" } as any;
     const conversation = { id: "conversation", messages: [], application, channel: "web-test" } as any;

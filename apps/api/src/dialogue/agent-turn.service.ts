@@ -1154,7 +1154,9 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     ? undefined
     : modelKnowledgeRequest ?? (isExplicitQuestionText(semanticText ?? "")
       ? { required: true as const, reason: "missing_approved_answer" as const }
-      : undefined);
+      : isLikelyKnowledgeQuestion(semanticText ?? "")
+        ? { required: true as const, reason: "missing_approved_answer" as const }
+        : undefined);
   const limitChoiceFacts = limitChoicePatch(parsed.limitChoice, input, input.facts);
   // A number in an active scheduling reply is a day or time, never a new
   // vehicle value or requested amount.  This also prevents a model that
@@ -2859,7 +2861,7 @@ function requiresKnowledgeAnswer(input: Pick<AgentTurnInput, "text" | "currentTu
 function isLikelyKnowledgeQuestion(text: string): boolean {
   if (/[?？]/u.test(text)) return true;
   if (wordCount(text) < 2) return false;
-  return /^(?:(?:(?:а|и|ну)\s+)?(?:есть|можно|сколько|какой|какая|какие|где|когда|как|работает|ставите|нужн(?:о|а|ы)?|дадите|оформить|оформлю|приеду)(?=\s|$)|(?:авто|машин).{0,40}(?:кредит|залоге|арест|ограничен)|(?:датчик|gps|гпс|трекер|парковк|стоянк|вещ|багаж))/iu.test(text.trim());
+  return /^(?:(?:(?:а|и|ну)\s+)?(?:есть|можно|сколько|какой|какая|какие|где|когда|как|работает|ставите|нужн(?:о|а|ы)?|дадите|оформить|оформлю|приеду)(?=\s|$)|(?:авто|машин).{0,40}(?:кредит|залоге|арест|ограничен)|(?:датчик|gps|гпс|трекер|парковк|стоянк|вещ|багаж)|(?:(?:а|и|ну|с)\s+)?(?:кофе|чай|wi-?fi|туалет|соб[ао](?:а)?к\p{L}*|животн\p{L}*).{0,60}(?:есть|можно\p{L}*|пуска\p{L}*|разреш\p{L}*))/iu.test(text.trim());
 }
 
 /**
@@ -2918,6 +2920,9 @@ function isWorkflowPrompt(text: string): boolean {
 function isResponseToLastWorkflowQuestion(input: Pick<AgentTurnInput, "text" | "currentTurnMessages" | "messages">): boolean {
   const text = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "").trim();
   if (!text || text.length > 240 || /[?？]/u.test(text)) return false;
+  // A short unpunctuated factual question must not be mistaken for a reply to
+  // the preceding documents/programme prompt simply because it is concise.
+  if (isLikelyKnowledgeQuestion(text)) return false;
   const lastAssistantMessage = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
   return /ориентировочн(?:ую|ая)\s+стоимост|какая\s+сумма\s+займа|без\s+изъяти|со\s+стоянк|ваш[ау]\s+пропис|подскажите.{0,80}(?:документ|фото|семейн|поручител|день|время)/iu.test(lastAssistantMessage);
 }

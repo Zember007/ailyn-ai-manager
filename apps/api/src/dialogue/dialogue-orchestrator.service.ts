@@ -11,7 +11,7 @@ import { DeferredIntegrationsService } from "./deferred-integrations.service.js"
 import { detectMoneyMentions, formatMoney, formatSomMoney, resolveMoneyFacts, roundSomAmount, type ForeignMoneyCurrencyCode } from "./money-normalization.js";
 import { calculateLoanPricing } from "./loan-pricing.js";
 
-export interface DialogueResult { conversation: Stage1Conversation; application: Stage1Application; reply: string; validation: { passed: boolean; errors: string[] }; routerAiModel: string; promptVersion: string; }
+export interface DialogueResult { conversation: Stage1Conversation; application: Stage1Application; reply: string; validation: { passed: boolean; errors: string[] }; routerAiModel: string; promptVersion: string; needsKnowledgeLookup?: boolean; }
 export interface DialogueReceiveOptions { signal?: AbortSignal; deferReplyPersistence?: boolean; }
 const managerDeltaFactKeys = new Set(["requestedAmount", "requestedProgram", "visitDate", "visitTime", "vehicleValue", "vehicleMake", "vehicleModel", "vehicleYear", "fullName", "phone"]);
 
@@ -252,7 +252,7 @@ export class DialogueOrchestratorService {
     // sequence. Facts and client messages must commit after every one, but
     // only the final combined reply may appear in the visible history.
     if (options.deferReplyPersistence) {
-      return { conversation, application, reply, validation, routerAiModel: turn.model, promptVersion: turn.promptVersion };
+      return { conversation, application, reply, validation, routerAiModel: turn.model, promptVersion: turn.promptVersion, needsKnowledgeLookup: turn.result?.needsKnowledgeLookup };
     }
     await this.store.addMessage(conversation, { author: "ai", body: reply, attachmentIds: [], attachments: [], metadata: { sourceMessageId: lastMessage.externalMessageId, routerAiModel: turn.model, promptVersion: turn.promptVersion, validation, trace: { singleModel: true, batchedClientMessages: messages.length, changedFactKeys, managerEvent, intent: turn.result?.intent, targetEvent: turn.result?.targetEvent } } });
     // Generate the private lead summary immediately after the booking reply
@@ -278,7 +278,7 @@ export class DialogueOrchestratorService {
     const refreshedConversation = (await this.store.getConversation(conversation.id)) ?? conversation;
     const refreshedApplication = (await this.store.getApplication(application.id)) ?? refreshedConversation.application ?? application;
     void this.logs.log("dialogue.single-agent", "Processed dialogue turn", { conversationId: conversation.id, metadata: { applicationId: refreshedApplication.id, validModelResult: Boolean(turn.result), model: turn.model } });
-    return { conversation: refreshedConversation, application: refreshedApplication, reply, validation, routerAiModel: turn.model, promptVersion: turn.promptVersion };
+    return { conversation: refreshedConversation, application: refreshedApplication, reply, validation, routerAiModel: turn.model, promptVersion: turn.promptVersion, needsKnowledgeLookup: turn.result?.needsKnowledgeLookup };
   }
 
   /** Publishes the one visible reply after a sequentially processed batch. */

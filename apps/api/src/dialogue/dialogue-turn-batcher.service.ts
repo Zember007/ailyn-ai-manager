@@ -95,7 +95,12 @@ export class DialogueTurnBatcherService {
 function combineSequentialReplies(messages: InboundMessage[], results: DialogueResult[]): string {
   const parts = results
     .map((result, index) => ({ result, message: messages[index]!, isLast: index === results.length - 1 }))
-    .filter(({ message, isLast }) => isLast || message.attachments.length > 0 || isClientQuestion(message.text))
+    // The model is the primary question classifier. A short question without
+    // `?` (for example «а кофе есть» or «с собакой можноэ») must retain its
+    // knowledge answer even when the narrow batching regex cannot recognise
+    // its wording. The last response still contributes the sole workflow
+    // prompt, while intermediate prompts are stripped below.
+    .filter(({ result, message, isLast }) => isLast || message.attachments.length > 0 || isClientQuestion(message.text) || result.needsKnowledgeLookup === true)
     .map(({ result, isLast }) => isLast ? result.reply : removeIntermediateWorkflow(result.reply))
     .filter(Boolean);
   return [...new Map(parts.map((part) => [normalizeReply(part), part])).values()].join("\n\n");
