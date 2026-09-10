@@ -3101,6 +3101,7 @@ function isClearOptionalStageRefusal(input: Pick<AgentTurnInput, "text" | "messa
   // A short non-question is not automatically a refusal: corrections such
   // as «я вообще-то из Балыкчы» must be able to change an earlier stage.
   // Optional stages close only on an unambiguous negative/deferral.
+  if (/^(?:фото\s+нет|фотограф(?:и|ий)\s+нет)[.!?\s]*$/u.test(text)) return true;
   return /^(?:нет|неа|нету|их\s+нет|нет\s+с\s+собой|не\s+буду|не\s+хочу|не\s+могу|не\s+получится|не\s+получится\s+сейчас|не\s+найд(?:у|ется)|не\s+смогу\s+найти|позже|потом|отправлю\s+позже|пришлю\s+позже)(?:\s+(?:фото|фотографии|документ\p{L}*))?[.!\s]*$/u.test(text);
 }
 

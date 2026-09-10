@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { deriveStageCompletion, effectiveFactsForTurn, selectedProgramLimit } from "./agent-turn-reconciliation.js";
+import { attachmentFactsForCurrentStage, deriveStageCompletion, effectiveFactsForTurn, selectedProgramLimit } from "./agent-turn-reconciliation.js";
 
 describe("agent turn reconciliation pricing", () => {
   it("keeps any future vehicle year out of the completed vehicle stage", () => {
@@ -120,6 +120,24 @@ describe("agent turn reconciliation pricing", () => {
       requestedAmount: 600_000, requestedProgram: "without_storage",
       declinedDocuments: true
     })).toMatchObject({ residence: true, guarantor: true, documents: true });
+  });
+
+  it("completes the car-photo stage for any upload after its prompt, even when vision returns unknown", () => {
+    const previous = {
+      vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 3_000_000,
+      requestedAmount: 600_000, requestedProgram: "without_storage",
+      residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY", documentsProvided: true
+    } as const;
+    const attachmentFacts = attachmentFactsForCurrentStage({
+      previous,
+      attachments: [{ attachmentId: "photo", type: "unknown", status: "received" }],
+      inboundAttachmentCount: 1,
+      lastAssistantReply: "Пожалуйста, отправьте 2–3 фотографии автомобиля."
+    });
+    const facts = effectiveFactsForTurn({ previous, modelPatch: {}, explicitFacts: {}, currencyFacts: {}, attachmentFacts });
+
+    expect(facts.documents).toMatchObject({ car_photo: "received" });
+    expect(deriveStageCompletion(facts)).toMatchObject({ documents: true, carPhoto: true });
   });
 
   it("resets the amount stage and every dependent stage when the amount changes", () => {
