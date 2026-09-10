@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { calculateLoanLimits, evaluateApplication, normalizeKyrgyzstanLocality, resolveKyrgyzstanLocality } from "./index.js";
+import { calculateLoanLimits, defaultBusinessRuleSettings, evaluateApplication, normalizeKyrgyzstanLocality, resolveKyrgyzstanLocality } from "./index.js";
 
 describe("business rules", () => {
   it.each([
@@ -89,11 +89,17 @@ describe("business rules", () => {
   });
 
   it("does not save or calculate with a future vehicle year", () => {
-    const result = evaluateApplication({ vehicleMake: "Toyota", vehicleModel: "Camry", vehicleYear: 2099 });
+    const result = evaluateApplication(
+      { vehicleMake: "Li", vehicleModel: "L9", vehicleYear: 2029 },
+      { ...defaultBusinessRuleSettings, currentYear: 2026 }
+    );
 
     expect(result.status).toBe("need_more_data");
     expect(result.rulesApplied).toContain("future_vehicle_year_correction");
     expect(result.requiredFacts).toEqual(["vehicleYear"]);
+    expect(result.requiredStatements).toEqual([
+      "2029 год ещё не наступил. Уточните, пожалуйста, верный год выпуска автомобиля."
+    ]);
   });
 
   it("does not calculate a personal programme until programme and residence are both known", () => {

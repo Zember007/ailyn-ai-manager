@@ -26,7 +26,7 @@ describe("ResponseValidatorService", () => {
 
   it("accepts a required correction as the current next action without a duplicate question", () => {
     const service = new ResponseValidatorService();
-    const correction = "Подскажите, пожалуйста, Вы, возможно, допустили опечатку. Автомобиля 2032 года выпуска пока не существует. Напишите, пожалуйста, правильный год выпуска автомобиля.";
+    const correction = "2032 год ещё не наступил. Уточните, пожалуйста, верный год выпуска автомобиля.";
     const result = service.validate({
       message: correction,
       decision: { ...decision, nextAction: "collect_vehicle", requiredStatements: [correction] },

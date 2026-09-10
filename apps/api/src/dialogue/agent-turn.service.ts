@@ -8,7 +8,7 @@ import type { NormalizedMoneyValue } from "../ai/ai-provider.interface.js";
 import { RouterAiClient } from "../ai/router-ai/router-ai.client.js";
 import type { InboundAttachment } from "../channels/channel.interface.js";
 import { BackendLogsService } from "../logs/backend-logs.service.js";
-import { attachmentFactsFromResult, deriveStageCompletion, effectiveFactsForTurn } from "./agent-turn-reconciliation.js";
+import { attachmentFactsForCurrentStage, deriveStageCompletion, effectiveFactsForTurn, isCarPhotoStagePrompt } from "./agent-turn-reconciliation.js";
 import { prioritizedKnowledgeForQuestion, selectRelevantDocumentation } from "./documentation-retrieval.js";
 import { agentTurnResultSchema, dialogueSummarySchema, knowledgeAnswerSchema, type AgentTurnResult } from "./agent-turn.contracts.js";
 import { moneyNormalizationSchema } from "./pipeline.contracts.js";
@@ -467,10 +467,41 @@ export class AgentTurnService {
     const programNormalized = await this.resolveProgramDecision(limitChoiceNormalized, input);
     const optionalStageNormalized = await this.resolveOptionalStageDecision(programNormalized, input);
     const documentsNormalized = await this.resolveDocumentIdentityFacts(optionalStageNormalized, input);
-    const residenceNormalized = await this.normalizeResidenceLocality(documentsNormalized, input);
+    const familyNormalized = await this.resolveUnofficialMarriageStatus(documentsNormalized, input);
+    const residenceNormalized = await this.normalizeResidenceLocality(familyNormalized, input);
     const divorceTimingResolved = await this.resolveDivorcePurchaseTiming(residenceNormalized, input);
     const officeResolved = await this.resolveOfficeConsent(await this.resolveGuarantorDecision(await this.resolveResidenceClarification(divorceTimingResolved, input), input), input);
     return this.resolveFinalQuestionsDecision(officeResolved, input);
+  }
+
+  /**
+   * Civil/unregistered partnerships are not an official marriage for this
+   * workflow. The semantic classifier is primary because clients often
+   * describe that status over several messages; the narrow text fallback is
+   * used only when the classifier is unavailable or returns no decision.
+   */
+  private async resolveUnofficialMarriageStatus(parsed: AgentTurnResult, input: AgentTurnInput): Promise<AgentTurnResult> {
+    const clientReply = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "").trim();
+    if (!looksLikeUnofficialMarriageStatement(clientReply)) return parsed;
+    const fallback = unofficialMarriageStatusFallback(clientReply);
+    try {
+      const response = await this.client.createChatCompletion({
+        model: this.config.routerAiNormalizerModel ?? this.config.routerAiTextModel ?? "routerai-text-model-not-configured",
+        temperature: 0, max_tokens: 30, reasoning: { enabled: false }, response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: "Определи только официальный семейный статус клиента из текущей реплики. Верни JSON {\"familyStatus\":\"single\"|\"married\"|\"divorced\"|null}. Гражданский брак, совместная жизнь, дети без официальной регистрации, фразы «официально не расписаны», «брак не регистрировал» означают single. Такая реплика может исправлять ранее сохранённый married. Не додумывай статус." },
+          { role: "user", content: JSON.stringify({ previousFamilyStatus: input.facts.familyStatus ?? null, clientReply }) }
+        ]
+      }, { timeoutMs: this.config.routerAiTimeoutMs, signal: input.signal });
+      const familyStatus = parseAgentJson(response.choices?.[0]?.message?.content).familyStatus;
+      if (familyStatus === "single" || familyStatus === "married" || familyStatus === "divorced") {
+        return { ...parsed, leadCardPatch: { ...parsed.leadCardPatch, familyStatus } };
+      }
+    } catch (error) {
+      if (input.signal?.aborted) throw error;
+      this.logger.warn(`Unofficial-marriage classifier unavailable: ${formatError(error)}`);
+    }
+    return fallback ? { ...parsed, leadCardPatch: { ...parsed.leadCardPatch, familyStatus: fallback } } : parsed;
   }
 
   /** A narrow vision pass prevents the prose model from dropping a readable
@@ -1068,8 +1099,11 @@ function localAttachmentRecovery(input: AgentTurnInput): AgentTurnResult {
   // A recognition outage must never strand the client at document upload or
   // promise a later re-check. Files are already retained by the orchestrator,
   // so complete this optional handoff and continue with the next server stage.
-  const recoveredFacts = { ...input.facts, documentsProvided: true };
-  const reply = ["Спасибо, документы получены.", nextRequiredStageQuestion(recoveredFacts, deriveStageCompletion(recoveredFacts))]
+  const lastAssistantReply = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
+  const recoveredFacts = isCarPhotoStagePrompt(lastAssistantReply)
+    ? { ...input.facts, documents: { ...(input.facts.documents ?? {}), car_photo: "received" } }
+    : { ...input.facts, documentsProvided: true };
+  const reply = [isCarPhotoStagePrompt(lastAssistantReply) ? "Фотографии автомобиля получены." : "Спасибо, документы получены.", nextRequiredStageQuestion(recoveredFacts, deriveStageCompletion(recoveredFacts))]
     .filter(Boolean)
     .join("\n\n");
   return {
@@ -1219,21 +1253,16 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   // An upload is sufficient to close the optional document-handoff stage.
   // Recognition remains best-effort: classifications and FIO may be missing,
   // but the client must never be asked to send the same files again.
-  const attachmentFacts = {
-    ...attachmentFactsFromResult(input.facts, parsed.attachments),
-    ...(input.attachments.length > 0 ? { documentsProvided: true } : {})
-  };
+  const attachmentFacts = attachmentFactsForCurrentStage({
+    previous: input.facts,
+    attachments: parsed.attachments,
+    inboundAttachmentCount: input.attachments.length,
+    lastAssistantReply
+  });
   // A file uploaded immediately after the dedicated car-photo request is a
   // car-photo handoff even if the generic dialogue model classified it as
   // unknown. This is a workflow acknowledgement, not an image-quality claim:
   // never make the client repeat the same optional step.
-  if (input.attachments.length > 0 && isCarPhotoRequest(lastAssistantReply)) {
-    attachmentFacts.documents = {
-      ...(input.facts.documents ?? {}),
-      ...(attachmentFacts.documents ?? {}),
-      car_photo: "received"
-    };
-  }
   const factsWithoutBelowMinimumAmount = requiresBelowMinimumConfirmation || confirmedBelowMinimumAmount
     ? { ...input.facts, requestedAmount: undefined, requestedAmountSourceCurrency: undefined }
     : input.facts;
@@ -1287,7 +1316,14 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
       messages: input.messages,
       includeCrossStageMatches: input.knowledgeLookup
     }).mandatoryAnswer;
-  const internalReply = normalizeTechnicalReply(parsed.reply);
+  const normalizedModelReply = normalizeTechnicalReply(parsed.reply);
+  // «Нужно уточнение» is a model fallback, not customer-facing content. If
+  // this turn did yield any new server-owned fact, the canonical next step is
+  // already known and the fallback must not contradict that recognition.
+  const internalReply = isGenericClarificationReply(normalizedModelReply)
+    && hasRecognizedFactsForTurn(input.facts, effectiveFacts)
+    ? ""
+    : normalizedModelReply;
   const guardedModelReply = removeUnpromptedLoanExplanation(stripClientFactRestatement(removeDuplicateCurrencyConversion(removeUnaskedCurrencyProse(removeUnaskedLimitProse(enforceOptionalStageRefusalMessage(enforceGuarantorQuestionRequirements(enforceIdentityAnswer(
     guardWorkflowStageOrder(replacePrematureVisitQuestion(deduplicateRepeatedGuarantorBlock(internalReply), effectiveFacts, stageCompletion), effectiveFacts, stageCompletion),
     input
@@ -1400,11 +1436,11 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     // The model is the sole owner of conversational meaning and client prose.
     // A limit warning answers a client-provided amount, but must never erase
     // an unrelated FAQ answer from the same turn.
-    reply: normalizeVehicleRegistrationTerminology(belowMinimumReply ?? moneyRoleReply ?? (rejectedMoneyClarification
+    reply: stripMechanicalAcknowledgement(normalizeVehicleRegistrationTerminology(belowMinimumReply ?? moneyRoleReply ?? (rejectedMoneyClarification
       ? "Тогда уточните, какую сумму вы имели в виду?"
       : vehicleNeedClarification
       ? enforceFirstContactGreeting(vehicleNeedClarification, input)
-      : unresolvedBinaryDecisionReply(input, effectiveFacts, loanQuestionKind) ?? visitTimeClarification ?? responsePlan))
+      : unresolvedBinaryDecisionReply(input, effectiveFacts, loanQuestionKind) ?? visitTimeClarification ?? responsePlan)))
   };
 }
 
@@ -1429,9 +1465,33 @@ function normalizeVehicleRegistrationTerminology(reply: string): string {
 
 /** Convert the interpreter's two allowed markers into a server-owned plan fragment. */
 function normalizeTechnicalReply(reply: string): string {
-  if (/^распознано[.!\s]*$/iu.test(reply)) return "Поняла.";
+  if (/^распознано[.!\s]*$/iu.test(reply)) return "";
   if (/^нужно\s+уточнение[.!\s]*$/iu.test(reply)) return "Не смогла понять. Напишите, пожалуйста, подробнее.";
   return reply;
+}
+
+function isGenericClarificationReply(reply: string): boolean {
+  return /^не\s+смогла\s+понять\.\s*напишите,?\s+пожалуйста,?\s+подробнее\.?$/iu.test(reply.trim());
+}
+
+/** A recognised fact always takes precedence over the model's generic fallback. */
+function hasRecognizedFactsForTurn(previous: ApplicationFacts, current: ApplicationFacts): boolean {
+  const ignored = new Set(["language", "stageCompletion", "knowledgeRequest"]);
+  const keys = new Set([...Object.keys(previous), ...Object.keys(current)]);
+  return [...keys].some((key) => {
+    if (ignored.has(key)) return false;
+    return JSON.stringify((previous as Record<string, unknown>)[key]) !== JSON.stringify((current as Record<string, unknown>)[key]);
+  });
+}
+
+/** Mechanical acknowledgements add no customer-facing value. */
+function stripMechanicalAcknowledgement(reply: string): string {
+  return reply
+    .replace(/^\s*(?:поняла|понял|хорошо,?\s*(?:поняла|понял)|записала)[,.!…\s]*/iu, "")
+    .replace(/(?:^|\n)\s*(?:поняла|понял|хорошо,?\s*(?:поняла|понял)|записала)[.!…\s]*(?=\n|$)/giu, "$1")
+    .replace(/^\s*ваша\s+прописка\s*[—:-]\s*(?:бишкек|чуйская\s+область|за\s+пределами\s+чуйской\s+области)[.!\s]*/iu, "")
+    .replace(/\n{3,}/gu, "\n\n")
+    .trim();
 }
 
 function omitVisitFacts(patch: Partial<ApplicationFacts>): Partial<ApplicationFacts> {
@@ -1610,7 +1670,7 @@ function isBareRefusal(input: Pick<AgentTurnInput, "text" | "currentTurnMessages
 function acceptedLimitChoiceNotice(previous: ApplicationFacts, current: ApplicationFacts): string | undefined {
   if (previous.requestedAmount === current.requestedAmount || current.requestedAmount === undefined || !current.requestedProgram) return undefined;
   const program = current.requestedProgram === "parking" ? "со стоянкой" : "без изъятия";
-  return `Поняла, продолжим по программе ${program} на сумму ${formatSomMoney(current.requestedAmount)} сом.`;
+  return `Продолжим по программе ${program} на сумму ${formatSomMoney(current.requestedAmount)} сом.`;
 }
 
 function maximumLoanChoiceNotice(input: Pick<AgentTurnInput, "text" | "currentTurnMessages" | "pendingAction">, previous: ApplicationFacts, current: ApplicationFacts): string | undefined {
@@ -1691,7 +1751,7 @@ function visitConfirmationNotice(input: Pick<AgentTurnInput, "settings">, previo
   const twoGis = approvedOfficeUrl(settings.twoGisUrl, DEFAULT_TWO_GIS_URL);
   const googleMaps = approvedOfficeUrl(settings.googleMapsUrl, DEFAULT_GOOGLE_MAPS_URL);
   void timezone;
-  return `Поняла, записываю Вас на ${weekday}, ${displayDate}, в ${current.visitTime}.\nЗапись предварительная, её подтвердит менеджер.\nАдрес: ${address}\n2ГИС: ${twoGis}\nGoogle Maps: ${googleMaps}`;
+  return `Записываю Вас на ${weekday}, ${displayDate}, в ${current.visitTime}.\nЗапись предварительная, её подтвердит менеджер.\nАдрес: ${address}\n2ГИС: ${twoGis}\nGoogle Maps: ${googleMaps}`;
 }
 
 /** Once a client has supplied exactly one half of a visit slot, the server
@@ -1775,6 +1835,9 @@ function guardWorkflowStageOrder(reply: string, facts: ApplicationFacts, complet
 
 export function nextRequiredStageQuestion(facts: ApplicationFacts, completion = deriveStageCompletion(facts)): string | undefined {
   if (!completion?.vehicle) {
+    if (typeof facts.reportedInvalidVehicleYear === "number") {
+      return `${facts.reportedInvalidVehicleYear} год ещё не наступил. Уточните, пожалуйста, верный год выпуска автомобиля.`;
+    }
     const missing = [
       !facts.vehicleModel || !facts.vehicleYear ? "модель и год выпуска автомобиля" : undefined,
       facts.vehicleValue === undefined ? "ориентировочную стоимость автомобиля" : undefined
@@ -2098,9 +2161,7 @@ function residenceLimitNoticeForTurn(previous: ApplicationFacts, current: Applic
   if (!selectedPricing.available || typeof selectedPricing.publicMax !== "number") return undefined;
   const limit = formatSomMoney(selectedPricing.publicMax);
   const program = current.requestedProgram === "without_storage" ? "без изъятия" : "со стоянкой";
-  const prefix = current.residenceCategory === "OTHER_KG"
-    ? `Поняла, Ваша прописка — за пределами Чуйской области. По программе ${program} Вам доступно до ${limit} сом.`
-    : `Поняла, Ваша прописка — ${current.residenceRegion === "Чуйская область" ? "Чуйская область" : "Бишкек"}. По программе ${program} Вам доступно до ${limit} сом.`;
+  const prefix = `По программе ${program} Вам доступно до ${limit} сом.`;
   // The amount stage precedes the guarantor gate. A residence correction can
   // establish that a guarantor will be needed later, but it must not append
   // that question while the server still needs the requested loan amount.
@@ -2273,7 +2334,7 @@ function removeModelWorkflowQuestion(reply: string): string {
       || /(?:семейн|в\s+браке|согласие\s+супруг)/.test(normalized)
       || /(?:какой\s+день|когда\s+вам\s+удобно|во\s+сколько|день\s+и\s+время).*(?:подъехать|приехать|визит)?/.test(normalized);
   };
-  const stagePromptStart = /^(?:подскажите|уточните|есть\s+ли\s+у\s+вас|вас\s+интересует|пожалуйста,?\s*(?:отправьте|пришлите)|на\s+какой\s+день|когда\s+вам\s+удобно|во\s+сколько|можно\s+рассмотреть)/iu;
+  const stagePromptStart = /^(?:подскажите|уточните|какая\s+сумма\s+займа|есть\s+ли\s+у\s+вас|вас\s+интересует|пожалуйста,?\s*(?:отправьте|пришлите)|на\s+какой\s+день|когда\s+вам\s+удобно|во\s+сколько|можно\s+рассмотреть)/iu;
   // Models sometimes terminate a prompt with a period despite it being a
   // question. Remove only prompt-shaped application sentences; a question
   // embedded in FAQ prose is left intact for the knowledge-answer path.
@@ -2515,6 +2576,8 @@ function isResidenceCollectionQuestion(text: string): boolean {
  * travel plans and a spouse's city must leave the lead card untouched.
  */
 function isResidenceUpdateTurn(text: string, lastAssistant: string, previousFacts: ApplicationFacts): boolean {
+  // «В гражданском» is a family-status correction, not a locality.
+  if (looksLikeUnofficialMarriageStatement(text)) return false;
   if (isResidenceCollectionQuestion(lastAssistant)) return true;
   if (/(?:пропис\p{L}*|зарегистрир\p{L}*|регистрац\p{L}*|место\s+жительств\p{L}*)/iu.test(text)) return true;
   if (explicitChuyResidenceCategory(text)) return true;
@@ -2529,6 +2592,14 @@ function explicitChuyResidenceCategory(text: string | undefined): "BISHKEK_CHUY"
   if (/(?:^|\s)(?:это\s+)?(?:точно\s+)?не\s+(?:в\s+)?чу[йи](?:ской|ская)?(?:\s+област\p{L}*)?(?:$|[\s.!?,])/iu.test(normalized)) return "OTHER_KG";
   if (/(?:жив[уе]\p{L}*|пропис\p{L}*|зарегистрир\p{L}*|это)\s+(?:в\s+)?чу[йи](?:ской|ская)?(?:\s+област\p{L}*)?(?:$|[\s.!?,])/iu.test(normalized)) return "BISHKEK_CHUY";
   return undefined;
+}
+
+function looksLikeUnofficialMarriageStatement(text: string): boolean {
+  return /(?:гражданск\p{L}*\s+брак|брак\p{L}*\s+гражданск\p{L}*|в\s+гражданск\p{L}*|официально\s+(?:не\s+)?распис|брак\s+не\s+регистрир|не\s+регистрир\p{L}*\s+брак|не\s+расписан)/iu.test(text);
+}
+
+function unofficialMarriageStatusFallback(text: string): "single" | undefined {
+  return looksLikeUnofficialMarriageStatement(text) ? "single" : undefined;
 }
 
 function familyPatchFromClearReply(input: Pick<AgentTurnInput, "text" | "currentTurnMessages" | "messages">, facts: ApplicationFacts, modelPatch: Partial<ApplicationFacts>): Partial<ApplicationFacts> {

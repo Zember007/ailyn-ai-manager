@@ -2,6 +2,20 @@ import { describe, expect, it } from "vitest";
 import { deriveStageCompletion, effectiveFactsForTurn, selectedProgramLimit } from "./agent-turn-reconciliation.js";
 
 describe("agent turn reconciliation pricing", () => {
+  it("keeps any future vehicle year out of the completed vehicle stage", () => {
+    const facts = effectiveFactsForTurn({
+      previous: {},
+      modelPatch: { vehicleModel: "Li 9", vehicleYear: 2031, vehicleValue: 6_000_000 },
+      explicitFacts: {},
+      currencyFacts: {},
+      attachmentFacts: {}
+    });
+
+    expect(facts.vehicleYear).toBeUndefined();
+    expect(facts.reportedInvalidVehicleYear).toBe(2031);
+    expect(deriveStageCompletion(facts).vehicle).toBe(false);
+  });
+
   it("keeps the exact parking maximum for selected-program state", () => {
     const facts = {
       vehicleValue: 1_748_982,

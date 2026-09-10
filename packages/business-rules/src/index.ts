@@ -309,7 +309,7 @@ export function evaluateApplication(
   if (invalidVehicleYear !== undefined) {
     rulesApplied.push("future_vehicle_year_correction");
     return needMore("COLLECTING_VEHICLE", "collect_vehicle", ["vehicleYear"], rulesApplied, [], {}, [
-      `Подскажите, пожалуйста, Вы, возможно, допустили опечатку. Автомобиля ${invalidVehicleYear} года выпуска пока не существует. Напишите, пожалуйста, правильный год выпуска автомобиля.`
+      `${invalidVehicleYear} год ещё не наступил. Уточните, пожалуйста, верный год выпуска автомобиля.`
     ], forbiddenStatements, blockedRules);
   }
 

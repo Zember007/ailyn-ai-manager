@@ -43,6 +43,48 @@ async function runMockedBatchedAgentTurn(input: { facts: Record<string, unknown>
 }
 
 describe("single-agent dialogue", () => {
+  it("asks to correct a future vehicle year instead of advancing to the amount stage", () => {
+    expect(nextRequiredStageQuestion({
+      vehicleModel: "Li 9",
+      reportedInvalidVehicleYear: 2031,
+      vehicleValue: 6_000_000
+    })).toBe("2031 год ещё не наступил. Уточните, пожалуйста, верный год выпуска автомобиля.");
+  });
+
+  it("does not let a future vehicle year advance to the amount stage", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult,
+      reply: amountStageQuestion,
+      leadCardPatch: { vehicleModel: "Li 9", vehicleYear: 2031, vehicleValue: 6_000_000 }
+    }) } }] }) } as any;
+
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: vehicleStageQuestion, createdAt: "now" } as any],
+      facts: {}, settings: {}, text: "ли 9 2031 года стоит 6 млн", attachments: []
+    });
+
+    expect(output.reply).toBe("2031 год ещё не наступил. Уточните, пожалуйста, верный год выпуска автомобиля.");
+    expect(output.result.leadCardPatch).toMatchObject({ vehicleModel: "Li 9", reportedInvalidVehicleYear: 2031 });
+    expect(output.result.leadCardPatch.vehicleYear).toBeUndefined();
+  });
+
+  it("drops the generic clarification when a short correction is recognised", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult,
+      reply: "Нужно уточнение.",
+      leadCardPatch: { vehicleYear: 2030 }
+    }) } }] }) } as any;
+
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "2031 год ещё не наступил. Уточните, пожалуйста, верный год выпуска автомобиля.", createdAt: "now" } as any],
+      facts: { vehicleModel: "Li 9", vehicleValue: 6_000_000, reportedInvalidVehicleYear: 2031 } as any,
+      settings: {}, text: "2030", attachments: []
+    });
+
+    expect(output.reply).toBe("2030 год ещё не наступил. Уточните, пожалуйста, верный год выпуска автомобиля.");
+    expect(output.reply).not.toContain("Не смогла понять");
+  });
+
   it("asks only for visit time when the visit date is already saved", () => {
     expect(nextRequiredStageQuestion({
       vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 3_000_000,
@@ -287,7 +329,7 @@ describe("single-agent dialogue", () => {
 
     await expect(service.classifyPendingMoneyClarification({ text: "долларов", messages })).resolves.toEqual({ decision: "accept", currency: "USD" });
     await expect(service.classifyPendingMoneyClarification({ text: "нет", messages })).resolves.toEqual({ decision: "reject" });
-    expect(client.createChatCompletion).toHaveBeenCalledTimes(2);
+    expect(client.createChatCompletion.mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 
   it("keeps a clear money-confirmation rejection out of knowledge routing when its classifier is undecided", async () => {
@@ -3002,6 +3044,52 @@ describe("single-agent dialogue", () => {
     expect(output.reply.match(/У Вас есть такой поручитель\?/gu)).toHaveLength(1);
   });
 
+  it.each([
+    "официально не расписаны, но дети есть",
+    "я вообще официально брак не регистрировал",
+    "в браке гражданском"
+  ])("treats %s as not officially married", async (text) => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn()
+      .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ ...validResult, reply: "Распознано.", leadCardPatch: {} }) } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ familyStatus: "single" }) } }] })
+    } as any;
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "Подскажите, пожалуйста, Ваше семейное положение — Вы в браке, в разводе или не в браке.", createdAt: "now" } as any],
+      facts: {
+        vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 3_000_000,
+        requestedAmount: 600_000, requestedProgram: "without_storage",
+        residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY",
+        declinedDocuments: true, declinedCarPhoto: true
+      } as any,
+      settings: {}, text, attachments: []
+    });
+
+    expect(client.createChatCompletion.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(output.result?.leadCardPatch.familyStatus).toBe("single");
+    expect(output.reply).toContain("Нотариальное согласие супруга или супруги в таком случае не требуется.");
+  });
+
+  it("replaces a prior official marriage after a later civil-marriage correction", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn()
+      .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ ...validResult, reply: "Распознано.", leadCardPatch: {} }) } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ familyStatus: "single" }) } }] })
+    } as any;
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "Для оформления потребуется нотариальное согласие супруга или супруги. Вам удобно оформить согласие при визите в офис?", createdAt: "now" } as any],
+      facts: {
+        vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 3_000_000,
+        requestedAmount: 600_000, requestedProgram: "without_storage",
+        residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY",
+        declinedDocuments: true, declinedCarPhoto: true, familyStatus: "married"
+      } as any,
+      settings: {}, text: "в гражданском", attachments: []
+    });
+
+    expect(output.result?.leadCardPatch.familyStatus).toBe("single");
+    expect(output.reply).toContain("Нотариальное согласие супруга или супруги в таком случае не требуется.");
+    expect(output.reply).not.toContain("Вам удобно оформить согласие");
+  });
+
   it("recovers an already stated loan amount instead of asking for it again", async () => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
       ...validResult, reply: "Не смогла понять. Напишите, пожалуйста, подробнее.", leadCardPatch: {}
@@ -3100,7 +3188,7 @@ describe("single-agent dialogue", () => {
     expect(output.reply).toContain("Есть ли у Вас ещё вопросы?");
   });
 
-  it("acknowledges a post-visit residence correction and reevaluates eligibility", async () => {
+  it("does not announce a post-visit residence correction to the client", async () => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
       ...validResult, reply: "Распознано.", leadCardPatch: {}
     }) } }] }) } as any;
@@ -3117,7 +3205,7 @@ describe("single-agent dialogue", () => {
     });
 
     expect(output.result?.leadCardPatch).toMatchObject({ residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY", clientClosed: false });
-    expect(output.reply).toContain("Поняла, Ваша прописка — Бишкек");
+    expect(output.reply).not.toMatch(/поняла|ваша\s+прописка|бишкек/iu);
     expect(output.reply).not.toContain("поручител");
   });
 

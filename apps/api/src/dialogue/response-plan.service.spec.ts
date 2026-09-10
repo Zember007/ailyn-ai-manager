@@ -30,7 +30,7 @@ describe("ResponsePlanService first contact", () => {
     const service = new ResponsePlanService();
     const facts = { vehicleMake: "Toyota", vehicleModel: "Camry", reportedInvalidVehicleYear: 2032 } as const;
     const plan = service.build({ facts, decision: evaluateApplication(facts, { currentYear: 2026 }), isFirstMessage: true, questions: [] });
-    const correction = "Подскажите, пожалуйста, Вы, возможно, допустили опечатку. Автомобиля 2032 года выпуска пока не существует. Напишите, пожалуйста, правильный год выпуска автомобиля.";
+    const correction = "2032 год ещё не наступил. Уточните, пожалуйста, верный год выпуска автомобиля.";
 
     expect(plan.requiredStatements).toContain(correction);
     expect(plan.nextQuestions).toEqual([]);

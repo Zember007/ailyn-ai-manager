@@ -2,7 +2,7 @@ import { Injectable } from "@nestjs/common";
 import type { ApplicationFacts } from "@ailyn/business-rules";
 import type { NormalizedMoneyValue } from "../ai/ai-provider.interface.js";
 import { AgentTurnService, isClearMoneyConfirmationRejection, nextRequiredStageQuestion, suppressInactiveGuarantorPrompts, type PendingMoneyClarificationDecision } from "./agent-turn.service.js";
-import { attachmentFactsFromResult, deriveStageCompletion, effectiveFactsForTurn, selectedProgramLimit } from "./agent-turn-reconciliation.js";
+import { attachmentFactsForCurrentStage, deriveStageCompletion, effectiveFactsForTurn, isCarPhotoStagePrompt, selectedProgramLimit } from "./agent-turn-reconciliation.js";
 import type { InboundMessage } from "../channels/channel.interface.js";
 import { SettingsService } from "../settings/settings.service.js";
 import { BackendLogsService } from "../logs/backend-logs.service.js";
@@ -195,13 +195,13 @@ export class DialogueOrchestratorService {
         ...leadCardPatch,
         ...(turnResult.language === "unknown" ? {} : { language: turnResult.language })
       };
-      const attachmentFacts = {
-        ...attachmentFactsFromResult(initialApplication.facts, turnResult.attachments),
-        // A file is evidence supplied by the client even when the vision model
-        // cannot reliably name every document/side in it. Persist that fact so
-        // the dialogue never asks for a replacement set.
-        ...(attachments.length > 0 ? { documentsProvided: true } : {})
-      };
+      const lastAssistantReply = [...modelMessages].reverse().find((message) => message.author === "ai")?.body ?? "";
+      const attachmentFacts = attachmentFactsForCurrentStage({
+        previous: initialApplication.facts,
+        attachments: turnResult.attachments,
+        inboundAttachmentCount: attachments.length,
+        lastAssistantReply
+      });
       const reconciledFacts = effectiveFactsForTurn({ previous: initialApplication.facts, modelPatch, explicitFacts: {}, currencyFacts: currencyFactsForTurn, attachmentFacts });
       const effectiveFacts = { ...reconciledFacts, stageCompletion: deriveStageCompletion(reconciledFacts, settings) };
       const preliminaryLimit = selectedProgramLimit(effectiveFacts, settings);
@@ -234,7 +234,11 @@ export class DialogueOrchestratorService {
     // Preserve the client's progress even if the model was temporarily unable
     // to classify the upload or return a valid answer for this turn.
     if (attachments.length > 0 && !application.facts.documentsProvided) {
-      await this.store.updateFacts(application, { documentsProvided: true });
+      const lastAssistantReply = [...modelMessages].reverse().find((message) => message.author === "ai")?.body ?? "";
+      const attachmentFallback = isCarPhotoStagePrompt(lastAssistantReply)
+        ? { documents: { ...(application.facts.documents ?? {}), car_photo: "received" } }
+        : { documentsProvided: true };
+      await this.store.updateFacts(application, attachmentFallback);
       application = (await this.store.getApplication(application.id)) ?? application;
     }
     const validation = { passed: Boolean(turn.result), errors: turn.error ? [turn.error] : [] };

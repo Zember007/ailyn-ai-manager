@@ -60,6 +60,17 @@ export function effectiveFactsForTurn(input: {
   for (const key of ["vehicleValue", "requestedAmount"] as const) {
     if (typeof result[key] === "number") result[key] = roundSomAmount(result[key]);
   }
+  // A future model year is an input error, not a collected vehicle fact.
+  // Keep it separately so the client receives the exact correction, but
+  // never allow it to close the vehicle stage or reach the lead card.
+  const currentYear = new Date().getFullYear();
+  if (typeof result.vehicleYear === "number" && result.vehicleYear > currentYear) {
+    result.reportedInvalidVehicleYear = result.vehicleYear;
+    delete result.vehicleYear;
+  } else if (result.vehicleYear !== undefined) {
+    // A later valid correction resolves the previous invalid-year prompt.
+    result.reportedInvalidVehicleYear = null;
+  }
   return result;
 }
 
@@ -70,7 +81,8 @@ export function effectiveFactsForTurn(input: {
  * it still satisfies the current programme and limit rules.
  */
 export function deriveStageCompletion(facts: ApplicationFacts, settings: LoanPricingSettings = {}): StageCompletion {
-  const vehicle = Boolean(facts.vehicleModel && facts.vehicleYear && facts.vehicleValue !== undefined);
+  const vehicleYearIsValid = typeof facts.vehicleYear === "number" && facts.vehicleYear <= new Date().getFullYear();
+  const vehicle = Boolean(facts.vehicleModel && vehicleYearIsValid && facts.vehicleValue !== undefined);
   const requestedAmountProvided = vehicle && facts.requestedAmount !== undefined;
   const programSelected = requestedAmountProvided && facts.requestedProgram !== undefined;
   const program = programSelected;
@@ -105,6 +117,30 @@ export function attachmentFactsFromResult(previous: ApplicationFacts, attachment
     if (attachment.type === "car") documents.car_photo = "received";
   }
   return Object.keys(documents).length ? { documents } : {};
+}
+
+/** A file's workflow meaning is determined by the server question it answers,
+ * not by best-effort vision classification. In particular, an unclassified
+ * upload after the car-photo prompt completes that optional stage. */
+export function attachmentFactsForCurrentStage(input: {
+  previous: ApplicationFacts;
+  attachments: AgentTurnResult["attachments"];
+  inboundAttachmentCount: number;
+  lastAssistantReply: string;
+}): Partial<ApplicationFacts> {
+  const facts = attachmentFactsFromResult(input.previous, input.attachments);
+  if (input.inboundAttachmentCount === 0) return facts;
+  if (isCarPhotoStagePrompt(input.lastAssistantReply)) {
+    return {
+      ...facts,
+      documents: { ...(input.previous.documents ?? {}), ...(facts.documents ?? {}), car_photo: "received" }
+    };
+  }
+  return { ...facts, documentsProvided: true };
+}
+
+export function isCarPhotoStagePrompt(text: string): boolean {
+  return /(?:2\s*[–-]\s*3|несколько)\s+фотограф(?:и|ий).{0,80}автомоб|фотограф(?:и|ий).{0,80}автомоб/iu.test(text);
 }
 
 export function selectedProgramLimit(facts: ApplicationFacts, settings: object): number | null {
