@@ -155,6 +155,17 @@ describe("single-agent dialogue", () => {
     expect(output).toEqual({ reply: plan, model: "server-response-plan", rendered: false });
   });
 
+  it("fails closed when the output renderer drops the answer and leaves only a stage question", async () => {
+    const plan = "Без изъятия: от 50 000 сом до 600 000 сом\nСо стоянкой: от 50 000 сом до 1 500 000 сом\n\nПожалуйста, отправьте фото ID и свидетельства о регистрации автомобиля с обеих сторон.";
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      reply: "Пожалуйста, отправьте фото ID и свидетельства о регистрации автомобиля с обеих сторон."
+    }) } }], model: "output-model" }) } as any;
+
+    const output = await new AgentTurnService(client).renderClientReply({ responsePlan: plan, clientMessage: "Сколько денег дадите", facts: {} as any });
+
+    expect(output).toEqual({ reply: plan, model: "server-response-plan", rendered: false });
+  });
+
   it("always sends the completed server plan through the output renderer", async () => {
     const application = { id: "app", facts: {}, contactId: "contact", stage: "COLLECTING_VEHICLE", status: "need_more_data" } as any;
     const conversation = { id: "conversation", messages: [], application, channel: "web-test" } as any;
@@ -174,6 +185,38 @@ describe("single-agent dialogue", () => {
 
     expect(agent.renderClientReply).toHaveBeenCalledWith(expect.objectContaining({ responsePlan: serverPlan, clientMessage: "танк" }));
     expect(output.reply).toBe("Поняла. Подскажите, пожалуйста, модель автомобиля.");
+  });
+
+  it("sends a maximum-limit calculation directly and retains the later document prompt", async () => {
+    const application = {
+      id: "app",
+      facts: {
+        vehicleModel: "Corolla", vehicleYear: 2010, vehicleValue: 2_180_000,
+        requestedAmount: 200_000, requestedProgram: "parking",
+        residenceRegion: "Другой регион Кыргызстана", residenceCategory: "OTHER_KG"
+      },
+      contactId: "contact", stage: "COLLECTING_DOCUMENTS", status: "need_more_data"
+    } as any;
+    const conversation = { id: "conversation", messages: [], application, channel: "web-test" } as any;
+    const store = {
+      getOrCreateConversation: vi.fn().mockResolvedValue({ conversation, application }),
+      addMessage: vi.fn().mockImplementation(async (_conversation: unknown, message: any) => ({ id: message.metadata?.externalMessageId ?? "ai", author: message.author, body: message.body, createdAt: "now" })),
+      updateFacts: vi.fn().mockResolvedValue([]), saveAgentState: vi.fn(), getApplication: vi.fn().mockResolvedValue(application), getConversation: vi.fn().mockResolvedValue(conversation), addAttachment: vi.fn(), createManagerNotification: vi.fn()
+    } as any;
+    const plan = "Без изъятия: от 50 000 сом до 200 000 сом\nСо стоянкой: от 50 000 сом до 1 090 000 сом\n\nПожалуйста, отправьте фото ID и свидетельства о регистрации автомобиля с обеих сторон.";
+    const agent = {
+      run: vi.fn().mockResolvedValue({
+        result: { ...validResult, reply: plan, loanQuestionKind: "maximum_limit", leadCardPatch: {} },
+        reply: plan, model: "interpreter", promptVersion: "v1"
+      }),
+      renderClientReply: vi.fn().mockResolvedValue({ reply: "Пожалуйста, отправьте фото ID и свидетельства о регистрации автомобиля с обеих сторон.", model: "output", rendered: true })
+    } as any;
+
+    const output = await new DialogueOrchestratorService(agent, store, { getValues: vi.fn().mockResolvedValue({}) } as any, { log: vi.fn() } as any)
+      .receive({ externalMessageId: "maximum", channel: "web-test", externalContactId: "contact", text: "Сколько денег дадите", attachments: [], timestamp: new Date() });
+
+    expect(agent.renderClientReply).not.toHaveBeenCalled();
+    expect(output.reply).toBe(plan);
   });
 
   it("announces the residence limit once before the guarantor question", async () => {

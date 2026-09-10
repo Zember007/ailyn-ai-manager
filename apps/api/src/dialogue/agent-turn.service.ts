@@ -3147,16 +3147,23 @@ function isSafeRenderedReply(reply: string, responsePlan: string): boolean {
   if (questionCount(reply) !== questionCount(responsePlan)) return false;
   const numericTokens = (value: string) => new Set((value.match(/\d[\d\s\u00a0,.:]*/gu) ?? []).map((token) => token.replace(/[\s\u00a0,.:]/gu, "")));
   const planNumbers = numericTokens(responsePlan);
-  if ([...numericTokens(reply)].some((token) => !planNumbers.has(token))) return false;
+  const replyNumbers = numericTokens(reply);
+  if ([...replyNumbers].some((token) => !planNumbers.has(token)) || [...planNumbers].some((token) => !replyNumbers.has(token))) return false;
   const mentionedCurrencies = (value: string) => new Set((value.match(/(?:сом(?:ов|а)?|доллар(?:ов|а)?|евро|тенге|руб(?:лей|ля|ль)?|USD|EUR|KZT|RUB|[$€₸₽])/giu) ?? []).map((token) => token.toLocaleLowerCase("ru-RU")));
   const planCurrencies = mentionedCurrencies(responsePlan);
-  if ([...mentionedCurrencies(reply)].some((currency) => !planCurrencies.has(currency))) return false;
+  const replyCurrencies = mentionedCurrencies(reply);
+  if ([...replyCurrencies].some((currency) => !planCurrencies.has(currency)) || [...planCurrencies].some((currency) => !replyCurrencies.has(currency))) return false;
   // The output model may rearrange or shorten a sentence, but new lexical
   // content is a new claim. Fail closed unless every meaningful word already
   // belongs to the server plan.
   const words = (value: string) => (value.toLocaleLowerCase("ru-RU").match(/[\p{L}\d]+/gu) ?? []).filter((word) => word.length > 1);
   const planWords = new Set(words(responsePlan));
-  return words(reply).every((word) => planWords.has(word));
+  const replyWords = new Set(words(reply));
+  // A formatter may not turn a multi-part answer into only the final stage
+  // question. Require content coverage in both directions; otherwise fall
+  // back to the exact server plan that answers the client first.
+  return [...replyWords].every((word) => planWords.has(word))
+    && [...planWords].every((word) => replyWords.has(word));
 }
 
 function parseAgentJson(value: string | undefined): Record<string, unknown> {
