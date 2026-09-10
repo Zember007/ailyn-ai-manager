@@ -38,12 +38,19 @@ export function effectiveFactsForTurn(input: {
     result.residenceCategory = resolvedResidence.category;
     result.residenceNeedsClarification = false;
   } else {
+    // An explicit «это не в Чуйской» correction deliberately clears the old
+    // locality while setting OTHER_KG. Do not restore that stale locality
+    // below: it would immediately reclassify the client back to Chuy/Bishkek.
+    const explicitlyClearedOtherResidence = input.modelPatch.residenceText === undefined
+      && input.modelPatch.residenceRegion === "Другой регион Кыргызстана"
+      && input.modelPatch.residenceCategory === "OTHER_KG"
+      && input.modelPatch.residenceNeedsClarification === false;
     // A binary reply such as «нет» must not replace an already canonical
     // residence with an unresolvable text fragment. Explicit residence
     // corrections are admitted before this boundary; this is the last line
     // of defence against a stale model patch reopening a completed stage.
     const previousResidence = resolveKyrgyzstanLocality(input.previous.residenceText ?? input.previous.residenceRegion);
-    if (previousResidence && input.previous.residenceRegion && input.previous.residenceCategory) {
+    if (!explicitlyClearedOtherResidence && previousResidence && input.previous.residenceRegion && input.previous.residenceCategory) {
       result.residenceText = input.previous.residenceText ?? previousResidence.locality;
       result.residenceRegion = input.previous.residenceRegion;
       result.residenceCategory = input.previous.residenceCategory;

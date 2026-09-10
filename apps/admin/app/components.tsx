@@ -87,6 +87,7 @@ export function MessageList({
   messages: { id: string; author: string; body: string; createdAt: string; attachmentIds?: string[]; attachments?: Stage1Attachment[]; metadata?: Record<string, unknown> }[];
   pendingMessage?: string;
 }>) {
+  
   return (
     <div className="messages">
       {messages.length === 0 ? <p className="muted">Сообщений пока нет.</p> : null}

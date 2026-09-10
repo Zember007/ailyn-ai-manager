@@ -107,6 +107,9 @@ export class DialogueOrchestratorService {
       currencyConversions: currency.conversions,
       moneyClarificationDecision: moneyClarification?.decision === "accept" || moneyClarification?.decision === "reject" ? moneyClarification.decision : undefined,
       minimumRequestedAmountCandidate: belowMinimumRequestedAmount,
+      pendingAction: initialApplication.agentState?.nextAction === "select_program_for_maximum"
+        ? "select_program_for_maximum"
+        : undefined,
       attachments,
       signal: options.signal
     });
@@ -235,7 +238,10 @@ export class DialogueOrchestratorService {
     // The output model and server follow-up can independently include the
     // same instruction. Deduplicate at the final delivery boundary so the
     // persisted and returned message are identical.
-    const reply = removeEarlierDuplicateSentences(renderClientReply ? turn.reply : composeReply(turn.reply, currency.clientText));
+    const reply = ensureNonEmptyClientReply(
+      removeEarlierDuplicateSentences(renderClientReply ? turn.reply : composeReply(turn.reply, currency.clientText)),
+      application.facts
+    );
     // The batcher may process several already-received client messages in
     // sequence. Facts and client messages must commit after every one, but
     // only the final combined reply may appear in the visible history.
@@ -271,7 +277,7 @@ export class DialogueOrchestratorService {
 
   /** Publishes the one visible reply after a sequentially processed batch. */
   async publishDeferredBatchReply(result: DialogueResult, reply: string, sourceMessageId: string): Promise<DialogueResult> {
-    const visibleReply = removeEarlierDuplicateSentences(reply);
+    const visibleReply = ensureNonEmptyClientReply(removeEarlierDuplicateSentences(reply), result.application.facts);
     await this.store.addMessage(result.conversation, {
       author: "ai", body: visibleReply, attachmentIds: [], attachments: [],
       metadata: {
@@ -528,6 +534,14 @@ export function composeReply(modelReply: string, currencyText?: string): string 
   if (!introduction) return [currencyText, cleanReply].filter(Boolean).join("\n\n");
   const rest = cleanReply.slice(introduction.length).trim();
   return [introduction, currencyText, rest].filter(Boolean).join("\n\n");
+}
+
+/** Never persist an empty assistant message: an empty body renders as a
+ * phantom attachment in some channel clients and leaves the customer without
+ * a recoverable workflow instruction. */
+function ensureNonEmptyClientReply(reply: string, facts: ApplicationFacts): string {
+  const normalized = reply.trim();
+  return normalized || nextRequiredStageQuestion(facts) || "Пожалуйста, уточните Ваш вопрос.";
 }
 
 /**

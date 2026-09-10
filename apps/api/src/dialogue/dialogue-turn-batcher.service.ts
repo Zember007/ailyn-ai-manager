@@ -105,6 +105,12 @@ function removeIntermediateWorkflow(reply: string): string {
   const withoutCanonicalPrompt = reply
     .replace(/\s*\n\n(?:подскажите,?\s+пожалуйста,?|какая\s+сумма\s+займа|вас\s+интересует|пожалуйста,?\s+(?:отправьте|пришлите)|офис\s+работает)[\s\S]*$/iu, "")
     .replace(/\s*Сумма\s+[\d\s]+\s+сом\s+по\s+этой\s+программе\s+не\s+проходит\.[\s\S]*$/iu, "")
+    // A factual reply in an early batched message may be followed by the
+    // canonical guarantor gate. The next client message can make that gate
+    // inactive (for example, «давайте стоянку»), so only the final turn is
+    // allowed to contribute a server workflow question to the visible reply.
+    .replace(/\s*И\s+Вам\s+потребуется\s+поручитель\s*:[\s\S]*$/iu, "")
+    .replace(/\s*Поручитель\s+обязателен[^?!\n]{0,220}(?:можем|можно|давайте)[\s\S]*$/iu, "")
     .trim();
   return withoutCanonicalPrompt;
 }

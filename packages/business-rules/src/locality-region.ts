@@ -128,6 +128,14 @@ for (const alias of ["Бир-Булак", "Бир-Булаке"]) {
   add(transliteratedIndex, transliterate(alias), "Бер-Булак", "BISHKEK_CHUY");
 }
 
+// The client-facing spelling «Кашка-Суу» is used in existing applications
+// and dialogue examples. Accept its spaced form too, without depending on a
+// prose-model spelling repair before the residence stage can close.
+for (const alias of ["Кашка-Суу", "Кашка Суу"]) {
+  add(exactIndex, alias, "Кашка-Суу", "OTHER_KG");
+  add(transliteratedIndex, transliterate(alias), "Кашка-Суу", "OTHER_KG");
+}
+
 const regionalWords: Array<[RegExp, LocalityRegionResolution]> = [
   [/(?:^|\s)(?:бишкек(?:е|а)?|bishkek)(?:$|\s)/u, { category: "BISHKEK_CHUY", residenceRegion: "Бишкек", locality: "Бишкек", match: "exact" }],
   [/(?:^|\s)(?:чу[йи](?:ская)?|chuy(?:skaya)?|chui(?:skaya)?)(?:$|\s)/u, { category: "BISHKEK_CHUY", residenceRegion: "Чуйская область", locality: "Чуйская область", match: "exact" }],

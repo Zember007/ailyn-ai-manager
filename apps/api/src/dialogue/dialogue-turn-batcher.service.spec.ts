@@ -90,6 +90,33 @@ describe("DialogueTurnBatcherService", () => {
     }
   });
 
+  it("drops an intermediate guarantor prompt when the final batched message chooses parking", async () => {
+    vi.useFakeTimers();
+    try {
+      const replies = [
+        "Парковка находится недалеко от нашего офиса и находится под охраной. Точный адрес парковки не сообщается. И Вам потребуется поручитель:\n- возраст от 25 лет\n- проживает в г. Бишкек или Чуйской области\n- должен лично присутствовать при выдаче займа и имеет с собой ID (паспорт)\nУ Вас есть такой поручитель?",
+        "Поняла.\n\nПо программе со стоянкой доступно до 1 090 000 сом.\n\nПожалуйста, отправьте фото ID и свидетельства о регистрации автомобиля с обеих сторон."
+      ];
+      const finalResult = { reply: replies[1] } as any;
+      const orchestrator = {
+        receiveBatch: vi.fn().mockImplementation(() => Promise.resolve({ reply: replies.shift() })),
+        publishDeferredBatchReply: vi.fn().mockImplementation((_result: any, reply: string) => Promise.resolve({ ...finalResult, reply }))
+      } as any;
+      const batcher = new DialogueTurnBatcherService(orchestrator);
+      const common = { channel: "web-test" as const, externalContactId: "client", externalConversationId: "chat", timestamp: new Date() };
+
+      const first = batcher.enqueue({ ...common, externalMessageId: "1", text: "а где стоянка", attachments: [] });
+      const second = batcher.enqueue({ ...common, externalMessageId: "2", text: "давайте стоянку", attachments: [] });
+      await vi.advanceTimersByTimeAsync(650);
+
+      const expected = "Парковка находится недалеко от нашего офиса и находится под охраной. Точный адрес парковки не сообщается.\n\nПоняла.\n\nПо программе со стоянкой доступно до 1 090 000 сом.\n\nПожалуйста, отправьте фото ID и свидетельства о регистрации автомобиля с обеих сторон.";
+      await expect(Promise.all([first, second])).resolves.toEqual([{ ...finalResult, reply: expected }, { ...finalResult, reply: expected }]);
+      expect(orchestrator.publishDeferredBatchReply).toHaveBeenCalledWith(expect.anything(), expected, "2");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("persists a superseded message only once when retrying it with the newer batch", async () => {
     vi.useFakeTimers();
     try {
