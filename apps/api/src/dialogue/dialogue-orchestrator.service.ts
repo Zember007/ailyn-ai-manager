@@ -12,6 +12,7 @@ import { detectMoneyMentions, formatMoney, formatSomMoney, resolveMoneyFacts, ro
 import { calculateLoanPricing } from "./loan-pricing.js";
 
 export interface DialogueResult { conversation: Stage1Conversation; application: Stage1Application; reply: string; validation: { passed: boolean; errors: string[] }; routerAiModel: string; promptVersion: string; }
+export interface DialogueReceiveOptions { signal?: AbortSignal; deferReplyPersistence?: boolean; }
 const managerDeltaFactKeys = new Set(["requestedAmount", "requestedProgram", "visitDate", "visitTime", "vehicleValue", "vehicleMake", "vehicleModel", "vehicleYear", "fullName", "phone"]);
 
 @Injectable()
@@ -22,7 +23,7 @@ export class DialogueOrchestratorService {
     return this.receiveBatch([message]);
   }
 
-  async receiveBatch(messages: InboundMessage[], options: { signal?: AbortSignal } = {}): Promise<DialogueResult> {
+  async receiveBatch(messages: InboundMessage[], options: DialogueReceiveOptions = {}): Promise<DialogueResult> {
     if (messages.length === 0) throw new Error("dialogue_batch_empty");
     const firstMessage = messages[0]!;
     const lastMessage = messages.at(-1)!;
@@ -235,6 +236,12 @@ export class DialogueOrchestratorService {
     // same instruction. Deduplicate at the final delivery boundary so the
     // persisted and returned message are identical.
     const reply = removeEarlierDuplicateSentences(renderClientReply ? turn.reply : composeReply(turn.reply, currency.clientText));
+    // The batcher may process several already-received client messages in
+    // sequence. Facts and client messages must commit after every one, but
+    // only the final combined reply may appear in the visible history.
+    if (options.deferReplyPersistence) {
+      return { conversation, application, reply, validation, routerAiModel: turn.model, promptVersion: turn.promptVersion };
+    }
     await this.store.addMessage(conversation, { author: "ai", body: reply, attachmentIds: [], attachments: [], metadata: { sourceMessageId: lastMessage.externalMessageId, routerAiModel: turn.model, promptVersion: turn.promptVersion, validation, trace: { singleModel: true, batchedClientMessages: messages.length, changedFactKeys, managerEvent, intent: turn.result?.intent, targetEvent: turn.result?.targetEvent } } });
     // Generate the private lead summary immediately after the booking reply
     // has been persisted and the visit facts have reached the lead card. A
@@ -260,6 +267,22 @@ export class DialogueOrchestratorService {
     const refreshedApplication = (await this.store.getApplication(application.id)) ?? refreshedConversation.application ?? application;
     void this.logs.log("dialogue.single-agent", "Processed dialogue turn", { conversationId: conversation.id, metadata: { applicationId: refreshedApplication.id, validModelResult: Boolean(turn.result), model: turn.model } });
     return { conversation: refreshedConversation, application: refreshedApplication, reply, validation, routerAiModel: turn.model, promptVersion: turn.promptVersion };
+  }
+
+  /** Publishes the one visible reply after a sequentially processed batch. */
+  async publishDeferredBatchReply(result: DialogueResult, reply: string, sourceMessageId: string): Promise<DialogueResult> {
+    const visibleReply = removeEarlierDuplicateSentences(reply);
+    await this.store.addMessage(result.conversation, {
+      author: "ai", body: visibleReply, attachmentIds: [], attachments: [],
+      metadata: {
+        sourceMessageId, routerAiModel: result.routerAiModel, promptVersion: result.promptVersion,
+        validation: result.validation,
+        trace: { singleModel: true, batchedClientMessages: true, deferredReply: true }
+      }
+    });
+    const conversation = (await this.store.getConversation(result.conversation.id)) ?? result.conversation;
+    const application = (await this.store.getApplication(result.application.id)) ?? conversation.application ?? result.application;
+    return { ...result, conversation, application, reply: visibleReply };
   }
 }
 

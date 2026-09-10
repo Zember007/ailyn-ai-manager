@@ -119,6 +119,15 @@ for (const [name, category] of supplementaryAdministrativeLocalities) {
   add(transliteratedIndex, transliterate(name), name, category);
 }
 
+// «Бир Булак» is a frequent spoken/spelled variant of the SOATE locality
+// «Бер-Булак». Keep the official name in the card while accepting the forms
+// clients use in an explicit registration correction, including the common
+// prepositional ending «в Бир Булаке».
+for (const alias of ["Бир-Булак", "Бир-Булаке"]) {
+  add(exactIndex, alias, "Бер-Булак", "BISHKEK_CHUY");
+  add(transliteratedIndex, transliterate(alias), "Бер-Булак", "BISHKEK_CHUY");
+}
+
 const regionalWords: Array<[RegExp, LocalityRegionResolution]> = [
   [/(?:^|\s)(?:бишкек(?:е|а)?|bishkek)(?:$|\s)/u, { category: "BISHKEK_CHUY", residenceRegion: "Бишкек", locality: "Бишкек", match: "exact" }],
   [/(?:^|\s)(?:чу[йи](?:ская)?|chuy(?:skaya)?|chui(?:skaya)?)(?:$|\s)/u, { category: "BISHKEK_CHUY", residenceRegion: "Чуйская область", locality: "Чуйская область", match: "exact" }],

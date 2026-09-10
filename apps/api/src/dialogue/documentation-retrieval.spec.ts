@@ -144,6 +144,24 @@ describe("selectRelevantDocumentation", () => {
     });
   });
 
+  it("retrieves the guarantor conditions as a direct DOCX FAQ answer", () => {
+    const result = selectRelevantDocumentation({
+      facts: {
+        vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 1_000_000, requestedAmount: 300_000,
+        requestedProgram: "without_storage", residenceRegion: "Другой регион Кыргызстана", residenceCategory: "OTHER_KG"
+      } as any,
+      currentMessage: "какой поручитель",
+      messages: []
+    });
+
+    expect(result.mandatoryAnswer).toContain("только по программе без изъятия автомобиля");
+    expect(result.mandatoryAnswer).toContain("за пределами Бишкека и Чуйской области");
+    expect(result.mandatoryAnswer).toContain("По программе со стоянкой поручитель не требуется");
+    expect(result.knowledge[0]).toMatchObject({
+      retrievalQuestion: "Какой поручитель?"
+    });
+  });
+
   it("does not force a previous FAQ answer onto an unrelated current question", () => {
     const result = selectRelevantDocumentation({
       facts: {},

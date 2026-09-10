@@ -13,9 +13,11 @@ type PendingTurn = {
 };
 
 /**
- * One conversation has at most one useful model turn. Quick successive
- * messages are joined into one call. A newer message aborts an obsolete
- * inference, so it cannot race the reply for the latest client context.
+ * Quick successive messages are delayed together, but never collapsed into
+ * one semantic turn. A batch may contain a question, a programme decision,
+ * an upload and another question; each must see the facts and history left by
+ * the preceding message. A newer message still aborts work that has not yet
+ * reached its own turn.
  */
 @Injectable()
 export class DialogueTurnBatcherService {
@@ -55,7 +57,27 @@ export class DialogueTurnBatcherService {
     const controller = new AbortController();
     pending.active = { controller, messages, waiters };
     try {
-      const result = await this.orchestrator.receiveBatch(messages, { signal: controller.signal });
+      const results: DialogueResult[] = [];
+      const deferReplyPersistence = messages.length > 1;
+      for (let index = 0; index < messages.length; index += 1) {
+        // On abort, enqueue() returns only this not-yet-committed suffix to
+        // the queue. Earlier messages were already persisted as independent
+        // turns and must never be replayed.
+        if (pending.active?.controller === controller) pending.active.messages = messages.slice(index);
+        throwIfAborted(controller.signal);
+        results.push(await this.orchestrator.receiveBatch([messages[index]!], { signal: controller.signal, deferReplyPersistence }));
+        throwIfAborted(controller.signal);
+      }
+      const finalResult = results.at(-1);
+      let result = finalResult;
+      if (!result) throw new Error("dialogue_batch_empty_result");
+      if (deferReplyPersistence) {
+        result = await this.orchestrator.publishDeferredBatchReply(
+          result,
+          combineSequentialReplies(messages, results),
+          messages.at(-1)!.externalMessageId
+        );
+      }
       if (controller.signal.aborted) return;
       this.pending.delete(key);
       waiters.forEach(({ resolve }) => resolve(result));
@@ -68,4 +90,36 @@ export class DialogueTurnBatcherService {
       if (current?.active?.controller === controller) current.active = undefined;
     }
   }
+}
+
+function combineSequentialReplies(messages: InboundMessage[], results: DialogueResult[]): string {
+  const parts = results
+    .map((result, index) => ({ result, message: messages[index]!, isLast: index === results.length - 1 }))
+    .filter(({ message, isLast }) => isLast || message.attachments.length > 0 || isClientQuestion(message.text))
+    .map(({ result, isLast }) => isLast ? result.reply : removeIntermediateWorkflow(result.reply))
+    .filter(Boolean);
+  return [...new Map(parts.map((part) => [normalizeReply(part), part])).values()].join("\n\n");
+}
+
+function removeIntermediateWorkflow(reply: string): string {
+  const withoutCanonicalPrompt = reply
+    .replace(/\s*\n\n(?:подскажите,?\s+пожалуйста,?|какая\s+сумма\s+займа|вас\s+интересует|пожалуйста,?\s+(?:отправьте|пришлите)|офис\s+работает)[\s\S]*$/iu, "")
+    .replace(/\s*Сумма\s+[\d\s]+\s+сом\s+по\s+этой\s+программе\s+не\s+проходит\.[\s\S]*$/iu, "")
+    .trim();
+  return withoutCanonicalPrompt;
+}
+
+function isClientQuestion(text: string | undefined): boolean {
+  const value = text?.trim() ?? "";
+  return /[?？]/u.test(value)
+    || /^(?:(?:а|и|ну)\s+)?(?:где|как|какой|какая|какие|можно|сколько|когда|почему|зачем|ставк|процент)/iu.test(value)
+    || /(?:стоянк|парковк).{0,40}(?:где|адрес)/iu.test(value);
+}
+
+function normalizeReply(value: string): string {
+  return value.replace(/[?!.]/gu, "").replace(/\s+/gu, " ").trim().toLocaleLowerCase("ru-RU");
+}
+
+function throwIfAborted(signal: AbortSignal): void {
+  if (signal.aborted) throw new DOMException("Dialogue turn superseded by a newer client message", "AbortError");
 }

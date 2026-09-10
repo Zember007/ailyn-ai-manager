@@ -23,7 +23,8 @@ describe("business rules", () => {
     ["Сокулук", "BISHKEK_CHUY", "Чуйская область"],
     ["Беловодское", "BISHKEK_CHUY", "Чуйская область"],
     ["Лебединовка", "BISHKEK_CHUY", "Чуйская область"]
-    ,["Бостери", "OTHER_KG", "Другой регион Кыргызстана"]
+    ,["Бостери", "OTHER_KG", "Другой регион Кыргызстана"],
+    ["а нет я прописан в бир булаке", "BISHKEK_CHUY", "Чуйская область"]
   ])("resolves %s from the SOATE locality index", (locality, category, region) => {
     expect(resolveKyrgyzstanLocality(locality)).toMatchObject({ category, residenceRegion: region });
   });
@@ -34,6 +35,7 @@ describe("business rules", () => {
     ["cholpon ata", "Чолпон-Ата", "OTHER_KG", "transliteration"],
     ["Бостеры", "Бостери", "OTHER_KG", "typo"],
     ["Джалалабад", "Джалал-Абад", "OTHER_KG", "typo"],
+    ["в бир булаке", "Бер-Булак", "BISHKEK_CHUY", "exact"],
     ["Иссык-Кульская область", "Иссык-Кульская область", "OTHER_KG", "exact"]
   ])("normalizes %s to the canonical server locality", (input, locality, category, match) => {
     expect(normalizeKyrgyzstanLocality(input)).toBe(locality);

@@ -3,10 +3,12 @@ import { DialogueOrchestratorService } from "./dialogue-orchestrator.service.js"
 import { DialogueTurnBatcherService } from "./dialogue-turn-batcher.service.js";
 
 describe("DialogueTurnBatcherService", () => {
-  it("joins quick client messages into one model turn in their original order", async () => {
+  it("processes quick client messages as ordered independent model turns", async () => {
     vi.useFakeTimers();
-    const result = { reply: "ok" } as any;
-    const orchestrator = { receiveBatch: vi.fn().mockResolvedValue(result) } as any;
+    const orchestrator = {
+      receiveBatch: vi.fn().mockImplementation(([message]: any[]) => Promise.resolve({ reply: `reply:${message.text}` })),
+      publishDeferredBatchReply: vi.fn().mockImplementation((result: any, reply: string) => Promise.resolve({ ...result, reply }))
+    } as any;
     const batcher = new DialogueTurnBatcherService(orchestrator);
     const common = { channel: "web-test" as const, externalContactId: "client", externalConversationId: "chat", attachments: [], timestamp: new Date() };
 
@@ -16,16 +18,13 @@ describe("DialogueTurnBatcherService", () => {
 
     await vi.advanceTimersByTimeAsync(650);
 
-    expect(orchestrator.receiveBatch).toHaveBeenCalledTimes(1);
-    expect(orchestrator.receiveBatch).toHaveBeenCalledWith(
-      expect.arrayContaining([
-        expect.objectContaining({ text: "Камри" }),
-        expect.objectContaining({ text: "2022 года" }),
-        expect.objectContaining({ text: "стоит 2 млн" })
-      ]),
-      expect.objectContaining({ signal: expect.any(AbortSignal) })
-    );
-    await expect(Promise.all([first, second, third])).resolves.toEqual([result, result, result]);
+    expect(orchestrator.receiveBatch).toHaveBeenCalledTimes(3);
+    expect(orchestrator.receiveBatch.mock.calls.map(([batch]: [any[]]) => batch.map((message) => message.text))).toEqual([
+      ["Камри"], ["2022 года"], ["стоит 2 млн"]
+    ]);
+    await expect(Promise.all([first, second, third])).resolves.toEqual([
+      { reply: "reply:стоит 2 млн" }, { reply: "reply:стоит 2 млн" }, { reply: "reply:стоит 2 млн" }
+    ]);
     vi.useRealTimers();
   });
 
@@ -34,12 +33,13 @@ describe("DialogueTurnBatcherService", () => {
     try {
       const freshResult = { reply: "fresh" } as any;
       const orchestrator = {
-        receiveBatch: vi.fn().mockImplementation((messages: any[], { signal }: { signal: AbortSignal }) => {
-          if (messages.length === 1) {
+        receiveBatch: vi.fn().mockImplementation((_messages: any[], { signal }: { signal: AbortSignal }) => {
+          if (orchestrator.receiveBatch.mock.calls.length === 1) {
             return new Promise((_, reject) => signal.addEventListener("abort", () => reject(new DOMException("superseded", "AbortError")), { once: true }));
           }
           return Promise.resolve(freshResult);
-        })
+        }),
+        publishDeferredBatchReply: vi.fn().mockImplementation((result: any, reply: string) => Promise.resolve({ ...result, reply }))
       } as any;
       const batcher = new DialogueTurnBatcherService(orchestrator);
       const common = { channel: "web-test" as const, externalContactId: "client", externalConversationId: "chat", attachments: [], timestamp: new Date() };
@@ -49,12 +49,42 @@ describe("DialogueTurnBatcherService", () => {
       const second = batcher.enqueue({ ...common, externalMessageId: "2", text: "2022 года" });
       await vi.advanceTimersByTimeAsync(650);
 
-      expect(orchestrator.receiveBatch).toHaveBeenCalledTimes(2);
-      expect(orchestrator.receiveBatch.mock.calls[1][0]).toEqual([
-        expect.objectContaining({ externalMessageId: "1", text: "Камри" }),
-        expect.objectContaining({ externalMessageId: "2", text: "2022 года" })
+      expect(orchestrator.receiveBatch).toHaveBeenCalledTimes(3);
+      expect(orchestrator.receiveBatch.mock.calls.map(([batch]: [any[]]) => batch.map((message) => message.externalMessageId))).toEqual([
+        ["1"], ["1"], ["2"]
       ]);
       await expect(Promise.all([first, second])).resolves.toEqual([freshResult, freshResult]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("publishes one combined reply with only the final server workflow prompt", async () => {
+    vi.useFakeTimers();
+    try {
+      const replies = [
+        "Парковка находится недалеко от нашего офиса и находится под охраной. Точный адрес парковки не сообщается. Сумма 700 000 сом по этой программе не проходит. Могу продолжить либо на сумму до 600 000 сом.",
+        "Поняла.\n\nПо программе со стоянкой доступно до 1 090 000 сом.\n\nПожалуйста, отправьте фото ID и свидетельства о регистрации автомобиля с обеих сторон.",
+        "Фотографии получены.\n\nПожалуйста, отправьте 2–3 фотографии автомобиля."
+      ];
+      const finalResult = { reply: replies[2] } as any;
+      const orchestrator = {
+        receiveBatch: vi.fn().mockImplementation(() => Promise.resolve({ reply: replies.shift() })),
+        publishDeferredBatchReply: vi.fn().mockImplementation((_result: any, reply: string) => Promise.resolve({ ...finalResult, reply }))
+      } as any;
+      const batcher = new DialogueTurnBatcherService(orchestrator);
+      const common = { channel: "web-test" as const, externalContactId: "client", externalConversationId: "chat", timestamp: new Date() };
+
+      const first = batcher.enqueue({ ...common, externalMessageId: "1", text: "а стоянка у вас где", attachments: [] });
+      const second = batcher.enqueue({ ...common, externalMessageId: "2", text: "да давай стоянку", attachments: [] });
+      const third = batcher.enqueue({ ...common, externalMessageId: "3", attachments: [{ id: "id", mimeType: "image/jpeg" }] });
+      await vi.advanceTimersByTimeAsync(650);
+
+      const expected = "Парковка находится недалеко от нашего офиса и находится под охраной. Точный адрес парковки не сообщается.\n\nФотографии получены.\n\nПожалуйста, отправьте 2–3 фотографии автомобиля.";
+      await expect(Promise.all([first, second, third])).resolves.toEqual([
+        { ...finalResult, reply: expected }, { ...finalResult, reply: expected }, { ...finalResult, reply: expected }
+      ]);
+      expect(orchestrator.publishDeferredBatchReply).toHaveBeenCalledWith(expect.anything(), expected, "3");
     } finally {
       vi.useRealTimers();
     }
@@ -115,8 +145,8 @@ describe("DialogueTurnBatcherService", () => {
       await vi.advanceTimersByTimeAsync(650);
 
       await expect(Promise.all([first, second])).resolves.toHaveLength(2);
-      expect(agent.run).toHaveBeenCalledTimes(2);
-      expect(agent.run.mock.calls[1][0].messages.slice(-2).map((message: { metadata?: { externalMessageId?: string } }) => message.metadata?.externalMessageId)).toEqual(["A", "B"]);
+      expect(agent.run).toHaveBeenCalledTimes(3);
+      expect(agent.run.mock.calls.map(([input]: [{ text: string }]) => input.text)).toEqual(["Камри", "Камри", "2022 года"]);
       expect(addMessage.mock.calls.filter(([, message]) => message.author === "client").map(([, message]) => message.metadata.externalMessageId)).toEqual(["A", "B"]);
     } finally {
       vi.useRealTimers();

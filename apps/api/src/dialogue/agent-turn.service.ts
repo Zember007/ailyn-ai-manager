@@ -459,18 +459,18 @@ export class AgentTurnService {
   /** A narrow vision pass prevents the prose model from dropping a readable
    * name or a second document shown in the same photograph. */
   private async resolveDocumentIdentityFacts(parsed: AgentTurnResult, input: AgentTurnInput): Promise<AgentTurnResult> {
-    const lastAssistant = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
     const imageAttachments = input.attachments.filter((attachment) =>
       Boolean(attachment.contentBase64) && Boolean(imageAttachmentMediaType(attachment))
     );
     const hasClientName = Boolean(input.facts.fullName ?? parsed.leadCardPatch.fullName);
     const hasOwnerName = Boolean(input.facts.ownerFullName ?? parsed.leadCardPatch.ownerFullName);
-    // The main reply may phrase the request differently, but the validated
-    // stage still says that these files are documents.  Do not use an already
-    // known FIO as a reason to skip the pass: recognition of document sides is
-    // a separate outcome and is needed for a later upload as well.
-    const documentStage = isDocumentRequest(lastAssistant) || parsed.dialogueState.stage === "COLLECTING_DOCUMENTS";
-    if (!documentStage || imageAttachments.length === 0) return parsed;
+    // FIO extraction is independent from document-side recognition and from
+    // the current workflow prompt. The client can attach ID/STS immediately
+    // after choosing a programme, before the server has sent its document
+    // question; skipping the vision pass here loses readable names forever.
+    // Do not use an already known FIO as a reason to skip the pass: document
+    // sides and owner data are separate outcomes as well.
+    if (imageAttachments.length === 0) return parsed;
 
     try {
       const response = await this.client.createChatCompletion({
@@ -1989,7 +1989,14 @@ function residenceLimitNoticeForTurn(previous: ApplicationFacts, current: Applic
   const prefix = current.residenceCategory === "OTHER_KG"
     ? `Поняла, Ваша прописка — за пределами Чуйской области. По программе ${program} Вам доступно до ${limit} сом.`
     : `Поняла, Ваша прописка — ${current.residenceRegion === "Чуйская область" ? "Чуйская область" : "Бишкек"}. По программе ${program} Вам доступно до ${limit} сом.`;
-  return requiresGuarantorForFacts(current) ? `${prefix}\n\n${GUARANTOR_REQUIREMENTS}` : prefix;
+  // The amount stage precedes the guarantor gate. A residence correction can
+  // establish that a guarantor will be needed later, but it must not append
+  // that question while the server still needs the requested loan amount.
+  // Otherwise one reply contains both the guarantor question and the next
+  // canonical amount question.
+  return requiresGuarantorForFacts(current) && deriveStageCompletion(current).requestedAmount
+    ? `${prefix}\n\n${GUARANTOR_REQUIREMENTS}`
+    : prefix;
 }
 
 /** The guarantor gate is eligibility, not an LLM-selected dialogue stage. */
@@ -2615,7 +2622,10 @@ function unresolvedBinaryDecisionReply(
   // A limit/rate question can be phrased without a question mark ("а денег
   // сколько"). It is a new request, never an ambiguous answer to the
   // preceding binary stage.
-  if (!clientReply || /[?？]/u.test(clientReply) || detectMoneyMentions(clientReply).length > 0 || isMaximumLimitQuestion(loanQuestionKind) || isLoanRateQuestion(loanQuestionKind)) return undefined;
+  // A short factual question such as «какой поручитель» often arrives without
+  // a question mark. It must reach the approved-knowledge path, rather than
+  // being misread as an unclear yes/no answer to the preceding stage.
+  if (!clientReply || isLikelyKnowledgeQuestion(clientReply) || detectMoneyMentions(clientReply).length > 0 || isMaximumLimitQuestion(loanQuestionKind) || isLoanRateQuestion(loanQuestionKind)) return undefined;
   const repeatQuestion = (): string | undefined => {
     const question = lastAssistantQuestion(lastAssistant);
     return question ? clarificationOf(question) : undefined;
@@ -2696,7 +2706,7 @@ function requiresKnowledgeAnswer(input: Pick<AgentTurnInput, "text" | "currentTu
 function isLikelyKnowledgeQuestion(text: string): boolean {
   if (/[?？]/u.test(text)) return true;
   if (wordCount(text) < 2) return false;
-  return /^(?:(?:а\s+)?(?:есть|можно|сколько|какой|какая|какие|где|когда|как|работает|ставите|нужн(?:о|а|ы)?|дадите|оформить|оформлю|приеду)\b|(?:авто|машин).{0,40}(?:кредит|залоге|арест|ограничен)|(?:датчик|gps|гпс|трекер|парковк|стоянк|вещ|багаж))/iu.test(text.trim());
+  return /^(?:(?:(?:а|и|ну)\s+)?(?:есть|можно|сколько|какой|какая|какие|где|когда|как|работает|ставите|нужн(?:о|а|ы)?|дадите|оформить|оформлю|приеду)(?=\s|$)|(?:авто|машин).{0,40}(?:кредит|залоге|арест|ограничен)|(?:датчик|gps|гпс|трекер|парковк|стоянк|вещ|багаж))/iu.test(text.trim());
 }
 
 /**
