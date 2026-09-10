@@ -1101,7 +1101,7 @@ function localAttachmentRecovery(input: AgentTurnInput): AgentTurnResult {
   // so complete this optional handoff and continue with the next server stage.
   const lastAssistantReply = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
   const recoveredFacts = isCarPhotoStagePrompt(lastAssistantReply)
-    ? { ...input.facts, documents: { ...(input.facts.documents ?? {}), car_photo: "received" } }
+    ? { ...input.facts, documents: { ...(input.facts.documents ?? {}), car_photo: "received" as const } }
     : { ...input.facts, documentsProvided: true };
   const reply = [isCarPhotoStagePrompt(lastAssistantReply) ? "Фотографии автомобиля получены." : "Спасибо, документы получены.", nextRequiredStageQuestion(recoveredFacts, deriveStageCompletion(recoveredFacts))]
     .filter(Boolean)

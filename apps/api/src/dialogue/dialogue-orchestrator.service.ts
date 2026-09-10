@@ -236,7 +236,7 @@ export class DialogueOrchestratorService {
     if (attachments.length > 0 && !application.facts.documentsProvided) {
       const lastAssistantReply = [...modelMessages].reverse().find((message) => message.author === "ai")?.body ?? "";
       const attachmentFallback = isCarPhotoStagePrompt(lastAssistantReply)
-        ? { documents: { ...(application.facts.documents ?? {}), car_photo: "received" } }
+        ? { documents: { ...(application.facts.documents ?? {}), car_photo: "received" as const } }
         : { documentsProvided: true };
       await this.store.updateFacts(application, attachmentFallback);
       application = (await this.store.getApplication(application.id)) ?? application;
