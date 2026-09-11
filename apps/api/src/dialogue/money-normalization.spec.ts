@@ -110,6 +110,19 @@ describe("money normalization", () => {
     ]);
   });
 
+  it("assigns a required amount only to the requested loan", () => {
+    const result = resolveMoneyFacts({
+      text: "мне потребуется 1 миллион",
+      currentFacts: {}
+    });
+
+    expect(result.requestedAmount).toBe(1_000_000);
+    expect(result.vehicleValue).toBeUndefined();
+    expect(result.mentions).toEqual([
+      expect.objectContaining({ normalizedAmount: 1_000_000, roleCandidate: "requestedAmount" })
+    ]);
+  });
+
   it("uses pending facts and correction cues instead of freezing the first saved amount", () => {
     const pendingAmount = resolveMoneyFacts({
       text: "800 тысяч",

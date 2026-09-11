@@ -43,6 +43,97 @@ async function runMockedBatchedAgentTurn(input: { facts: Record<string, unknown>
 }
 
 describe("single-agent dialogue", () => {
+  it("answers a short why-question from the active vehicle stage instead of unrelated knowledge", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult,
+      reply: "Нотариальное согласие требуется только если собственник автомобиля состоит в браке.",
+      leadCardPatch: {},
+      knowledgeRequest: { required: true, reason: "missing_approved_answer" }
+    }) } }] }) } as any;
+
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "Подскажите, пожалуйста, модель и год выпуска автомобиля и ориентировочную стоимость автомобиля.", createdAt: "now" } as any],
+      facts: {}, settings: {}, text: "а зачем", attachments: []
+    });
+
+    expect(output.result?.needsKnowledgeLookup).toBe(false);
+    expect(output.reply).toContain("предварительно оценить автомобиль");
+    expect(output.reply).not.toMatch(/нотариальн|супруг/iu);
+    expect(output.reply).toContain("модель и год выпуска автомобиля");
+  });
+
+  it.each(["а зачем эта информация", "для чего это нужно", "что это даст?"])("uses the model's current-stage clarification signal for %s", async (text) => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult,
+      reply: "Распознано.",
+      currentStageClarification: true,
+      leadCardPatch: { knowledgeRequest: { required: true, reason: "missing_approved_answer" } }
+    }) } }] }) } as any;
+
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: vehicleStageQuestion, createdAt: "now" } as any],
+      facts: {}, settings: {}, text, attachments: []
+    });
+
+    expect(output.result?.leadCardPatch.knowledgeRequest).toBeUndefined();
+    expect(output.reply).toContain("предварительно оценить автомобиль");
+  });
+
+  it("does not let the clarification signal suppress a separate knowledge question", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult,
+      reply: "Распознано.",
+      currentStageClarification: false,
+      leadCardPatch: { knowledgeRequest: { required: true, reason: "missing_approved_answer" } }
+    }) } }] }) } as any;
+
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: vehicleStageQuestion, createdAt: "now" } as any],
+      facts: {}, settings: {}, text: "а wi-fi у вас есть?", attachments: []
+    });
+
+    expect(output.result?.leadCardPatch.knowledgeRequest).toEqual({ required: true, reason: "missing_approved_answer" });
+  });
+
+  it.each([
+    ["vehicle-year correction", "2031 год ещё не наступил. Уточните, пожалуйста, верный год выпуска автомобиля.", "Год выпуска нужен"],
+    ["requested amount", "Какая сумма займа Вам необходима?", "Сумма нужна"],
+    ["money role", "Подскажите, это ориентировочная стоимость автомобиля или желаемая сумма займа?", "относится названная сумма"],
+    ["programme", "Вас интересует займ без изъятия автомобиля или с постановкой автомобиля на охраняемую стоянку?", "Выбор программы определяет"],
+    ["maximum programme", "Какую программу выбираете для максимальной суммы — без изъятия автомобиля или со стоянкой?", "максимальную сумму именно по выбранному варианту"],
+    ["amount limit", "Могу продолжить либо на сумме до 500 000 сом без изъятия, либо перейти на стоянку. Какой вариант выбираете?", "запрошенная сумма превышает доступный лимит"],
+    ["residence", "Подскажите, пожалуйста, Вашу прописку — Бишкек, Чуйская область или другой регион Кыргызстана.", "Прописка нужна"],
+    ["residence clarification", "Подскажите, пожалуйста, это в Чуйской области?", "Уточняем регион прописки"],
+    ["guarantor", "И Вам потребуется поручитель:\n- возраст от 25 лет\nУ Вас есть такой поручитель?", "Поручитель нужен только для займа без изъятия"],
+    ["parking alternative", "Поручитель обязателен для программы без изъятия в Вашем регионе. Можем рассмотреть программу с постановкой автомобиля на охраняемую стоянку?", "готовы ли Вы рассмотреть вариант со стоянкой"],
+    ["family status", "Подскажите, пожалуйста, Ваше семейное положение — Вы в браке, в разводе или не в браке.", "Семейное положение нужно"],
+    ["divorce purchase timing", "Подскажите, пожалуйста, автомобиль был приобретён во время брака или после развода?", "свидетельство о расторжении брака"],
+    ["office consent", "Для оформления потребуется нотариальное согласие супруга или супруги. Вам удобно оформить согласие при визите в офис?", "подготовить нотариальное согласие"],
+    ["spouse-away consent", "Супруг или супруга может оформить нотариальное согласие у любого нотариуса по месту нахождения и отправить Вам оригинал. Напишите, пожалуйста, когда согласие будет у Вас — после этого продолжим оформление.", "согласовать оформление"],
+    ["documents", "Пожалуйста, отправьте фото ID и свидетельства о регистрации автомобиля с обеих сторон.", "Документы нужны"],
+    ["car photos", "Пожалуйста, отправьте 2–3 фотографии автомобиля.", "Фотографии автомобиля помогут"],
+    ["visit", "Офис работает с понедельника по пятницу с 11:00 до 19:00. На какой день и время Вам удобно подъехать?", "Дата и время нужны"],
+    ["money currency clarification", "Вы имели в виду 500 000 сом, верно?", "не ошибиться в сумме и валюте займа"]
+  ])("explains why the active %s stage is needed", async (_stage, prompt, explanation) => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult,
+      reply: "Нотариальное согласие требуется только если собственник автомобиля состоит в браке.",
+      leadCardPatch: {},
+      knowledgeRequest: { required: true, reason: "missing_approved_answer" }
+    }) } }] }) } as any;
+
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: prompt, createdAt: "now" } as any],
+      facts: _stage === "parking alternative"
+        ? { requestedProgram: "without_storage", residenceRegion: "Другой регион Кыргызстана", residenceCategory: "OTHER_KG", guarantorAvailable: false }
+        : {},
+      settings: {}, text: "зачем", attachments: []
+    });
+
+    expect(output.result?.needsKnowledgeLookup).toBe(false);
+    expect(output.reply).toContain(explanation);
+  });
+
   it("asks to correct a future vehicle year instead of advancing to the amount stage", () => {
     expect(nextRequiredStageQuestion({
       vehicleModel: "Li 9",
@@ -1187,6 +1278,21 @@ describe("single-agent dialogue", () => {
 
     const result = await new AgentTurnService(client).normalizeMoney({
       text: "камри 2022 г 1 млн дадите?", facts: {}, messages: []
+    });
+
+    expect(result).toEqual([
+      { field: "requestedAmount", amount: 1_000_000, currency: "KGS", confidence: 0.99 }
+    ]);
+  });
+
+  it("rejects a duplicate vehicle value when the client says an amount is required", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ values: [
+      { field: "requestedAmount", amount: 1_000_000, currency: "KGS", confidence: 0.99 },
+      { field: "vehicleValue", amount: 1_000_000, currency: "KGS", confidence: 0.99 }
+    ] }) } }] }) } as any;
+
+    const result = await new AgentTurnService(client).normalizeMoney({
+      text: "мне потребуется 1 миллион", facts: {}, messages: []
     });
 
     expect(result).toEqual([

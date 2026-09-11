@@ -362,10 +362,26 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
 function supplementNormalizedMoney(values: NormalizedMoneyValue[], text: string, currentFacts: ApplicationFacts, messages: Stage1Message[] = [], moneyClarification?: PendingMoneyClarificationDecision): NormalizedMoneyValue[] {
   const expectedField = expectedMoneyFieldFromLastQuestion(messages);
   const classifiedValue = moneyValueFromClarificationDecision(text, messages, moneyClarification);
+  const mentions = detectMoneyMentions(text);
+  const singleMention = mentions.length === 1 ? mentions[0] : undefined;
+  // One client-written amount is one fact, never evidence for both the loan
+  // and the vehicle. A direct loan cue («нужно», «требуется», «потребуется»)
+  // is authoritative over an erroneous normalizer response that emits both
+  // fields for the same number.
+  const singleExplicitRole = singleMention?.roleCandidate === "requestedAmount" || singleMention?.roleCandidate === "vehicleValue"
+    ? singleMention.roleCandidate
+    : undefined;
   const result = classifiedValue
     ? [classifiedValue]
-    : values.filter((value) => value.amount > 0 && (!expectedField || value.field === expectedField));
-  const mentions = detectMoneyMentions(text);
+    : singleExplicitRole
+      ? [{ field: singleExplicitRole, amount: singleMention!.normalizedAmount, currency: singleMention!.currency ?? "KGS" as const, confidence: singleMention!.confidence }]
+      : values.filter((value) => value.amount > 0 && (!expectedField || value.field === expectedField));
+  // The model can be uncertain about an unqualified standalone amount, but it
+  // must still never duplicate that one mention into both lead-card fields.
+  if (!classifiedValue && singleMention && !singleExplicitRole && result.length > 1) {
+    const preferredField = expectedField ?? result[0]!.field;
+    result.splice(0, result.length, ...result.filter((value) => value.field === preferredField).slice(0, 1));
+  }
   // The model remains the primary normalizer. This is a deliberately narrow
   // correction for an unambiguous numeric construction it can occasionally
   // truncate: «1 млн с половиной» must never reach pricing as 1 млн. It is

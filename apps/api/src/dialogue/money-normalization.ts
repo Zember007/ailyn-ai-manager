@@ -34,7 +34,7 @@ const moneyPattern =
   /(?:(\$|€|₸|₽|usd|eur(?:o)?s?|kzt|kgs?\.?|rub|dollars?|доллар(?:ов|а|ы)?|евро|тенге|сом(?:а|ов)?|руб(?:ль|ля|лей)?)\s*)?(\d{1,3}(?:[ \u00a0.,]\d{3})+|\d+(?:[.,]\d+)?)(?:\s*)(млн|миллион(?:а|ов)?|тыс(?:яч[аи]?)?|тыщ|[kк])?(?:\s*)(\$|€|₸|₽|usd|eur(?:o)?s?|kzt|kgs?\.?|rub|dollars?|доллар(?:ов|а|ы)?|евро|тенге|сом(?:а|ов)?|руб(?:ль|ля|лей)?)?/giu;
 // A request such as "1 млн дадите?" is a requested loan, never an implied
 // vehicle value merely because the message also names a car and its year.
-const requestedCuePattern = /(нужн|надо|сумм|займ|получить|оформить|хочу|хотел(?:ось)?|надобно|требуется|дайте|выдайте|дадите)/i;
+const requestedCuePattern = /(нужн|надо|сумм|займ|получить|оформить|хочу|хотел(?:ось)?|надобно|требуется|потреб(?:уется|овалось|ую)|дайте|выдайте|дадите)/i;
 // `стои` is a common dropped-final-letter typo in chat messages. Keep the
 // boundary narrow so it still denotes the vehicle-price cue rather than an
 // arbitrary substring.

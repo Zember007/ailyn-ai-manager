@@ -1049,8 +1049,8 @@ function explicitSingleMoneyRole(text: string | undefined): "requestedAmount" | 
   // the desired loan amount. Prefer the local predicate attached to the only
   // numeric mention over broad words elsewhere in the sentence.
   if (/(?:стоит|стоимость|цена|оцен[а-яё]*)[^.!?]{0,24}\d[\d\s.,]*(?:\s*(?:млн|миллион[а-яё]*|тыс[а-яё]*|тыщ|[кk]))?/iu.test(source)) return "vehicleValue";
-  if (/(?:нужн|надо|хочу|получить|дайте|выдайте)[^.!?]{0,24}\d[\d\s.,]*(?:\s*(?:млн|миллион[а-яё]*|тыс[а-яё]*|тыщ|[кk]))?/iu.test(source)) return "requestedAmount";
-  const requested = /(?:нужн|надо|сумм(?:а)?\s+займ|займ|получить|хочу|хотел(?:ось)?|надобно|требуется|дайте|выдайте|дадите)/iu.test(source);
+  if (/(?:нужн|надо|хочу|получить|требуется|потребуется|дайте|выдайте)[^.!?]{0,24}\d[\d\s.,]*(?:\s*(?:млн|миллион[а-яё]*|тыс[а-яё]*|тыщ|[кk]))?/iu.test(source)) return "requestedAmount";
+  const requested = /(?:нужн|надо|сумм(?:а)?\s+займ|займ|получить|хочу|хотел(?:ось)?|надобно|требуется|потреб(?:уется|овалось|ую)|дайте|выдайте|дадите)/iu.test(source);
   const vehicle = /(?:стоит|стоимость|цена|оцен|машина|авто|автомобил|рыночн)/iu.test(source);
   if (requested === vehicle) return undefined;
   return requested ? "requestedAmount" : "vehicleValue";
@@ -1131,6 +1131,7 @@ function localAttachmentRecovery(input: AgentTurnInput): AgentTurnResult {
     .join("\n\n");
   return {
     reply,
+    currentStageClarification: false,
     hasMoney: false,
     needsKnowledgeLookup: false,
     language: input.facts.language ?? "ru",
@@ -1198,10 +1199,24 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     && requiresGuarantorForFacts(input.facts)
     && input.facts.guarantorAvailable === undefined
     && !explicitChuyResidenceCategory(semanticText);
+  // The model is the primary classifier for natural phrasings such as
+  // «а зачем эта информация». Honor its signal only for a pure clarification:
+  // it must not hide a fact correction, a money question, or a new FAQ.
+  const modelCurrentStageClarification = parsed.currentStageClarification === true
+    && !parsed.clientQuestion
+    && !parsed.residenceStatement
+    && !parsed.programStatement
+    && !parsed.hasMoney
+    && parsed.loanQuestionKind === "none"
+    && !leadPatchChangesFacts(leadCardFacts, input.facts);
   const inactiveGuarantorClarification = input.inactiveGuarantorClarification === true;
   const parkingAlternativeGuarantorAnswer = isActiveGuarantorParkingAlternative(lastAssistantReply, input.facts)
     && parsed.leadCardPatch.guarantorAvailable === true;
-  const stageResponse = activeWorkflowClarification || inactiveGuarantorClarification || parkingAlternativeGuarantorAnswer || (isResponseToLastWorkflowQuestion(input) && modelKnowledgeRequest?.required !== true);
+  const workflowWhyQuestion = workflowWhyReply(input);
+  const workflowStageClarification = modelCurrentStageClarification
+    ? workflowStageExplanation(input) ?? "Уточняем эти данные для предварительного рассмотрения заявки."
+    : workflowWhyQuestion;
+  const stageResponse = Boolean(workflowStageClarification) || modelCurrentStageClarification || activeWorkflowClarification || inactiveGuarantorClarification || parkingAlternativeGuarantorAnswer || (isResponseToLastWorkflowQuestion(input) && modelKnowledgeRequest?.required !== true);
   // The main model semantically detects natural-language questions which do
   // not have a question mark (for example «А кофе есть»). Pattern matching
   // remains only the fallback inside requiresKnowledgeAnswer.
@@ -1426,7 +1441,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   // visit branch. The calculation itself is server-owned; after answering,
   // the normal workflow appender returns to the outstanding action.
   const optionalStageDeclineNotice = optionalStageDeclineNoticeForTurn(input.facts, effectiveFacts);
-  const directAnswer = accidentNotDrivableNotice ?? repeatedStageReply ?? completionNotice ?? attachmentAcceptanceNotice ?? optionalStageDeclineNotice ?? visitNonWorkingDay ?? visitNotice ?? visitProgress ?? visitTimeClarification ?? residenceLimitNotice ?? programmeChangeGuarantorNotice ?? maximumChoiceNotice ?? acceptedLimitNotice ?? (region10Answer ? [region10Answer, olderVehicleNotice].filter(Boolean).join("\n\n") : undefined) ?? olderVehicleNotice ?? maximumLoanInputReply ?? maximumLoanReply ?? spouseVisitAnswer(input) ?? familyNotice ?? unknownVehicleValueNotice ?? waitingForVehicleValueNotice;
+  const directAnswer = workflowStageClarification ?? accidentNotDrivableNotice ?? repeatedStageReply ?? completionNotice ?? attachmentAcceptanceNotice ?? optionalStageDeclineNotice ?? visitNonWorkingDay ?? visitNotice ?? visitProgress ?? visitTimeClarification ?? residenceLimitNotice ?? programmeChangeGuarantorNotice ?? maximumChoiceNotice ?? acceptedLimitNotice ?? (region10Answer ? [region10Answer, olderVehicleNotice].filter(Boolean).join("\n\n") : undefined) ?? olderVehicleNotice ?? maximumLoanInputReply ?? maximumLoanReply ?? spouseVisitAnswer(input) ?? familyNotice ?? unknownVehicleValueNotice ?? waitingForVehicleValueNotice;
   // A direct approved FAQ outranks all free-form model prose. This prevents
   // plausible but unsupported claims such as a parking location or credit
   // eligibility from reaching the client. The final output renderer receives
@@ -1442,7 +1457,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
       : undefined;
   const answerBeforeWorkflow = isLoanRateQuestion(loanQuestionKind)
     ? (maximumLoanInputReply ?? maximumLoanReply ?? "")
-    : waitingForMaximumProgrammeSelection ? "" : workflowClarificationAnswer ?? mandatoryKnowledgeAnswer ?? directAnswer ?? removeIncorrectResidenceClarificationProse(
+    : waitingForMaximumProgrammeSelection ? "" : workflowStageClarification ?? workflowClarificationAnswer ?? mandatoryKnowledgeAnswer ?? directAnswer ?? removeIncorrectResidenceClarificationProse(
     removeForbiddenMetaPhrases(dropUnsupportedFallbackForNonQuestion(replaceUnsupportedFallbackWithApprovedAnswer(guardedModelReply, mandatoryKnowledgeAnswer, input), semanticText)),
     input,
     effectiveFacts
@@ -1452,14 +1467,19 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   // FAQ answer but remove the model's competing explanation before adding the
   // one canonical calculation below.
   const serverSafeAnswer = requestedAmountLimit ? removeModelLimitClaim(answerBeforeWorkflow) : answerBeforeWorkflow;
-  const responsePlan = repeatedStageReply ?? appendRequiredWorkflowFollowUp(
+  // A contextual "why" must survive all later stage-specific normalizers
+  // (notably the Chuy and guarantor resolvers). Otherwise they can replace
+  // the explanation with the same question the client just queried.
+  const responsePlan = workflowStageClarification
+    ? appendRequiredWorkflowFollowUp(workflowStageClarification, workflowFollowUp)
+    : repeatedStageReply ?? appendRequiredWorkflowFollowUp(
     appendContinuationAfterRegion10PolicyQuestion(
       removeModelWorkflowQuestion(removeQuestionsForKnownLeadFacts(removeUnaskedProgramDetails(removeRepeatedProgramExplanation(enforceFirstContactGreeting(serverSafeAnswer, input), effectiveFacts, input), input), effectiveFacts, input.facts)),
       input,
       effectiveFacts
     ),
-    isIdentityQuestion(input) ? undefined : workflowFollowUp
-  );
+      isIdentityQuestion(input) ? undefined : workflowFollowUp
+    );
   return {
     ...parsed,
     clientQuestion,
@@ -1485,7 +1505,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
       ? "Тогда уточните, какую сумму вы имели в виду?"
       : vehicleNeedClarification
       ? enforceFirstContactGreeting(vehicleNeedClarification, input)
-      : unresolvedBinaryDecisionReply(input, effectiveFacts, loanQuestionKind) ?? visitNonWorkingDay ?? visitTimeClarification ?? responsePlan)))
+      : (modelCurrentStageClarification ? undefined : unresolvedBinaryDecisionReply(input, effectiveFacts, loanQuestionKind)) ?? visitNonWorkingDay ?? visitTimeClarification ?? responsePlan)))
   };
 }
 
@@ -1598,6 +1618,14 @@ function hasRecognizedFactsForTurn(previous: ApplicationFacts, current: Applicat
     if (ignored.has(key)) return false;
     return JSON.stringify((previous as Record<string, unknown>)[key]) !== JSON.stringify((current as Record<string, unknown>)[key]);
   });
+}
+
+/** The normalizer carries existing facts through the model patch. Only a
+ * changed durable value means the client supplied/corrected stage data. */
+function leadPatchChangesFacts(patch: Partial<ApplicationFacts>, current: ApplicationFacts): boolean {
+  const transient = new Set(["language", "stageCompletion", "knowledgeRequest"]);
+  return Object.entries(patch).some(([key, value]) => !transient.has(key)
+    && JSON.stringify((current as Record<string, unknown>)[key]) !== JSON.stringify(value));
 }
 
 /** Mechanical acknowledgements add no customer-facing value. */
@@ -3071,7 +3099,7 @@ function unresolvedBinaryDecisionReply(
   // A short factual question such as «какой поручитель» often arrives without
   // a question mark. It must reach the approved-knowledge path, rather than
   // being misread as an unclear yes/no answer to the preceding stage.
-  if (!clientReply || isLikelyKnowledgeQuestion(clientReply) || detectMoneyMentions(clientReply).length > 0 || isMaximumLimitQuestion(loanQuestionKind) || isLoanRateQuestion(loanQuestionKind)) return undefined;
+  if (!clientReply || workflowWhyReply(input) || isLikelyKnowledgeQuestion(clientReply) || detectMoneyMentions(clientReply).length > 0 || isMaximumLimitQuestion(loanQuestionKind) || isLoanRateQuestion(loanQuestionKind)) return undefined;
   const repeatQuestion = (): string | undefined => {
     const question = lastAssistantQuestion(lastAssistant);
     return question ? clarificationOf(question) : undefined;
@@ -3221,6 +3249,83 @@ function isResponseToLastWorkflowQuestion(input: Pick<AgentTurnInput, "text" | "
   if (isLikelyKnowledgeQuestion(text)) return false;
   const lastAssistantMessage = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
   return /ориентировочн(?:ую|ая)\s+стоимост|какая\s+сумма\s+займа|без\s+изъяти|со\s+стоянк|ваш[ау]\s+пропис|подскажите.{0,80}(?:документ|фото|семейн|поручител|день|время)/iu.test(lastAssistantMessage);
+}
+
+/** A short "зачем/почему" is a request to explain the current workflow
+ * prompt, not a free-standing FAQ. It must never search the entire knowledge
+ * base and accidentally select an unrelated condition such as spouse consent. */
+function workflowStageExplanation(input: Pick<AgentTurnInput, "text" | "currentTurnMessages" | "messages">): string | undefined {
+  const lastAssistant = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
+  // Check the narrow conditional branches before their broader parent stages:
+  // an office-consent prompt is also a family prompt, and a parking offer may
+  // also mention the programme. The explanation must describe the exact
+  // question the client is looking at.
+  if (/год\s+ещ[её]\s+не\s+наступил|верн(?:ый|ую)\s+год\s+выпуска/iu.test(lastAssistant)) {
+    return "Год выпуска нужен для проверки, подходит ли автомобиль под условия займа.";
+  }
+  if (/модель\s+и\s+год[^?]{0,100}(?:стоимост|цен)/iu.test(lastAssistant)) {
+    return "Чтобы предварительно оценить автомобиль и рассчитать условия займа, нужны модель, год выпуска и ориентировочная стоимость.";
+  }
+  if (hasPendingMoneyCurrencyClarification(lastAssistant)) {
+    return "Уточняем это, чтобы не ошибиться в сумме и валюте займа.";
+  }
+  if (/это\s+(?:ориентировочн\p{L}*\s+)?стоимост\p{L}*\s+автомобил\p{L}*\s+или\s+желаем\p{L}*\s+сумм\p{L}*\s+займ/iu.test(lastAssistant)) {
+    return "Нужно понять, относится названная сумма к стоимости автомобиля или к желаемой сумме займа — от этого зависит расчёт.";
+  }
+  if (/какая\s+сумма\s+займа/iu.test(lastAssistant)) {
+    return "Сумма нужна, чтобы проверить, подходит ли она под условия займа для Вашего автомобиля.";
+  }
+  if (isMaximumProgrammeSelectionQuestion(lastAssistant)) {
+    return "Выбор программы нужен, чтобы назвать максимальную сумму именно по выбранному варианту займа.";
+  }
+  if (isAmountLimitChoiceQuestion(lastAssistant)) {
+    return "Нужно выбрать вариант, потому что запрошенная сумма превышает доступный лимит: можно уменьшить сумму или рассмотреть стоянку.";
+  }
+  if (/(?:можем|можно|давайте|готовы)[\s\S]{0,100}(?:рассмотреть|перейти|выбрать|оформить)[\s\S]{0,180}(?:стоянк|постановк)/iu.test(lastAssistant)) {
+    return "Поскольку для программы без изъятия в Вашем регионе нужен поручитель, уточняем, готовы ли Вы рассмотреть вариант со стоянкой.";
+  }
+  if (isGuarantorQuestion(lastAssistant)) {
+    return "Поручитель нужен только для займа без изъятия при прописке за пределами Бишкека и Чуйской области — это условие этой программы.";
+  }
+  if (/это\s+в\s+чуйской\s+области/iu.test(lastAssistant)) {
+    return "Уточняем регион прописки, потому что от него зависят доступная сумма и условия займа.";
+  }
+  if (isResidenceCollectionQuestion(lastAssistant)) {
+    return "Прописка нужна для предварительного расчёта доступной суммы и условий займа.";
+  }
+  if (isOfficeConsentQuestion(lastAssistant)) {
+    return "Это нужно, чтобы заранее понять, как подготовить нотариальное согласие супруга или супруги к оформлению.";
+  }
+  if (isDivorcePurchaseTimingQuestion(lastAssistant)) {
+    return "Это нужно, чтобы определить, потребуется ли свидетельство о расторжении брака.";
+  }
+  if (/супруг\p{L}*[^?]{0,180}(?:отменить\s+визит|перенести|когда\s+согласие\s+будет)/iu.test(lastAssistant)) {
+    return "Это нужно, чтобы согласовать оформление с моментом, когда оригинал нотариального согласия будет у Вас.";
+  }
+  if (/(?:семейн\p{L}*\s+положени|в\s+браке,?\s+в\s+разводе|не\s+в\s+браке)/iu.test(lastAssistant)) {
+    return "Семейное положение нужно, чтобы определить, потребуется ли согласие супруга или супруги и дополнительные документы.";
+  }
+  if (isDocumentRequest(lastAssistant)) {
+    return "Документы нужны для оформления заявки и проверки данных автомобиля.";
+  }
+  if (isCarPhotoRequest(lastAssistant)) {
+    return "Фотографии автомобиля помогут быстрее провести предварительную оценку.";
+  }
+  if (/(?:без\s+изъяти|со\s+стоянк|охраняемую\s+стоянк)/iu.test(lastAssistant)) {
+    return "Выбор программы определяет, останется ли автомобиль у Вас или будет находиться на охраняемой стоянке, а также условия займа.";
+  }
+  if (/(?:на\s+какой\s+день|в\s+какое\s+время|день\s+и\s+время).{0,160}(?:подъехать|визит)|(?:подъехать|визит).{0,160}(?:на\s+какой\s+день|в\s+какое\s+время)/iu.test(lastAssistant)) {
+    return "Дата и время нужны, чтобы менеджер мог предварительно подтвердить Ваш визит в офис.";
+  }
+  return undefined;
+}
+
+/** Regex fallback only for outages or an omitted model signal. The main model
+ * recognises broader wording through `currentStageClarification`. */
+function workflowWhyReply(input: Pick<AgentTurnInput, "text" | "currentTurnMessages" | "messages">): string | undefined {
+  const text = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "").trim();
+  if (!/^(?:(?:а|и|ну)\s+)?(?:(?:зачем|почему|для\s+чего)(?:\s+(?:эта|эта\s+самая|такая|данная)?\s*(?:информаци\p{L}*|данн\p{L}*|это|нужн\p{L}*))?|что\s+это\s+да[её]т|для\s+чего\s+(?:это|нужно)|почему\s+(?:это|нужно))(?:(?:\s+вообще)?)[?!.…\s]*$/iu.test(text)) return undefined;
+  return workflowStageExplanation(input);
 }
 
 function unknownVehicleValueReply(input: Pick<AgentTurnInput, "text" | "currentTurnMessages" | "messages">, facts: ApplicationFacts): string | undefined {
