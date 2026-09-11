@@ -4656,7 +4656,7 @@ describe("single-agent dialogue", () => {
 
   it("keeps a friendly contextual acknowledgement before the pending visit after an unhandled reaction", async () => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
-      ...validResult, reply: "Распознано.", currentStageResponse: "unrelated", contextualAcknowledgement: { text: "Понимаю, сумма может не подойти.", resumeWorkflow: true }, leadCardPatch: {}
+      ...validResult, reply: "Распознано.", currentStageResponse: "unrelated", contextualAcknowledgement: { text: "Понимаю, сумма может не подойти." }, leadCardPatch: {}
     }) } }] }) } as any;
     const visitQuestion = "Офис работает с понедельника по пятницу с 11:00 до 19:00. Для оформления нужно приехать не позднее 18:00. На какой день и время Вам удобно подъехать?";
 
@@ -4666,7 +4666,7 @@ describe("single-agent dialogue", () => {
       settings: {}, text: "мало", attachments: []
     });
 
-    expect(output.result?.contextualAcknowledgement).toEqual({ text: "Понимаю, сумма может не подойти.", resumeWorkflow: true });
+    expect(output.result?.contextualAcknowledgement).toEqual({ text: "Понимаю, сумма может не подойти." });
     expect(output.result?.leadCardPatch).toEqual(expect.objectContaining({
       vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 3_000_000, requestedAmount: 200_000, requestedProgram: "parking", residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY", documentsProvided: true, familyStatus: "single"
     }));
@@ -4675,12 +4675,12 @@ describe("single-agent dialogue", () => {
     expect(output.result?.leadCardPatch.knowledgeRequest).toBeUndefined();
   });
 
-  it("does not repeat the visit question after an explicit refusal to book", async () => {
+  it("keeps the server visit question after an explicit refusal to book", async () => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
       ...validResult,
       reply: "Распознано.",
       currentStageResponse: "unrelated",
-      contextualAcknowledgement: { text: "Хорошо, запись пока не будем оформлять.", resumeWorkflow: false },
+      contextualAcknowledgement: { text: "Хорошо, запись пока не будем оформлять." },
       leadCardPatch: {}
     }) } }] }) } as any;
     const visitQuestion = "Офис работает с понедельника по пятницу с 11:00 до 19:00. Для оформления нужно приехать не позднее 18:00. На какой день и время Вам удобно подъехать?";
@@ -4692,7 +4692,7 @@ describe("single-agent dialogue", () => {
     });
 
     expect(output.reply).toContain("запись пока не будем оформлять");
-    expect(output.reply).not.toContain("На какой день и время");
+    expect(output.reply).toContain("На какой день и время");
     expect(output.result?.leadCardPatch.clientPaused).toBeUndefined();
   });
 
@@ -4717,7 +4717,7 @@ describe("single-agent dialogue", () => {
       ...validResult,
       reply: "Распознано.",
       currentStageResponse: "unrelated",
-      contextualAcknowledgement: { text: "Этот fallback не должен быть показан.", resumeWorkflow: true },
+      contextualAcknowledgement: { text: "Этот fallback не должен быть показан." },
       leadCardPatch: { knowledgeRequest: { required: true, reason: "missing_approved_answer" } }
     }) } }] }) } as any;
 
@@ -4784,6 +4784,47 @@ describe("single-agent dialogue", () => {
       managerUpdate: { kind: "none", changedFields: [] }
     });
     expect(client.createChatCompletion).toHaveBeenCalledTimes(1);
+  });
+
+  it("repairs malformed attachment shorthand before the focused ID vision pass", async () => {
+    const malformed = {
+      ...validResult,
+      reply: "Документы получены.",
+      leadCardPatch: {},
+      contextualAcknowledgement: { text: "" },
+      attachments: ["id_front", "vehicle_registration_back"],
+      dialogueState: { stage: "COLLECTING_DOCUMENTS", status: "need_more_data", nextAction: "collect_documents" }
+    };
+    const client = {
+      isConfigured: vi.fn().mockReturnValue(true),
+      createChatCompletion: vi.fn()
+        .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify(malformed) } }] })
+        .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({
+          fullName: "Смолева Евгения Прокопьевна",
+          ownerFullName: null,
+          attachments: [
+            { attachmentId: "id", type: "id_front", documentTypes: ["id_front"], status: "received" },
+            { attachmentId: "sts", type: "vehicle_registration_back", documentTypes: ["vehicle_registration_back"], status: "received" }
+          ]
+        }) } }] })
+    } as any;
+
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "Загрузите документы в чат.", createdAt: "now" } as any],
+      facts: {} as any,
+      settings: {}, text: "", attachments: [
+        { id: "id", mimeType: "image/jpeg", contentBase64: "/9j/2Q==" },
+        { id: "sts", mimeType: "image/jpeg", contentBase64: "/9j/2Q==" }
+      ]
+    });
+
+    expect(client.createChatCompletion).toHaveBeenCalledTimes(2);
+    expect(output.result?.contextualAcknowledgement).toBeUndefined();
+    expect(output.result?.attachments).toEqual([
+      { attachmentId: "id", type: "id_front", status: "received" },
+      { attachmentId: "sts", type: "vehicle_registration_back", status: "received" }
+    ]);
+    expect(output.result?.leadCardPatch.fullName).toBe("Смолева Евгения Прокопьевна");
   });
 
   it("does not let a FAQ reply jump from an incomplete vehicle stage to residence", async () => {

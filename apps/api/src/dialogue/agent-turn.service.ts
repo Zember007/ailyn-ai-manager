@@ -422,7 +422,7 @@ export class AgentTurnService {
             metadata: { attempt, model: response.model ?? request.model, request: attemptRequest, rawModelResponse: rawAgentResponse }
           });
         }
-        const payload = normalizeAgentPayload(parseAgentJson(typeof rawAgentResponse === "string" ? rawAgentResponse : undefined), input.facts);
+        const payload = normalizeAgentPayload(parseAgentJson(typeof rawAgentResponse === "string" ? rawAgentResponse : undefined), input.facts, input.attachments);
         const parsed = agentTurnResultSchema.safeParse(payload);
         if (!parsed.success) {
           const issues = parsed.error.issues.map((issue) => `${issue.path.join(".") || "root"}: ${issue.message}`).join("; ");
@@ -994,7 +994,7 @@ export class AgentTurnService {
         ]
       }, { timeoutMs: this.config.routerAiTimeoutMs, signal: input.signal });
       const content = response.choices?.[0]?.message?.content;
-      const payload = normalizeAgentPayload(parseAgentJson(typeof content === "string" ? content : undefined), input.facts);
+      const payload = normalizeAgentPayload(parseAgentJson(typeof content === "string" ? content : undefined), input.facts, input.attachments);
       const parsed = agentTurnResultSchema.safeParse(payload);
       if (!parsed.success) {
         await this.logs?.warn("dialogue.response-normalizer", "Response normalizer output failed schema validation", {
@@ -1460,7 +1460,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     && loanQuestionKind === "none"
     ? parsed.contextualAcknowledgement
     : undefined;
-  const workflowFollowUp = contextualAcknowledgement?.resumeWorkflow === false || accidentNotDrivableNotice || (!contextualAcknowledgement && repeatedStageReply) || rejectedMoneyClarification || belowMinimumReply || visitProgress || visitTimeClarification || visitNonWorkingDay || hasPendingMoneyCurrencyClarification(internalReply)
+  const workflowFollowUp = accidentNotDrivableNotice || (!contextualAcknowledgement && repeatedStageReply) || rejectedMoneyClarification || belowMinimumReply || visitProgress || visitTimeClarification || visitNonWorkingDay || hasPendingMoneyCurrencyClarification(internalReply)
     ? undefined
     : serverWorkflowFollowUp(loanQuestionKind, effectiveFacts, stageCompletion, requestedAmountLimit, workflowSelectedLimitNotice);
   const answerBeforeWorkflow = isLoanRateQuestion(loanQuestionKind)
@@ -3709,8 +3709,52 @@ function loadPrompt(name: string) {
  * validates the final boundary. Unknown values stay unchanged and are rejected. */
 const permittedLeadCardKeys = new Set(Object.keys(agentTurnResultSchema.shape.leadCardPatch.shape));
 const serverOnlyLeadFactKeys = new Set(["guarantorAvailable", "guarantorAlternativeDeclined"]);
+const modelAttachmentTypes = new Set<RecognizedAttachmentType>(["id_front", "id_back", "vehicle_registration_front", "vehicle_registration_back", "car", "unknown", "poor_quality"]);
+const modelAttachmentStatuses = new Set<RecognizedAttachmentStatus>(["received", "poor_quality", "blocked"]);
+const modelAttachmentTypeAliases: Record<string, RecognizedAttachmentType> = {
+  id: "id_front", id_card: "id_front", passport: "id_front", id_front_side: "id_front", id_back_side: "id_back",
+  sts: "vehicle_registration_front", vehicle_registration: "vehicle_registration_front", registration_certificate: "vehicle_registration_front",
+  sts_front: "vehicle_registration_front", sts_back: "vehicle_registration_back", car_photo: "car", vehicle_photo: "car", photo_car: "car"
+};
 
-function normalizeAgentPayload(payload: Record<string, unknown>, currentFacts: ApplicationFacts = {}): Record<string, unknown> {
+function normalizeModelAttachmentType(value: unknown): RecognizedAttachmentType | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim().toLowerCase().replace(/[\s-]+/g, "_");
+  if (modelAttachmentTypes.has(normalized as RecognizedAttachmentType)) return normalized as RecognizedAttachmentType;
+  return modelAttachmentTypeAliases[normalized];
+}
+
+/** Bind malformed model attachment labels to the actual inbound file IDs.
+ * The focused vision pass replaces these provisional values after Zod. */
+function normalizeModelAttachments(value: unknown, inboundAttachments: InboundAttachment[]): AgentTurnResult["attachments"] {
+  if (inboundAttachments.length === 0) return [];
+  const inbound = inboundAttachments.slice(0, 20);
+  const inboundIds = new Set(inbound.map((attachment) => attachment.id));
+  const recognized = new Map<string, AgentTurnResult["attachments"][number]>();
+  const rows = Array.isArray(value) ? value : [];
+  for (const [index, row] of rows.entries()) {
+    const source = row && typeof row === "object" && !Array.isArray(row) ? row as Record<string, unknown> : undefined;
+    const attachmentId = source && typeof source.attachmentId === "string" && inboundIds.has(source.attachmentId)
+      ? source.attachmentId
+      : inbound[index]?.id;
+    const type = normalizeModelAttachmentType(source?.type ?? row);
+    if (!attachmentId || !type || recognized.has(attachmentId)) continue;
+    const suppliedStatus = source?.status;
+    const status = type === "poor_quality"
+      ? "poor_quality"
+      : typeof suppliedStatus === "string" && modelAttachmentStatuses.has(suppliedStatus as RecognizedAttachmentStatus)
+        ? suppliedStatus as RecognizedAttachmentStatus
+        : "received";
+    recognized.set(attachmentId, { attachmentId, type, status });
+  }
+  return inbound.map((attachment) => recognized.get(attachment.id) ?? {
+    attachmentId: attachment.id,
+    type: "unknown" as const,
+    status: "received" as const
+  });
+}
+
+function normalizeAgentPayload(payload: Record<string, unknown>, currentFacts: ApplicationFacts = {}, inboundAttachments: InboundAttachment[] = []): Record<string, unknown> {
   // These fields are agent bookkeeping rather than client facts. Repair
   // harmless shorthand so a good client answer is not discarded merely
   // because a model used a human label instead of the JSON enum.
@@ -3729,6 +3773,23 @@ function normalizeAgentPayload(payload: Record<string, unknown>, currentFacts: A
     // otherwise complete multi-question answer after three expensive retries.
     const value = Number(payload.preliminaryLimit.replace(/[\s_]/g, "").replace(",", "."));
     if (Number.isFinite(value)) payload.preliminaryLimit = value;
+  }
+  // Attachment IDs are supplied by the server. Models sometimes return a
+  // compact list such as ["id_front", "id_back"] or omit the IDs entirely;
+  // that is a formatting issue, not grounds to discard the whole dialogue
+  // response before the focused vision pass can inspect the original photos.
+  payload.attachments = normalizeModelAttachments(payload.attachments, inboundAttachments);
+  const acknowledgement = payload.contextualAcknowledgement;
+  if (!acknowledgement || typeof acknowledgement !== "object" || Array.isArray(acknowledgement)) {
+    delete payload.contextualAcknowledgement;
+  } else {
+    const candidate = acknowledgement as Record<string, unknown>;
+    const text = typeof candidate.text === "string" ? candidate.text.trim() : "";
+    if (text.length < 2) {
+      delete payload.contextualAcknowledgement;
+    } else {
+      payload.contextualAcknowledgement = { text };
+    }
   }
   const leadCardPatch = payload.leadCardPatch;
   if (leadCardPatch && typeof leadCardPatch === "object" && !Array.isArray(leadCardPatch)) {
