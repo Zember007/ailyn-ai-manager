@@ -2050,7 +2050,7 @@ function resolveLoanQuestionKind(modelKind: LoanQuestionKind, text: string | und
   // «А максимум сколько денег дадите?» can receive a FAQ about interest.
   const normalized = text?.toLocaleLowerCase("ru-RU") ?? "";
   const asksRate = /(?:ставк\p{L}*|процент\p{L}*|сколько\s*%)/iu.test(normalized);
-  const asksLimit = /(?:дадите|скольк\p{L}*[^?!]{0,40}(?:денег|деньг|баб|лав[еэ]|сом|дад\p{L}*|получ\p{L}*)|(?:лимит|максимум|макс|потолок)\p{L}*|(?:денег|деньг|баб|лав[еэ])[^?!]{0,40}(?:скольк\p{L}*|дад\p{L}*|можно|получ\p{L}*)|от\s+скольк\p{L}*|до\s+скольк\p{L}*(?:\s+дад\p{L}*)?)/iu.test(normalized);
+  const asksLimit = /(?:дадите|(?:скольк|сколк)\p{L}*[^?!]{0,40}(?:денег|деньг|баб|лав[еэ]|сом|дад\p{L}*|получ\p{L}*)|(?:лимит|максимум|макс|потолок)\p{L}*|(?:денег|деньг|баб|лав[еэ])[^?!]{0,40}(?:(?:скольк|сколк)\p{L}*|дад\p{L}*|можно|получ\p{L}*)|от\s+(?:скольк|сколк)\p{L}*|до\s+(?:скольк|сколк)\p{L}*(?:\s+дад\p{L}*)?)/iu.test(normalized);
   if (asksLimit && asksRate) return "maximum_limit_and_rate";
   if (asksLimit) return "maximum_limit";
   if (asksRate) return "loan_rate";

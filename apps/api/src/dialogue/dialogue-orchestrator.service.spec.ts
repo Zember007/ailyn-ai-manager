@@ -1827,6 +1827,19 @@ describe("single-agent dialogue", () => {
     expect(output.reply).toBe("Максимальную сумму смогу рассчитать после получения данных об автомобиле и Вашей прописки.\n\nПодскажите, пожалуйста, ориентировочную стоимость автомобиля.");
   });
 
+  it("recognizes a misspelled maximum-money question and explains the data needed for an from-to range", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult, loanQuestionKind: "none", reply: "Подскажите, пожалуйста, модель и год выпуска автомобиля и ориентировочную стоимость автомобиля.", leadCardPatch: {}
+    }) } }] }) } as any;
+    const output = await new AgentTurnService(client).run({
+      messages: [], facts: {}, settings: {}, text: "Сколкьо денег можете дать?", attachments: []
+    });
+
+    expect(output.result?.loanQuestionKind).toBe("maximum_limit");
+    expect(output.reply).toContain("Чтобы рассчитать максимальную сумму, нужны: модель и год выпуска автомобиля, ориентировочная стоимость автомобиля, Ваша прописка.");
+    expect(output.reply).toContain("Подскажите, пожалуйста, модель и год выпуска автомобиля и ориентировочную стоимость автомобиля.");
+  });
+
   it("answers a maximum-loan question and asks for the earliest remaining stage", async () => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
       ...validResult,
