@@ -529,11 +529,11 @@ export class AgentTurnService {
       const response = await this.client.createChatCompletion({
         model: this.config.routerAiVisionModel ?? this.config.routerAiTextModel ?? "routerai-vision-model-not-configured",
         temperature: 0,
-        max_tokens: 180,
+        max_tokens: 500,
         reasoning: { enabled: false },
         response_format: { type: "json_object" },
         messages: [
-          { role: "system", content: "Ты извлекаешь поля только из приложенных документов Кыргызстана. Верни строго JSON {\"fullName\":string|null,\"ownerFullName\":string|null,\"documents\":{\"id_front\":boolean,\"id_back\":boolean,\"vehicle_registration_front\":boolean,\"vehicle_registration_back\":boolean}}. Просмотри каждую карточку и область во всех фото: в одном кадре могут быть ID и СТС, а документы могут быть физическими или экраном Tunduk. fullName — только полное читаемое ФИО с лицевой стороны ID/паспорта; ownerFullName — только полное читаемое ФИО из подписанного поля собственника на СТС. Не переносить ФИО собственника в fullName, не угадывать и не сокращать имя. Для каждого видимого типа документа поставь true; иначе false. Не добавляй текст и не используй имя файла как источник данных." },
+          { role: "system", content: "Ты — точный классификатор каждого приложенного изображения и OCR документов Кыргызстана. Верни строго JSON {\"fullName\":string|null,\"ownerFullName\":string|null,\"attachments\":[{\"attachmentId\":string,\"type\":\"id_front\"|\"id_back\"|\"vehicle_registration_front\"|\"vehicle_registration_back\"|\"car\"|\"unknown\"|\"poor_quality\",\"status\":\"received\"|\"poor_quality\"}]}. Верни ровно один объект attachments для КАЖДОГО attachmentId из входа. Не пропускай фото: если тип нельзя надёжно определить, поставь unknown; если изображение слишком размыто/тёмное для классификации — poor_quality со status poor_quality. ID — физический ID/паспорт или его экран в Tunduk; СТС — свидетельство о регистрации ТС или его экран в Tunduk; car — видимый автомобиль без документа. Сторону ID/СТС указывай только когда она видна, иначе unknown. Просмотри каждое ID и каждое СТС на всех фото и всегда ищи полное читаемое ФИО: fullName только с лицевой стороны ID/паспорта, ownerFullName только из подписанного поля собственника на СТС. Не переносить ФИО собственника в fullName, не угадывать и не сокращать имя. Не используй имя файла как источник данных и не добавляй текст вне JSON." },
           {
             role: "user",
             content: [
@@ -547,9 +547,22 @@ export class AgentTurnService {
         ]
       }, { timeoutMs: this.config.routerAiTimeoutMs, signal: input.signal });
       const extracted = parseDocumentIdentityExtraction(response.choices?.[0]?.message?.content);
+      // The focused pass sees the original image and has a deliberately
+      // narrow classification contract. When it returns the keyed format it
+      // therefore owns the type persisted for every image. A missing model
+      // row still becomes `unknown`, rather than inheriting an unrelated
+      // conversational guess or silently disappearing from recognition.
+      const focusedAttachments = extracted.hasAttachmentClassification
+        ? mergeFocusedAttachmentClassification(parsed.attachments, imageAttachments, extracted.attachments)
+        : parsed.attachments;
       const documents = {
         ...(parsed.leadCardPatch.documents ?? {}),
-        ...Object.fromEntries(Object.entries(extracted.documents).filter(([, present]) => present).map(([type]) => [type, "received"]))
+        ...Object.fromEntries([
+          ...Object.entries(extracted.documents).filter(([, present]) => present).map(([type]) => [type, "received"]),
+          ...focusedAttachments
+            .filter((attachment) => isDocumentAttachmentType(attachment.type))
+            .map((attachment) => [attachment.type, attachment.status === "poor_quality" ? "poor_quality" : "received"])
+        ])
       };
       const patch = {
         ...(hasClientName || !extracted.fullName ? {} : { fullName: extracted.fullName }),
@@ -557,8 +570,8 @@ export class AgentTurnService {
         ...(Object.keys(documents).length > 0 ? { documents } : {})
       };
       return Object.keys(patch).length > 0
-        ? { ...parsed, leadCardPatch: { ...parsed.leadCardPatch, ...patch } }
-        : parsed;
+        ? { ...parsed, attachments: focusedAttachments, leadCardPatch: { ...parsed.leadCardPatch, ...patch } }
+        : focusedAttachments === parsed.attachments ? parsed : { ...parsed, attachments: focusedAttachments };
     } catch (error) {
       if (input.signal?.aborted) throw error;
       this.logger.warn(`Document identity extraction unavailable: ${formatError(error)}`);
@@ -3478,10 +3491,15 @@ function parseAgentJson(value: string | undefined): Record<string, unknown> {
   }
 }
 
+type RecognizedAttachmentType = "id_front" | "id_back" | "vehicle_registration_front" | "vehicle_registration_back" | "car" | "unknown" | "poor_quality";
+type RecognizedAttachmentStatus = "received" | "poor_quality" | "blocked";
+
 function parseDocumentIdentityExtraction(value: string | undefined): {
   fullName?: string;
   ownerFullName?: string;
   documents: Partial<Record<"id_front" | "id_back" | "vehicle_registration_front" | "vehicle_registration_back", boolean>>;
+  attachments: Array<{ attachmentId: string; type: RecognizedAttachmentType; status: RecognizedAttachmentStatus }>;
+  hasAttachmentClassification: boolean;
 } {
   const payload = parseAgentJson(value);
   const name = (key: "fullName" | "ownerFullName") => {
@@ -3496,7 +3514,54 @@ function parseDocumentIdentityExtraction(value: string | undefined): {
         .map((type) => [type, true])
     )
     : {};
-  return { fullName: name("fullName"), ownerFullName: name("ownerFullName"), documents };
+  const rawAttachments = payload.attachments;
+  const attachmentTypes = new Set<RecognizedAttachmentType>(["id_front", "id_back", "vehicle_registration_front", "vehicle_registration_back", "car", "unknown", "poor_quality"]);
+  const attachmentStatuses = new Set<RecognizedAttachmentStatus>(["received", "poor_quality", "blocked"]);
+  const attachments = Array.isArray(rawAttachments)
+    ? rawAttachments.flatMap((candidate) => {
+      if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return [];
+      const row = candidate as Record<string, unknown>;
+      const attachmentId = typeof row.attachmentId === "string" ? row.attachmentId.trim() : "";
+      const type = typeof row.type === "string" ? row.type : "";
+      const suppliedStatus = typeof row.status === "string" ? row.status : undefined;
+      if (!attachmentId || !attachmentTypes.has(type as RecognizedAttachmentType)) return [];
+      const status = type === "poor_quality"
+        ? "poor_quality"
+        : attachmentStatuses.has(suppliedStatus as RecognizedAttachmentStatus)
+          ? suppliedStatus as RecognizedAttachmentStatus
+          : "received";
+      return [{ attachmentId, type: type as RecognizedAttachmentType, status }];
+    })
+    : [];
+  return {
+    fullName: name("fullName"),
+    ownerFullName: name("ownerFullName"),
+    documents,
+    attachments,
+    hasAttachmentClassification: Array.isArray(rawAttachments)
+  };
+}
+
+function isDocumentAttachmentType(type: RecognizedAttachmentType): type is "id_front" | "id_back" | "vehicle_registration_front" | "vehicle_registration_back" {
+  return type === "id_front" || type === "id_back" || type === "vehicle_registration_front" || type === "vehicle_registration_back";
+}
+
+/** Replace conversational guesses only for images the focused vision model
+ * received. Non-image file classifications remain untouched. */
+function mergeFocusedAttachmentClassification(
+  existing: AgentTurnResult["attachments"],
+  images: InboundAttachment[],
+  focused: Array<{ attachmentId: string; type: RecognizedAttachmentType; status: RecognizedAttachmentStatus }>
+): AgentTurnResult["attachments"] {
+  const imageIds = new Set(images.map((attachment) => attachment.id));
+  const byId = new Map<string, { attachmentId: string; type: RecognizedAttachmentType; status: RecognizedAttachmentStatus }>();
+  for (const attachment of focused) {
+    if (imageIds.has(attachment.attachmentId) && !byId.has(attachment.attachmentId)) byId.set(attachment.attachmentId, attachment);
+  }
+  return [
+    ...existing.filter((attachment) => !imageIds.has(attachment.attachmentId)),
+    ...images.map((attachment) => byId.get(attachment.id) ?? { attachmentId: attachment.id, type: "unknown" as const, status: "received" as const })
+  ];
 }
 
 /**

@@ -5372,6 +5372,61 @@ describe("single-agent dialogue", () => {
     ]));
   });
 
+  it("makes focused vision authoritative for every uploaded image type and document FIO", async () => {
+    const client = {
+      isConfigured: vi.fn().mockReturnValue(true),
+      createChatCompletion: vi.fn()
+        .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({
+          ...validResult,
+          reply: "Фотографии получены.",
+          leadCardPatch: {},
+          attachments: [
+            { attachmentId: "id-front", type: "unknown", status: "received" },
+            { attachmentId: "sts-front", type: "unknown", status: "received" },
+            { attachmentId: "car", type: "unknown", status: "received" },
+            { attachmentId: "other", type: "id_front", status: "received" }
+          ],
+          dialogueState: { stage: "COLLECTING_DOCUMENTS", status: "need_more_data", nextAction: "collect_documents" }
+        }) } }] })
+        .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({
+          fullName: "Абдрахманов Азамат Бакытович",
+          ownerFullName: "Смолева Евгения Прокопьевна",
+          attachments: [
+            { attachmentId: "id-front", type: "id_front", status: "received" },
+            { attachmentId: "sts-front", type: "vehicle_registration_front", status: "received" },
+            { attachmentId: "car", type: "car", status: "received" },
+            { attachmentId: "other", type: "unknown", status: "received" }
+          ]
+        }) } }] })
+    } as any;
+
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "Загрузите документы в чат.", createdAt: "now" } as any],
+      facts: {
+        vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 1_000_000, requestedAmount: 400_000,
+        requestedProgram: "parking", residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY"
+      } as any,
+      settings: {}, text: "", attachments: [
+        { id: "id-front", mimeType: "image/jpeg", contentBase64: "/9j/2Q==" },
+        { id: "sts-front", mimeType: "image/jpeg", contentBase64: "/9j/2Q==" },
+        { id: "car", mimeType: "image/jpeg", contentBase64: "/9j/2Q==" },
+        { id: "other", mimeType: "image/jpeg", contentBase64: "/9j/2Q==" }
+      ]
+    });
+
+    expect(output.result?.attachments).toEqual(expect.arrayContaining([
+      { attachmentId: "id-front", type: "id_front", status: "received" },
+      { attachmentId: "sts-front", type: "vehicle_registration_front", status: "received" },
+      { attachmentId: "car", type: "car", status: "received" },
+      { attachmentId: "other", type: "unknown", status: "received" }
+    ]));
+    expect(output.result?.leadCardPatch).toMatchObject({
+      fullName: "Абдрахманов Азамат Бакытович",
+      ownerFullName: "Смолева Евгения Прокопьевна",
+      documents: { id_front: "received", vehicle_registration_front: "received" }
+    });
+  });
+
   it("unconditionally accepts uploads and continues to the next stage without promising a re-check", async () => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
       ...validResult,
