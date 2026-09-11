@@ -1,7 +1,7 @@
 import { Injectable } from "@nestjs/common";
 import type { ApplicationFacts } from "@ailyn/business-rules";
 import type { NormalizedMoneyValue } from "../ai/ai-provider.interface.js";
-import { AgentTurnService, isClearMoneyConfirmationRejection, nextRequiredStageQuestion, suppressInactiveGuarantorPrompts, type PendingMoneyClarificationDecision } from "./agent-turn.service.js";
+import { AgentTurnService, hasSeveralClientQuestions, isClearMoneyConfirmationRejection, nextRequiredStageQuestion, suppressInactiveGuarantorPrompts, type PendingMoneyClarificationDecision } from "./agent-turn.service.js";
 import { attachmentFactsForCurrentStage, deriveStageCompletion, effectiveFactsForTurn, isCarPhotoStagePrompt, selectedProgramLimit } from "./agent-turn-reconciliation.js";
 import type { InboundMessage } from "../channels/channel.interface.js";
 import { SettingsService } from "../settings/settings.service.js";
@@ -114,7 +114,11 @@ export class DialogueOrchestratorService {
       signal: options.signal
     });
     const knowledgeRequest = turn.result?.leadCardPatch.knowledgeRequest;
-    if ((knowledgeRequest?.required ?? turn.result?.needsKnowledgeLookup) && turn.result) {
+    const limitOnlyQuestion = turn.result?.loanQuestionKind === "maximum_limit" && !hasSeveralClientQuestions(text);
+    // A pure limit question is server-calculated. Keep this second boundary
+    // for legacy/malformed turn payloads that might still carry a KB request:
+    // otherwise the KB's rate text could overwrite the limit answer.
+    if (!limitOnlyQuestion && (knowledgeRequest?.required ?? turn.result?.needsKnowledgeLookup) && turn.result) {
       const { knowledgeRequest: _knowledgeRequest, ...turnFacts } = turn.result.leadCardPatch;
       // The main model can omit the final canonical prompt while routing a
       // factual question to knowledge. Do not let the KB answer terminate the
@@ -145,10 +149,11 @@ export class DialogueOrchestratorService {
         // The knowledge model is the only author of factual company answers.
         // Never prefix it with the workflow model's prose: that prose may be
         // plausible but unsupported and would reintroduce a hallucination.
-        // A combined limit-and-rate question has a server-calculated limit
-        // plan plus a rate answer from the approved knowledge base. Preserve
-        // the former; only the latter may supply interest-rate wording.
-        const responsePlan = turn.result.loanQuestionKind === "maximum_limit_and_rate"
+        // Any turn that includes a maximum-limit question has a
+        // server-calculated limit plan. Preserve it before the independent
+        // KB answer (office address, FAQ, etc.); only a direct rate question
+        // may add interest-rate wording.
+        const responsePlan = turn.result.loanQuestionKind === "maximum_limit_and_rate" || turn.result.loanQuestionKind === "maximum_limit"
           ? [removeTrailingWorkflowFollowUp(turn.reply, workflowFollowUp), knowledge.reply].filter(Boolean).join("\n\n")
           : knowledge.reply;
         const reply = appendWorkflowFollowUp(responsePlan, workflowFollowUp);

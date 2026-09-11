@@ -113,6 +113,19 @@ describe("single-agent dialogue", () => {
     expect(output?.reply).toContain("130 сом в сутки");
   });
 
+  it("never exposes internal publicMax instructions from a rate knowledge response", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      reply: "По программе со стоянкой ставка составляет 2,4% в месяц. По сумме займа: предварительная сумма сообщается до переданного сервером `publicMax`; общие потолки не называются.",
+      answerFound: true
+    }) } }] }) } as any;
+    const output = await new AgentTurnService(client).answerWithKnowledge({
+      messages: [], facts: {}, settings: {}, text: "А лимиты и проценты подскажи", workflowFollowUp: ""
+    });
+
+    expect(output?.reply).toContain("ставка составляет 2,4% в месяц");
+    expect(output?.reply).not.toMatch(/publicmax|общие\s+потолки|предварительная сумма/iu);
+  });
+
   it("marks a GPS malfunction as existing-loan servicing for the knowledge model", async () => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
       reply: "Если у Вас уже оформлен займ, пожалуйста, позвоните по телефону +996 502 108 108 или напишите в WhatsApp +996 776 108 108.",
@@ -1824,7 +1837,7 @@ describe("single-agent dialogue", () => {
       facts: {}, settings: {}, text: "камри 2022 г 1 млн дадите?", attachments: []
     });
 
-    expect(output.reply).toBe("Максимальную сумму смогу рассчитать после получения данных об автомобиле и Вашей прописки.\n\nПодскажите, пожалуйста, ориентировочную стоимость автомобиля.");
+    expect(output.reply).toBe("Предварительный диапазон займа — от 50 000 сом до максимальной суммы, которую рассчитаю по стоимости автомобиля и Вашей прописке. Чтобы назвать точный верхний предел, нужны: ориентировочная стоимость автомобиля, Ваша прописка.\n\nКакая ориентировочная стоимость автомобиля?");
   });
 
   it("recognizes a misspelled maximum-money question and explains the data needed for an from-to range", async () => {
@@ -1836,8 +1849,9 @@ describe("single-agent dialogue", () => {
     });
 
     expect(output.result?.loanQuestionKind).toBe("maximum_limit");
-    expect(output.reply).toContain("Чтобы рассчитать максимальную сумму, нужны: модель и год выпуска автомобиля, ориентировочная стоимость автомобиля, Ваша прописка.");
-    expect(output.reply).toContain("Подскажите, пожалуйста, модель и год выпуска автомобиля и ориентировочную стоимость автомобиля.");
+    expect(output.reply).toContain("Предварительный диапазон займа — от 50 000 сом до максимальной суммы");
+    expect(output.reply).toContain("Чтобы назвать точный верхний предел, нужны: ориентировочная стоимость автомобиля, Ваша прописка.");
+    expect(output.reply).toContain("Какая ориентировочная стоимость автомобиля?");
   });
 
   it("answers a maximum-loan question and asks for the earliest remaining stage", async () => {
@@ -1854,7 +1868,22 @@ describe("single-agent dialogue", () => {
       settings: {}, text: "камри 2022 г 1 млн дадите?", attachments: []
     });
 
-    expect(output.reply).toBe("Максимальную сумму смогу рассчитать после получения Вашей прописки.\n\nПодскажите, пожалуйста, Вашу прописку — Бишкек, Чуйская область или другой регион Кыргызстана.");
+    expect(output.reply).toBe("Предварительный диапазон займа — от 50 000 сом до максимальной суммы, которую рассчитаю по стоимости автомобиля и Вашей прописке. Чтобы назвать точный верхний предел, нужны: ориентировочная стоимость автомобиля, Ваша прописка.\n\nКакая ориентировочная стоимость автомобиля?");
+  });
+
+  it("calculates a maximum from vehicle value and residence without requesting model or year", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult, reply: "Распознано.", leadCardPatch: {}
+    }) } }] }) } as any;
+    const output = await new AgentTurnService(client).run({
+      messages: [],
+      facts: { vehicleValue: 3_000_000, residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY" } as any,
+      settings: {}, text: "Сколько денег можете дать?", attachments: []
+    });
+
+    expect(output.reply).toContain("Без изъятия: от 50 000 сом до 600 000 сом");
+    expect(output.reply).toContain("Со стоянкой: от 50 000 сом до 1 500 000 сом");
+    expect(output.reply).not.toMatch(/модель и год выпуска/iu);
   });
 
   it("blocks the next stage when the selected programme does not cover the requested amount", async () => {
@@ -2929,7 +2958,7 @@ describe("single-agent dialogue", () => {
     expect(output.result?.leadCardPatch.requestedMaximumAmount).toBeUndefined();
     expect(output.result?.loanQuestionKind).toBe("maximum_limit_and_rate");
     expect(output.reply).not.toMatch(/ставк|2,4%/iu);
-    expect(output.reply).toContain("Максимальную сумму смогу рассчитать после получения Вашей прописки.");
+    expect(output.reply).toContain("Чтобы назвать точный верхний предел, нужны: Ваша прописка.");
     expect(output.reply).toContain("Вашу прописку");
     expect(output.reply).not.toContain("Какая сумма займа Вам необходима?");
   });
@@ -3347,6 +3376,52 @@ describe("single-agent dialogue", () => {
     expect(output.reply).not.toMatch(/ставк|процент|2,4%/iu);
   });
 
+  it("rejects a model-requested knowledge lookup for a limit-only question", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult,
+      loanQuestionKind: "loan_rate",
+      reply: "По программе без изъятия ставка определяется индивидуально.",
+      needsKnowledgeLookup: true,
+      leadCardPatch: { knowledgeRequest: { required: true, reason: "missing_approved_answer" } }
+    }) } }] }) } as any;
+    const output = await new AgentTurnService(client).run({
+      messages: [],
+      facts: {
+        vehicleValue: 1_900_000,
+        residenceRegion: "Другой регион Кыргызстана",
+        residenceCategory: "OTHER_KG"
+      } as any,
+      settings: {}, text: "А сколько дадите денег?", attachments: []
+    });
+
+    expect(output.result?.loanQuestionKind).toBe("maximum_limit");
+    expect(output.result?.needsKnowledgeLookup).toBe(false);
+    expect(output.result?.leadCardPatch.knowledgeRequest).toBeUndefined();
+    expect(output.reply).toContain("Без изъятия: от 50 000 сом до 200 000 сом");
+    expect(output.reply).toContain("Со стоянкой: от 50 000 сом до 950 000 сом");
+    expect(output.reply).not.toMatch(/ставк|процент|2,4%/iu);
+  });
+
+  it("keeps a knowledge request for an address alongside a maximum-limit question", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult,
+      loanQuestionKind: "maximum_limit",
+      reply: "Распознано.",
+      leadCardPatch: {}
+    }) } }] }) } as any;
+    const output = await new AgentTurnService(client).run({
+      messages: [],
+      facts: { vehicleValue: 3_000_000, residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY" } as any,
+      settings: {}, text: "нет с собой, а адрес какой, и сколько вообще денег можете дать", attachments: []
+    });
+
+    expect(output.result?.loanQuestionKind).toBe("maximum_limit");
+    expect(output.result?.needsKnowledgeLookup).toBe(true);
+    expect(output.result?.leadCardPatch.knowledgeRequest).toMatchObject({ required: true });
+    expect(output.reply).toContain("Без изъятия: от 50 000 сом до 600 000 сом");
+    expect(output.reply).toContain("Со стоянкой: от 50 000 сом до 1 500 000 сом");
+  });
+
   it("reopens a closed visit after any later message instead of repeating the closing acknowledgement", async () => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
       ...validResult, reply: "Распознано.", leadCardPatch: {}
@@ -3573,7 +3648,8 @@ describe("single-agent dialogue", () => {
 
     expect(output.reply).toContain("Без изъятия: от 50 000 сом до 200 000 сом");
     expect(output.reply).toContain("Со стоянкой: от 50 000 сом до 1 000 000 сом");
-    expect(output.reply).toContain("ставка 2,4% в месяц");
+    expect(output.result?.needsKnowledgeLookup).toBe(true);
+    expect(output.reply).not.toMatch(/ставк|2,4%/iu);
   });
 
   it("explains which facts are needed for a maximum question before collecting vehicle data", async () => {
@@ -3587,10 +3663,10 @@ describe("single-agent dialogue", () => {
     expect(output.result?.loanQuestionKind).toBe("maximum_limit");
     expect(output.result?.leadCardPatch.requestedAmount).toBeUndefined();
     expect(output.result?.leadCardPatch.requestedProgram).toBeUndefined();
-    expect(output.reply).toContain("Чтобы рассчитать максимальную сумму");
-    expect(output.reply).toContain("модель и год выпуска автомобиля");
-    expect(output.reply).toContain("ориентировочную стоимость автомобиля");
+    expect(output.reply).toContain("Чтобы назвать точный верхний предел");
+    expect(output.reply).toMatch(/ориентировочн\p{L}*\s+стоимост\p{L}*\s+автомобил\p{L}*/iu);
     expect(output.reply).toContain("Ваша прописка");
+    expect(output.reply).toContain("Какая ориентировочная стоимость автомобиля?");
   });
 
   it("defers an explicit maximum-loan preference until residence is known, then uses the parking maximum", async () => {
@@ -3678,7 +3754,8 @@ describe("single-agent dialogue", () => {
 
     expect(output.reply).toContain("Без изъятия: от 50 000 сом до 600 000 сом");
     expect(output.reply).toContain("Со стоянкой: от 50 000 сом до 1 500 000 сом");
-    expect(output.reply).toContain("2,4% в месяц");
+    expect(output.result?.needsKnowledgeLookup).toBe(true);
+    expect(output.reply).not.toMatch(/ставк|2,4%/iu);
   });
 
   it("offers only a reduction when the selected parking programme cannot cover the requested amount", async () => {

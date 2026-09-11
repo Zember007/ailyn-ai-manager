@@ -244,7 +244,7 @@ export class AgentTurnService {
       // The office location is server-owned configuration, including live map
       // links, and therefore remains verbatim. Every knowledge-base response
       // comes from the dedicated model and is adapted to the current message.
-      const reply = officeLocationResponse ?? ensureGeneralRateCoverage(parsed.data.reply, input.text);
+      const reply = removeInternalPricingInstruction(officeLocationResponse ?? ensureGeneralRateCoverage(parsed.data.reply, input.text));
       await this.logs?.log("dialogue.knowledge-model", "Knowledge model response received", {
         conversationId: input.conversationId,
         metadata: { model: response.model ?? model, answerFound }
@@ -1192,17 +1192,25 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   // The main model semantically detects natural-language questions which do
   // not have a question mark (for example «А кофе есть»). Pattern matching
   // remains only the fallback inside requiresKnowledgeAnswer.
-  const mayNeedKnowledge = modelKnowledgeRequest?.required === true
+  // A money-limit question is answered exclusively by the server pricing
+  // calculation. A model-supplied KB request must never replace that answer
+  // with rates or other programme terms. The combined limit-and-rate kind is
+  // deliberately excluded: it explicitly asks for both.
+  const limitOnlyQuestion = loanQuestionKind === "maximum_limit" && !hasSeveralClientQuestions(semanticText ?? "");
+  const mayNeedKnowledge = !limitOnlyQuestion && (
+    modelKnowledgeRequest?.required === true
     || requiresKnowledgeAnswer(semanticInput, leadCardFacts, loanQuestionKind)
-    || isVehicleRegistrationOwnershipQuestion(semanticText ?? "");
+    || isVehicleRegistrationOwnershipQuestion(semanticText ?? "")
+  );
   const ownershipRegistrationQuestion = isVehicleRegistrationOwnershipQuestion(semanticText ?? "");
+  const independentOfficeQuestion = hasSeveralClientQuestions(semanticText ?? "") && isOfficeLocationQuestion(semanticText);
   // A knowledge lookup needs an actual new client question. A bare workflow
   // answer such as «нету» cannot be upgraded into a question by any model
   // field or by a generic fallback.
   const bareNonQuestion = !/[?？]/u.test(semanticText ?? "") && wordCount(semanticText ?? "") < 2;
-  const knowledgeRequest = bareNonQuestion || stageResponse || !mayNeedKnowledge
+  const knowledgeRequest = limitOnlyQuestion || bareNonQuestion || stageResponse || !mayNeedKnowledge
     ? undefined
-    : modelKnowledgeRequest ?? (ownershipRegistrationQuestion || isExplicitQuestionText(semanticText ?? "")
+    : modelKnowledgeRequest ?? (ownershipRegistrationQuestion || independentOfficeQuestion || isExplicitQuestionText(semanticText ?? "")
       ? { required: true as const, reason: "missing_approved_answer" as const }
       : isLikelyKnowledgeQuestion(semanticText ?? "")
         ? { required: true as const, reason: "missing_approved_answer" as const }
@@ -1543,7 +1551,7 @@ function normalizeTechnicalReply(reply: string): string {
 
 /** A single turn can contain several factual questions; exact-FAQ shortcut
  * must not replace the knowledge model's combined evidence-based answer. */
-function hasSeveralClientQuestions(text: string): boolean {
+export function hasSeveralClientQuestions(text: string): boolean {
   const explicitQuestionCount = (text.match(/[?？]/gu) ?? []).length;
   if (explicitQuestionCount >= 2) return true;
   const questionSignals = [
@@ -2050,7 +2058,7 @@ function resolveLoanQuestionKind(modelKind: LoanQuestionKind, text: string | und
   // «А максимум сколько денег дадите?» can receive a FAQ about interest.
   const normalized = text?.toLocaleLowerCase("ru-RU") ?? "";
   const asksRate = /(?:ставк\p{L}*|процент\p{L}*|сколько\s*%)/iu.test(normalized);
-  const asksLimit = /(?:дадите|(?:скольк|сколк)\p{L}*[^?!]{0,40}(?:денег|деньг|баб|лав[еэ]|сом|дад\p{L}*|получ\p{L}*)|(?:лимит|максимум|макс|потолок)\p{L}*|(?:денег|деньг|баб|лав[еэ])[^?!]{0,40}(?:(?:скольк|сколк)\p{L}*|дад\p{L}*|можно|получ\p{L}*)|от\s+(?:скольк|сколк)\p{L}*|до\s+(?:скольк|сколк)\p{L}*(?:\s+дад\p{L}*)?)/iu.test(normalized);
+  const asksLimit = /(?:дадите|(?:скольк|сколк)\p{L}*[^?!]{0,40}(?:денег|деньг|баб|лав[еэ]|сом|дад\p{L}*|получ\p{L}*)|(?:лимит|максимум|макс|потолок)\p{L}*|(?:денег|деньг|баб|лав[еэ])[^?!]{0,40}(?:(?:скольк|сколк)\p{L}*|дад\p{L}*|может\p{L}*\s+дат\p{L}*|можно|получ\p{L}*)|от\s+(?:скольк|сколк)\p{L}*|до\s+(?:скольк|сколк)\p{L}*(?:\s+дад\p{L}*)?)/iu.test(normalized);
   if (asksLimit && asksRate) return "maximum_limit_and_rate";
   if (asksLimit) return "maximum_limit";
   if (asksRate) return "loan_rate";
@@ -2084,6 +2092,16 @@ function ensureGeneralRateCoverage(reply: string, text: string | undefined): str
   return additions.length > 0 ? [reply.trim(), ...additions].filter(Boolean).join(" ") : reply;
 }
 
+/** Knowledge chunks may describe server implementation, but that prose is never client-facing. */
+function removeInternalPricingInstruction(reply: string): string {
+  return reply
+    .split(/(?<=[.!?])\s+/u)
+    .filter((sentence) => !/(?:`?publicmax`?|общие\s+потолки|внутренн\p{L}*\s+пол|расч[её]тн\p{L}*\s+инструкц|переданн\p{L}*\s+сервер)/iu.test(sentence))
+    .join(" ")
+    .replace(/[ \t]{2,}/gu, " ")
+    .trim();
+}
+
 /** A concise answer to the amount question, not a general limit question. */
 function requestsMaximumLoanAmount(text: string | undefined): boolean {
   return /^(?:максимальн\p{L}*|по\s+максимум(?:у)?|максимум)[.!\s]*$/iu.test(text?.trim() ?? "");
@@ -2097,11 +2115,10 @@ function maximumLoanInputExplanation(kind: LoanQuestionKind, facts: ApplicationF
   if (!isMaximumLimitQuestion(kind)) return undefined;
   if (hasMaximumLoanCalculationInputs(facts)) return undefined;
   const missing = [
-    !facts.vehicleModel || !facts.vehicleYear ? "модель и год выпуска автомобиля" : undefined,
     facts.vehicleValue === undefined ? "ориентировочная стоимость автомобиля" : undefined,
     !facts.residenceRegion || !facts.residenceCategory ? "Ваша прописка" : undefined
   ].filter((value): value is string => Boolean(value));
-  return `Чтобы рассчитать максимальную сумму, нужны: ${missing.join(", ")}.`;
+  return `Предварительный диапазон займа — от 50 000 сом до максимальной суммы, которую рассчитаю по стоимости автомобиля и Вашей прописке. Чтобы назвать точный верхний предел, нужны: ${missing.join(", ")}.`;
 }
 
 function maximumLoanRangeReply(kind: LoanQuestionKind, pricing: LoanPricing | undefined, facts: ApplicationFacts): string | undefined {
@@ -2115,15 +2132,24 @@ function maximumLoanRangeReply(kind: LoanQuestionKind, pricing: LoanPricing | un
   ].join("\n");
 }
 
-/** Limits need the vehicle and resolved registration, not the requested amount or programme. */
+/** Limits need only the car's value and resolved registration, not its model, year, requested amount, or programme. */
 function hasMaximumLoanCalculationInputs(facts: ApplicationFacts): boolean {
   return Boolean(
-    facts.vehicleModel
-    && facts.vehicleYear
-    && facts.vehicleValue !== undefined
+    facts.vehicleValue !== undefined
     && facts.residenceRegion
     && facts.residenceCategory
   );
+}
+
+/** A maximum quote is an informational calculation, so request only its two inputs. */
+function nextMaximumLoanCalculationQuestion(facts: ApplicationFacts): string | undefined {
+  if (facts.vehicleValue === undefined) return "Какая ориентировочная стоимость автомобиля?";
+  if (!facts.residenceRegion || !facts.residenceCategory) {
+    return hasUnresolvedResidence(facts)
+      ? "Подскажите, пожалуйста, это в Чуйской области?"
+      : "Подскажите, пожалуйста, Вашу прописку — Бишкек, Чуйская область или другой регион Кыргызстана.";
+  }
+  return undefined;
 }
 
 /** A request to replace the amount without naming a replacement must reopen
@@ -2418,7 +2444,7 @@ function serverWorkflowFollowUp(text: string | undefined, loanQuestionKind: Loan
   // calculation into a repeated request for the amount the client needs.
   // Before that point, answer the question and append the one missing stage
   // so the client knows exactly what to provide next.
-  const canCalculateMaximum = facts.vehicleModel && facts.vehicleYear && facts.vehicleValue !== undefined && facts.residenceRegion && facts.residenceCategory;
+  const canCalculateMaximum = hasMaximumLoanCalculationInputs(facts);
   // A maximum question is informational, not a durable request for the
   // maximum. Once car data is known, collect registration before the usual
   // requested-amount stage without persisting programme or amount.
@@ -2427,7 +2453,17 @@ function serverWorkflowFollowUp(text: string | undefined, loanQuestionKind: Loan
       ? "Подскажите, пожалуйста, это в Чуйской области?"
       : "Подскажите, пожалуйста, Вашу прописку — Бишкек, Чуйская область или другой регион Кыргызстана.";
   }
-  const nextQuestion = nextRequiredStageQuestion(facts, completion);
+  const regularNextQuestion = nextRequiredStageQuestion(facts, completion);
+  const nextQuestion = !isMaximumLimitQuestion(loanQuestionKind)
+    ? regularNextQuestion
+    : !canCalculateMaximum
+      ? nextMaximumLoanCalculationQuestion(facts)
+      // The informational maximum answer must not reopen model/year
+      // collection. Resume the application only if those facts were already
+      // provided before this question.
+      : facts.vehicleModel && facts.vehicleYear
+        ? regularNextQuestion
+        : undefined;
   // An invalid corrected amount must interrupt even a completed/visited
   // application. Completion flags for unrelated stages stay intact, so this
   // check has to precede the terminal-question branch.
@@ -2440,7 +2476,7 @@ function serverWorkflowFollowUp(text: string | undefined, loanQuestionKind: Loan
     // A maximum quote must not replace an already active later action such as
     // the guarantor question. It only asks for programme selection when the
     // application has not selected either programme yet.
-    return facts.requestedProgram ? nextQuestion : MAXIMUM_PROGRAMME_SELECTION_PROMPT;
+    return facts.requestedProgram ? regularNextQuestion : MAXIMUM_PROGRAMME_SELECTION_PROMPT;
   }
   const maximumChoiceFollowUpQuestion = maximumChoiceFollowUp(maximumAmountStageResponse, facts);
   if (maximumChoiceFollowUpQuestion) return maximumChoiceFollowUpQuestion;
@@ -3094,9 +3130,10 @@ function requiresKnowledgeAnswer(input: Pick<AgentTurnInput, "text" | "currentTu
   if (!text) return false;
   // Limits are a current server calculation. Rates, however, are approved
   // knowledge and must never be repeated from a hard-coded server string.
-  if (loanQuestionKind === "maximum_limit") return false;
+  if (loanQuestionKind === "maximum_limit" && !hasSeveralClientQuestions(text)) return false;
   if (loanQuestionKind === "loan_rate" || loanQuestionKind === "maximum_limit_and_rate") return true;
   return isLikelyKnowledgeQuestion(text)
+    || isOfficeLocationQuestion(text)
     || /(?:датчик|gps|гпс|трекер|стоянк|парковк|вещ|багаж|в\s+кредит|в\s+залоге|арест|ограничени)/iu.test(text)
     || patch.vehicleInCredit === true
     || patch.vehiclePledged === true
