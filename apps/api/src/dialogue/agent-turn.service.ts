@@ -244,7 +244,7 @@ export class AgentTurnService {
       // The office location is server-owned configuration, including live map
       // links, and therefore remains verbatim. Every knowledge-base response
       // comes from the dedicated model and is adapted to the current message.
-      const reply = officeLocationResponse ?? parsed.data.reply;
+      const reply = officeLocationResponse ?? ensureGeneralRateCoverage(parsed.data.reply, input.text);
       await this.logs?.log("dialogue.knowledge-model", "Knowledge model response received", {
         conversationId: input.conversationId,
         metadata: { model: response.model ?? model, answerFound }
@@ -2067,6 +2067,21 @@ function isMaximumLimitQuestion(kind: LoanQuestionKind): boolean {
 
 function isLoanRateQuestion(kind: LoanQuestionKind): boolean {
   return kind === "loan_rate" || kind === "maximum_limit_and_rate";
+}
+
+/** A general rate question must describe both approved programmes, even if the knowledge model omitted one. */
+function ensureGeneralRateCoverage(reply: string, text: string | undefined): string {
+  const question = text?.toLocaleLowerCase("ru-RU") ?? "";
+  const asksRate = /(?:процент|ставк|сколько\s*%)/iu.test(question);
+  const namesProgramme = /(?:без\s+изъят|стоянк|парковк)/iu.test(question);
+  if (!asksRate || namesProgramme) return reply;
+  const hasWithoutStorage = /(?:без\s+изъят|ставк\p{L}*\s+определя\p{L}*\s+индивидуальн|индивидуальн[^.!?]{0,80}(?:осмотр|провер))/iu.test(reply);
+  const hasParking = /(?:со\s+стоянк|парковк|2[,.]4\s*%)/iu.test(reply);
+  const additions = [
+    hasWithoutStorage ? undefined : "По программе без изъятия ставка определяется индивидуально после осмотра автомобиля и проверки документов.",
+    hasParking ? undefined : "По программе со стоянкой ставка составляет 2,4% в месяц, парковка — 130 сом в сутки."
+  ].filter((value): value is string => Boolean(value));
+  return additions.length > 0 ? [reply.trim(), ...additions].filter(Boolean).join(" ") : reply;
 }
 
 /** A concise answer to the amount question, not a general limit question. */

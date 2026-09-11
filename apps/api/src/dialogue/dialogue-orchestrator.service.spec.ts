@@ -99,6 +99,20 @@ describe("single-agent dialogue", () => {
     expect(output?.reply).not.toMatch(/^да[.!]?/iu);
   });
 
+  it("adds the parking rate when a general rate question was answered only for without-storage", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      reply: "По программе без изъятия ставка определяется индивидуально после осмотра автомобиля и проверки документов.",
+      answerFound: true
+    }) } }] }) } as any;
+    const output = await new AgentTurnService(client).answerWithKnowledge({
+      messages: [], facts: {}, settings: {}, text: "какой у вас процент", workflowFollowUp: ""
+    });
+
+    expect(output?.reply).toContain("ставка определяется индивидуально");
+    expect(output?.reply).toContain("ставка составляет 2,4% в месяц");
+    expect(output?.reply).toContain("130 сом в сутки");
+  });
+
   it("marks a GPS malfunction as existing-loan servicing for the knowledge model", async () => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
       reply: "Если у Вас уже оформлен займ, пожалуйста, позвоните по телефону +996 502 108 108 или напишите в WhatsApp +996 776 108 108.",
