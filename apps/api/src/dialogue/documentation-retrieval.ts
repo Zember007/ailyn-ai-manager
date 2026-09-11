@@ -55,20 +55,27 @@ export function prioritizedKnowledgeForQuestion(input: {
   const current = (input.currentMessage ?? "").toLocaleLowerCase("ru-RU");
   const tokens = new Set(current.match(/[\p{L}\p{N}]{3,}/gu) ?? []);
   const spouseProxyContext = isSpouseProxyContext(current);
+  const ownershipRegistrationQuestion = isOwnershipRegistrationQuestion(current);
+  const existingContractServiceRequest = isExistingContractServiceRequest(current);
   const spouseOwnershipRule = spouseProxyContext
     ? generatedDocumentationChunks.find((chunk) => chunk.section === "4.27")
     : undefined;
-  const availableFaq = spouseProxyContext
-    ? approvedFaqChunks.filter((chunk) => chunk.key !== "faq_power_of_attorney")
+  const ownershipRegistrationRule = ownershipRegistrationQuestion
+    ? generatedDocumentationChunks.find((chunk) => chunk.key === "docx_0105")
+    : undefined;
+  const availableFaq = spouseProxyContext || existingContractServiceRequest
+    ? approvedFaqChunks.filter((chunk) => chunk.key !== "faq_power_of_attorney" && (!existingContractServiceRequest || chunk.key !== "faq_gps_requirement"))
     : approvedFaqChunks;
   const matchedFaq = availableFaq.filter((chunk) =>
     (hasExactApprovedFaqAlias(chunk, current) || matchesApprovedQuestion(chunk, tokens))
   );
   const contractRules = generatedDocumentationChunks.filter((chunk) => chunk.section === "3.18");
   return uniqueKnowledge([
+    ...(existingContractServiceRequest ? contractRules : []),
     ...matchedFaq,
     ...(spouseOwnershipRule ? [spouseOwnershipRule] : []),
-    ...contractRules,
+    ...(ownershipRegistrationRule ? [ownershipRegistrationRule] : []),
+    ...(existingContractServiceRequest ? [] : contractRules),
     ...availableFaq,
     ...selected.knowledge,
     ...selected.commonKnowledge
@@ -79,7 +86,7 @@ function uniqueKnowledge(chunks: KnowledgeContextChunk[]): KnowledgeContextChunk
   return [...new Map(chunks.map((chunk) => [chunk.key, chunk])).values()];
 }
 const stageKeywords: Record<DocumentationStage, RegExp> = {
-  application: /автомобил|машин|марка|модель|год|стоимост|цен|сумм|займ|доллар|евро|тенге|рубл|валют|курс|изменил|изменить|дороже|дешевле|изъят|стоян|долго|длится|сколько\s+времен|оформля|осмотр|оценк/u,
+  application: /автомобил|машин|мошин|марка|модель|год|стоимост|цен|сумм|займ|доллар|евро|тенге|рубл|валют|курс|изменил|изменить|дороже|дешевле|изъят|стоян|долго|длится|сколько\s+времен|оформля|осмотр|оценк/u,
   residence: /пропис|регион|бишкек|чуй|токмок|насел[её]нн/u,
   documents: /документ|паспорт|\bid\b|стс|свидетельств|фото.*документ/u,
   vehicle_photos: /фото.*автомоб|фотограф.*автомоб|нет фот|не могу.*фото/u,
@@ -101,6 +108,8 @@ export function selectRelevantDocumentation(input: {
 }): { stages: DocumentationStage[]; commonKnowledge: DocumentationChunk[]; knowledge: DocumentationChunk[]; stageInstructions: string[]; mandatoryAnswer?: string } {
   const current = `${input.currentMessage ?? ""} ${input.messages.slice(-3).map((message) => message.body).join(" ")}`.toLocaleLowerCase("ru-RU");
   const spouseProxyContext = isSpouseProxyContext(input.currentMessage ?? "");
+  const ownershipRegistrationQuestion = isOwnershipRegistrationQuestion(input.currentMessage ?? "");
+  const existingContractServiceRequest = isExistingContractServiceRequest(input.currentMessage ?? "");
   // Rates are not general conversation context: exposing them on every turn
   // makes the model answer a maximum-loan question with percentages.
   const asksInterestRate = /(?:процент|ставк)/iu.test(input.currentMessage ?? "");
@@ -112,9 +121,10 @@ export function selectRelevantDocumentation(input: {
   const tokens = new Set(current.match(/[\p{L}\p{N}]{3,}/gu) ?? []);
   const candidates = [...generatedDocumentationChunks, ...approvedFaqChunks].filter((chunk) =>
     !(spouseProxyContext && chunk.key === "faq_power_of_attorney")
+    && !(existingContractServiceRequest && chunk.key === "faq_gps_requirement")
   ) as DocumentationChunk[];
   const ranked = candidates
-    .map((chunk, index) => ({ chunk, index, score: scoreChunk(chunk, index, stages, tokens, current) }))
+    .map((chunk, index) => ({ chunk, index, score: scoreChunk(chunk, index, stages, tokens, current, ownershipRegistrationQuestion) }))
     .filter((item) => item.score > 0 && (input.includeCrossStageMatches || chunkBelongsToStages(item.chunk, stages) || matchesApprovedQuestion(item.chunk, tokens)))
     .sort((left, right) => right.score - left.score || left.index - right.index);
   const limit = input.maxChunks ?? 8;
@@ -140,7 +150,7 @@ export function selectRelevantDocumentation(input: {
     stageInstructions: stages.map((stage) => stageInstructionsByStage[stage]).filter((instruction): instruction is string => Boolean(instruction)),
     // History helps retrieve context, but it must never make an answer to a
     // previous FAQ mandatory for a new, unrelated client question.
-    mandatoryAnswer: mandatoryApprovedAnswer(ranked, (input.currentMessage ?? "").toLocaleLowerCase("ru-RU"))
+    mandatoryAnswer: mandatoryApprovedAnswer(ranked, (input.currentMessage ?? "").toLocaleLowerCase("ru-RU"), ownershipRegistrationQuestion, existingContractServiceRequest)
   };
 }
 
@@ -171,7 +181,7 @@ function chunkBelongsToStages(chunk: DocumentationChunk, stages: DocumentationSt
   return stages.includes(chunk.primaryStage) || chunk.stages.some((stage) => stages.includes(stage));
 }
 
-function scoreChunk(chunk: DocumentationChunk, index: number, stages: DocumentationStage[], tokens: Set<string>, current: string): number {
+function scoreChunk(chunk: DocumentationChunk, index: number, stages: DocumentationStage[], tokens: Set<string>, current: string, ownershipRegistrationQuestion: boolean): number {
   const stageScore = stages.includes(chunk.primaryStage) ? 60 : chunk.stages.some((stage) => stages.includes(stage)) ? 25 : 0;
   const keywordScore = chunk.keywords.reduce((score, keyword) => score + (tokens.has(keyword) ? 8 : 0), 0);
   const targetedSectionScore =
@@ -179,6 +189,7 @@ function scoreChunk(chunk: DocumentationChunk, index: number, stages: Documentat
     (/семейн|браке|женат|замуж|развод|супруг/u.test(current) && /^5\.15/u.test(chunk.section) ? 90 : 0) +
     (/поручител/u.test(current) && /^5\.16/u.test(chunk.section) ? 90 : 0) +
     (/пропис|регион|бишкек|чуй|токмок/u.test(current) && /^5\.17/u.test(chunk.section) ? 70 : 0) +
+    (ownershipRegistrationQuestion && chunk.key === "docx_0105" ? 300 : 0) +
     (/(?:датчик|gps|гпс|трекер|маяч)/u.test(current) && /ставится.*gps|gps.*трекер/u.test(approvedQuestionOf(chunk) ?? "") ? 120 : 0) +
     (/(?:карт|безнал|деньг.*перевод|перевод.*деньг)/u.test(current) && /банковскую карту/u.test(approvedQuestionOf(chunk) ?? "") ? 120 : 0) +
     (chunk.key.startsWith("faq_") ? approvedFaqScore(chunk, tokens, current) : 0) +
@@ -207,17 +218,25 @@ function retrievalAnswerOf(chunk: DocumentationChunk): string | undefined {
   return "retrievalAnswer" in chunk && typeof chunk.retrievalAnswer === "string" ? chunk.retrievalAnswer : undefined;
 }
 
-function mandatoryApprovedAnswer(ranked: Array<{ chunk: DocumentationChunk }>, current: string): string | undefined {
+function mandatoryApprovedAnswer(ranked: Array<{ chunk: DocumentationChunk }>, current: string, ownershipRegistrationQuestion = false, existingContractServiceRequest = false): string | undefined {
   // A direct question-answer pair from the source document is narrower than
   // a seed FAQ with a broad alias (for example, nearby services). Prefer it
   // so a currency-exchange question cannot acquire answers about a notary or
   // an ATM from a neighbouring service bundle.
-  const match = (isProcessingDurationQuestion(current)
-    ? ranked.find(({ chunk }) => String(chunk.key) === "faq_processing_duration")
-    : undefined)
-    ?? ranked.find(({ chunk }) => matchesDirectQuestion(chunk, current))
-    ?? ranked.find(({ chunk }) => chunk.key.startsWith("faq_") && hasExactApprovedFaqAlias(chunk, current));
-  return match ? approvedAnswerOf(match.chunk) ?? retrievalAnswerOf(match.chunk) : undefined;
+  const existingContractAnswer = existingContractServiceRequest
+    ? approvedFaqChunks.find((chunk) => chunk.key === "faq_existing_contract_redirect")?.approvedAnswer
+    : undefined;
+  const match = existingContractAnswer
+    ? undefined
+    : (ownershipRegistrationQuestion
+      ? ranked.find(({ chunk }) => chunk.key === "docx_0105")
+      : undefined)
+      ?? (isProcessingDurationQuestion(current)
+        ? ranked.find(({ chunk }) => String(chunk.key) === "faq_processing_duration")
+        : undefined)
+      ?? ranked.find(({ chunk }) => matchesDirectQuestion(chunk, current))
+      ?? ranked.find(({ chunk }) => chunk.key.startsWith("faq_") && hasExactApprovedFaqAlias(chunk, current));
+  return existingContractAnswer ?? (match ? approvedAnswerOf(match.chunk) ?? retrievalAnswerOf(match.chunk) : undefined);
 }
 
 function isProcessingDurationQuestion(text: string): boolean {
@@ -261,4 +280,14 @@ function normalizeForQuestionMatch(text: string): string {
 
 function isSpouseProxyContext(text: string): boolean {
   return /доверенн(?:ост|осит)/iu.test(text) && /(?:жен[ауые]?|муж(?:[ауе]|ем)?|супруг[аиу]?|супруге|супругу)/iu.test(text);
+}
+
+/** A typo-tolerant colloquial form of the UNA-registration question. */
+function isOwnershipRegistrationQuestion(text: string): boolean {
+  return /(?:оформлен|зарегистрирован)\p{L}*.{0,60}\s+не\s*на\s*(?:меня|мне|я)(?:\s|$)|(?:автомобил|машин|мошин|авто)\p{L}*.{0,80}(?:не\s*мо[яйеи]|чуж\p{L}*|друг(?:ого|ая|ой)\s+(?:человек|лиц))/iu.test(text);
+}
+
+/** A malfunction/replacement request for GPS belongs to servicing an existing loan, not a pre-loan GPS FAQ. */
+function isExistingContractServiceRequest(text: string): boolean {
+  return /(?:датчик|gps|гпс)[^.!?]{0,40}(?:не\s+работа|сломал|перестал\p{L}*\s+работа|замен)/iu.test(text);
 }

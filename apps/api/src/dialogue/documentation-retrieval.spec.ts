@@ -82,6 +82,16 @@ describe("selectRelevantDocumentation", () => {
     });
   });
 
+  it("prioritizes existing-loan support over the GPS-installation FAQ for a malfunction report", () => {
+    const currentMessage = "У меня датчик не работает";
+    const result = selectRelevantDocumentation({ facts: {}, currentMessage, messages: [] });
+    const packet = prioritizedKnowledgeForQuestion({ facts: {}, currentMessage, messages: [] });
+
+    expect(result.mandatoryAnswer).toContain("Если у Вас уже оформлен займ");
+    expect(packet[0]).toMatchObject({ section: "3.18" });
+    expect(packet.some((chunk) => chunk.key === "faq_gps_requirement")).toBe(false);
+  });
+
   it("makes the exact approved air-conditioner answer mandatory", () => {
     const result = selectRelevantDocumentation({ facts: {}, currentMessage: "Есть кондиционер?", messages: [] });
 
@@ -124,6 +134,21 @@ describe("selectRelevantDocumentation", () => {
     expect(result.mandatoryAnswer).toBeUndefined();
     expect(packet.some((chunk) => chunk.section === "4.27")).toBe(true);
     expect(packet.some((chunk) => chunk.key === "faq_power_of_attorney")).toBe(false);
+  });
+
+  it("maps an ownership disclosure with typos to the approved UNA-registration answer", () => {
+    const currentMessage = "А у меня мошина но оформлена не наменя";
+    const result = selectRelevantDocumentation({ facts: {}, currentMessage, messages: [] });
+    const packet = prioritizedKnowledgeForQuestion({ facts: {}, currentMessage, messages: [] });
+
+    expect(result.mandatoryAnswer).toBe("Да. Для оформления займа автомобиль должен быть зарегистрирован в УНА на человека, который обращается за займом.");
+    expect(result.knowledge).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        key: "docx_0105",
+        text: expect.stringContaining("автомобиль должен быть зарегистрирован в УНА")
+      })
+    ]));
+    expect(packet[0]).toMatchObject({ key: "docx_0105" });
   });
 
   it("retrieves the free-evaluation answer instead of an unrelated application chunk", () => {

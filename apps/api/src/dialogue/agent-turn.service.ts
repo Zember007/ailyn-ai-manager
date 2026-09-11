@@ -202,18 +202,13 @@ export class AgentTurnService {
     const officeLocationResponse = isOfficeLocationQuestion(input.text)
       ? officeLocationReply(input.settings)
       : undefined;
-    const powerOfAttorneyResponse = isLoanByPowerOfAttorneyQuestion(input.text)
-      ? documentation.mandatoryAnswer
-      : undefined;
-    const notarialPowerOfAttorneyResponse = isNotarialPowerOfAttorneyForCompanyQuestion(input.text)
-      ? "Да, оформление нотариальной доверенности может быть одним из условий выдачи займа. Более подробно порядок оформления и условия Вы сможете уточнить во время визита в офис у менеджера."
-      : undefined;
     const context = {
       currentMessage: input.text ?? "",
       currentTurnMessages: input.currentTurnMessages ?? (input.text === undefined ? [] : [{ index: 1, text: input.text }]),
       history: activeWorkflowHistory(input.messages),
       leadCard: input.facts,
       workflowFollowUp: input.workflowFollowUp,
+      existingContractServiceRequest: isExplicitExistingContractRequest(input.text ?? ""),
       // Server-owned settings, not model knowledge, are authoritative for
       // office location and map links.
       officeLocationResponse,
@@ -241,20 +236,15 @@ export class AgentTurnService {
       }, { timeoutMs: this.config.routerAiTimeoutMs, signal: input.signal });
       const parsed = knowledgeAnswerSchema.safeParse(parseAgentJson(response.choices?.[0]?.message?.content));
       if (!parsed.success) throw new Error(`Knowledge response does not match schema: ${parsed.error.issues.map((issue) => issue.path.join(".")).join(", ")}`);
-      // Exact approved questions are deterministic. The model may adapt
-      // semantically matched answers, but cannot replace an exact FAQ with a
-      // neighbouring answer from the same knowledge packet.
+      // A mandatory match proves that an approved answer exists. The knowledge
+      // model remains the author of its client-facing formulation, so it can
+      // adapt a factual statement to the actual conversational context.
       const hasSeveralQuestions = hasSeveralClientQuestions(input.text ?? "");
       const answerFound = parsed.data.answerFound || (!hasSeveralQuestions && Boolean(documentation.mandatoryAnswer));
-      // An exact single FAQ is safest as server-owned verbatim text. For a
-      // multi-question message it would discard every other answer, so the
-      // knowledge model instead composes answers from the ordered evidence.
-      const singleQuestionOverride = hasSeveralQuestions
-        ? undefined
-        : officeLocationResponse ?? notarialPowerOfAttorneyResponse ?? powerOfAttorneyResponse;
-      const reply = singleQuestionOverride
-        ?? (!hasSeveralQuestions ? documentation.mandatoryAnswer : undefined)
-        ?? parsed.data.reply;
+      // The office location is server-owned configuration, including live map
+      // links, and therefore remains verbatim. Every knowledge-base response
+      // comes from the dedicated model and is adapted to the current message.
+      const reply = officeLocationResponse ?? parsed.data.reply;
       await this.logs?.log("dialogue.knowledge-model", "Knowledge model response received", {
         conversationId: input.conversationId,
         metadata: { model: response.model ?? model, answerFound }
@@ -520,8 +510,13 @@ export class AgentTurnService {
     const imageAttachments = input.attachments.filter((attachment) =>
       Boolean(attachment.contentBase64) && Boolean(imageAttachmentMediaType(attachment))
     );
-    const hasClientName = Boolean(input.facts.fullName ?? parsed.leadCardPatch.fullName);
-    const hasOwnerName = Boolean(input.facts.ownerFullName ?? parsed.leadCardPatch.ownerFullName);
+    // A name returned by the main conversational pass is only a provisional
+    // extraction.  It must not prevent the focused document pass from filling
+    // (or correcting) the field: the latter sees the original image and has a
+    // deliberately narrow ID/STS-only contract.  A name already persisted on
+    // the card, however, belongs to a previous verified turn and is retained.
+    const hasClientName = Boolean(input.facts.fullName);
+    const hasOwnerName = Boolean(input.facts.ownerFullName);
     // FIO extraction is independent from document-side recognition and from
     // the current workflow prompt. The client can attach ID/STS immediately
     // after choosing a programme, before the server has sent its document
@@ -861,10 +856,12 @@ export class AgentTurnService {
       ? { ...parsed, activeWorkflowClarification: undefined, leadCardPatch: { ...parsed.leadCardPatch, requestedProgram: input.facts.requestedProgram, guarantorAlternativeDeclined: input.facts.guarantorAlternativeDeclined } }
       : { ...parsed, activeWorkflowClarification: undefined, leadCardPatch: { ...parsed.leadCardPatch, guarantorAvailable: input.facts.guarantorAvailable, guarantorAlternativeDeclined: input.facts.guarantorAlternativeDeclined } };
     const activeQuestion = parkingAlternative ? GUARANTOR_PARKING_ALTERNATIVE : GUARANTOR_REQUIREMENTS;
-    const applyDecision = (decision: "accept" | "reject"): AgentTurnResult => parkingAlternative
+    const applyDecision = (decision: "accept" | "reject" | "has_guarantor"): AgentTurnResult => parkingAlternative
       ? decision === "accept"
         ? { ...classifierBase, leadCardPatch: { ...classifierBase.leadCardPatch, requestedProgram: "parking", guarantorAlternativeDeclined: false } }
-        : { ...classifierBase, leadCardPatch: { ...classifierBase.leadCardPatch, requestedProgram: input.facts.requestedProgram, guarantorAlternativeDeclined: true } }
+        : decision === "has_guarantor"
+          ? { ...classifierBase, leadCardPatch: { ...classifierBase.leadCardPatch, requestedProgram: input.facts.requestedProgram, guarantorAvailable: true, guarantorAlternativeDeclined: false } }
+          : { ...classifierBase, leadCardPatch: { ...classifierBase.leadCardPatch, requestedProgram: input.facts.requestedProgram, guarantorAlternativeDeclined: true } }
       : decision === "accept"
         ? { ...classifierBase, leadCardPatch: { ...classifierBase.leadCardPatch, guarantorAvailable: true, guarantorAlternativeDeclined: false } }
         : { ...classifierBase, leadCardPatch: { ...classifierBase.leadCardPatch, guarantorAvailable: false, guarantorAlternativeDeclined: false } };
@@ -882,7 +879,7 @@ export class AgentTurnService {
         response_format: { type: "json_object" },
         messages: [
           { role: "system", content: parkingAlternative
-            ? "Определи смысл ответа клиента относительно текущего вопроса AI, который передан отдельным полем activeQuestion. Это предложение перейти на программу со стоянкой вместо поручителя. Верни строго JSON {\"decision\":\"accept\"|\"reject\"|\"undecided\",\"question\":string|null}. Явное согласие на стоянку, включая «Понял, стоянка тогда», «тогда на стоянку», «давайте на стоянку», а также уточнение уже выбранной программы «Но у меня стоянка» или короткое «д стоянка же» (опечатка «да»), — accept. Определяй ответ на activeQuestion по первой ясной части реплики даже если после неё клиент задал отдельный вопрос: «ок. а сколько денег дадите» — decision=accept. В question верни дословно отдельный вопрос клиента без части согласия; если вопроса нет — null. Нейтральная, несвязанная, оценочная или бессмысленная реплика без ясного согласия или отказа — undecided. Не додумывай согласие или отказ. Не добавляй текст."
+            ? "Определи смысл ответа клиента относительно текущего вопроса AI, который передан отдельным полем activeQuestion. Это предложение перейти на программу со стоянкой вместо поручителя. Верни строго JSON {\"decision\":\"accept\"|\"reject\"|\"has_guarantor\"|\"undecided\",\"question\":string|null}. Явное согласие на стоянку, включая «Понял, стоянка тогда», «тогда на стоянку», «давайте на стоянку», а также уточнение уже выбранной программы «Но у меня стоянка» или короткое «д стоянка же» (опечатка «да»), — accept. Если клиент сообщает, что поручитель у него есть («есть поручитель», «поручитель имеется», «приведу поручителя»), — has_guarantor: это не вопрос и не отказ от стоянки; продолжаем по прежней программе без изъятия. Определяй ответ на activeQuestion по первой ясной части реплики даже если после неё клиент задал отдельный вопрос: «ок. а сколько денег дадите» — decision=accept. В question верни дословно отдельный вопрос клиента без части согласия; если вопроса нет — null. Нейтральная, несвязанная, оценочная или бессмысленная реплика без ясного согласия или отказа — undecided. Не додумывай согласие или отказ. Не добавляй текст."
             : "Определи смысл ответа клиента относительно текущего вопроса AI, который передан отдельным полем activeQuestion: есть ли у него требуемый поручитель. Верни строго JSON {\"decision\":\"accept\"|\"reject\"|\"clarification\"|\"undecided\"}. Ответы «найду», «приведу», «организую», «будет человек», обещание найти или привести поручителя означают accept. Отсутствие поручителя или отказ искать — reject. Если клиент уточняет, о каком поручителе речь, зачем он нужен или какие к нему требования (например, «какой такой?», «что за поручитель?», «зачем он?»), — clarification; это не самостоятельный FAQ-вопрос. Нейтральная, несвязанная, оценочная или бессмысленная реплика без ясного смысла — undecided. Не додумывай согласие или отказ. Не добавляй текст." },
           { role: "user", content: JSON.stringify({ activeQuestion, lastAssistantReply: lastAssistant, clientReply: currentReply }) }
         ]
@@ -895,7 +892,7 @@ export class AgentTurnService {
       const clientQuestion = parkingAlternative
         ? extractExplicitClientQuestion(classifierResult.question, currentReply)
         : undefined;
-      if (decision === "accept" || decision === "reject") {
+      if (decision === "accept" || decision === "reject" || (parkingAlternative && decision === "has_guarantor")) {
         const resolved = applyDecision(decision);
         return clientQuestion ? { ...resolved, clientQuestion } : resolved;
       }
@@ -910,6 +907,7 @@ export class AgentTurnService {
     // covers an explicit named programme, so an outage or an undecided model
     // cannot repeat an offer after the client clearly selected parking.
     if (parkingAlternative && explicitlyAcceptsParkingAlternative(currentReply)) return applyDecision("accept");
+    if (parkingAlternative && explicitlyStatesGuarantorAvailable(currentReply)) return applyDecision("has_guarantor");
     if (!parkingAlternative && isGuarantorContextClarification(currentReply)) {
       return { ...classifierBase, activeWorkflowClarification: "guarantor" };
     }
@@ -1156,6 +1154,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   // classifier. It can be incomplete or incorrect, so it must never replace
   // the actual client turn for server-owned limit/rate classification.
   const semanticText = input.currentTurnMessages?.map((message) => message.text).join(" ") || input.text;
+  const existingContractServiceRequest = isExplicitExistingContractRequest(semanticText ?? "");
   const clientQuestion = extractExplicitClientQuestion(parsed.clientQuestion, semanticText ?? "");
   // The model is the primary semantic classifier for money questions. Text
   // patterns below are deliberately only an outage/legacy fallback.
@@ -1181,24 +1180,29 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   // A short reply to the last workflow question is stage input, not a new
   // factual question. The workflow model must not route it to knowledge just
   // because it could not extract a value from it.
+  const lastAssistantReply = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
   const activeWorkflowClarification = parsed.activeWorkflowClarification === "guarantor"
     && requiresGuarantorForFacts(input.facts)
     && input.facts.guarantorAvailable === undefined
     && !explicitChuyResidenceCategory(semanticText);
   const inactiveGuarantorClarification = input.inactiveGuarantorClarification === true;
-  const stageResponse = activeWorkflowClarification || inactiveGuarantorClarification || (isResponseToLastWorkflowQuestion(input) && modelKnowledgeRequest?.required !== true);
+  const parkingAlternativeGuarantorAnswer = isActiveGuarantorParkingAlternative(lastAssistantReply, input.facts)
+    && parsed.leadCardPatch.guarantorAvailable === true;
+  const stageResponse = activeWorkflowClarification || inactiveGuarantorClarification || parkingAlternativeGuarantorAnswer || (isResponseToLastWorkflowQuestion(input) && modelKnowledgeRequest?.required !== true);
   // The main model semantically detects natural-language questions which do
   // not have a question mark (for example «А кофе есть»). Pattern matching
   // remains only the fallback inside requiresKnowledgeAnswer.
   const mayNeedKnowledge = modelKnowledgeRequest?.required === true
-    || requiresKnowledgeAnswer(semanticInput, leadCardFacts, loanQuestionKind);
+    || requiresKnowledgeAnswer(semanticInput, leadCardFacts, loanQuestionKind)
+    || isVehicleRegistrationOwnershipQuestion(semanticText ?? "");
+  const ownershipRegistrationQuestion = isVehicleRegistrationOwnershipQuestion(semanticText ?? "");
   // A knowledge lookup needs an actual new client question. A bare workflow
   // answer such as «нету» cannot be upgraded into a question by any model
   // field or by a generic fallback.
   const bareNonQuestion = !/[?？]/u.test(semanticText ?? "") && wordCount(semanticText ?? "") < 2;
   const knowledgeRequest = bareNonQuestion || stageResponse || !mayNeedKnowledge
     ? undefined
-    : modelKnowledgeRequest ?? (isExplicitQuestionText(semanticText ?? "")
+    : modelKnowledgeRequest ?? (ownershipRegistrationQuestion || isExplicitQuestionText(semanticText ?? "")
       ? { required: true as const, reason: "missing_approved_answer" as const }
       : isLikelyKnowledgeQuestion(semanticText ?? "")
         ? { required: true as const, reason: "missing_approved_answer" as const }
@@ -1232,7 +1236,6 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   if (!maximumAmountStageResponse && input.facts.requestedMaximumAmount === true && rawModelPatch.requestedAmount !== undefined) {
     rawModelPatch.requestedMaximumAmount = false;
   }
-  const lastAssistantReply = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
   const minimumLoan = input.pricing?.minimumLoan ?? 50_000;
   const currentRequestedAmount = typeof rawModelPatch.requestedAmount === "number"
     ? rawModelPatch.requestedAmount
@@ -1337,10 +1340,10 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     && hasRecognizedFactsForTurn(input.facts, effectiveFacts)
     ? ""
     : normalizedModelReply;
-  const guardedModelReply = removeUnpromptedLoanExplanation(stripClientFactRestatement(removeDuplicateCurrencyConversion(removeUnaskedCurrencyProse(removeUnaskedLimitProse(enforceOptionalStageRefusalMessage(enforceGuarantorQuestionRequirements(enforceIdentityAnswer(
+  const guardedModelReply = removeUnpromptedLoanExplanation(stripClientFactRestatement(removeDuplicateCurrencyConversion(removeUnaskedCurrencyProse(removeUnaskedLimitProse(enforceOptionalStageRefusalMessage(enforceGuarantorQuestionRequirements(removeUnpromptedExistingContractRedirect(enforceIdentityAnswer(
     guardWorkflowStageOrder(replacePrematureVisitQuestion(deduplicateRepeatedGuarantorBlock(internalReply), effectiveFacts, stageCompletion), effectiveFacts, stageCompletion),
     input
-  ), effectiveFacts), input), input), input), input), input), input);
+  ), input), effectiveFacts), input), input), input), input), input), input);
   // `input.pricing` was calculated before this turn. Recalculate it whenever
   // the client has just changed a fact that affects a limit; otherwise a
   // residence correction (for example Cholpon-Ata -> Tokmok) would still use
@@ -1444,7 +1447,9 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     // retain a stale top-level model hint after server validation rejected it.
     needsKnowledgeLookup: knowledgeRequest?.required ?? false,
     leadCardPatch: { ...effectiveFacts, ...(knowledgeRequest ? { knowledgeRequest } : {}) },
-    dialogueState: accidentNotDrivableNotice
+    dialogueState: existingContractServiceRequest
+      ? { stage: "EXISTING_CONTRACT_REDIRECT", status: "redirect_existing_contract", nextAction: "redirect_existing_contract" }
+      : accidentNotDrivableNotice
       ? { stage: "REFUSED", status: "refuse", nextAction: "none" }
       : maximumProgrammeSelectionPending
       ? { ...parsed.dialogueState, nextAction: MAXIMUM_PROGRAMME_SELECTION_ACTION }
@@ -1627,7 +1632,7 @@ function isVisitSchedulingReply(input: Pick<AgentTurnInput, "text" | "currentTur
   const lastAssistant = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
   if (!isVisitSchedulingQuestion(lastAssistant)) return false;
   const text = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "").trim();
-  return /(?:сегодня|завтра|(?:^|[^\p{L}\d])\d{1,2}\s+(?:январ\p{L}*|феврал\p{L}*|март\p{L}*|апрел\p{L}*|мая|июн\p{L}*|июл\p{L}*|август\p{L}*|сентябр\p{L}*|(?:октябр|котябр)\p{L}*|ноябр\p{L}*|декабр\p{L}*)(?!\p{L}))/iu.test(text);
+  return /(?:сегодня|послезавтра|завтра|(?:^|[^\p{L}\d])\d{1,2}\s+(?:январ\p{L}*|феврал\p{L}*|март\p{L}*|апрел\p{L}*|мая|июн\p{L}*|июл\p{L}*|август\p{L}*|сентябр\p{L}*|(?:октябр|котябр)\p{L}*|ноябр\p{L}*|декабр\p{L}*)(?!\p{L}))/iu.test(text);
 }
 
 /** A relative day is useful context, but «утром» is not a schedulable time.
@@ -1651,7 +1656,7 @@ function visitTimeClarificationReply(input: Pick<AgentTurnInput, "text" | "curre
   return "Завтра подойдёт. Во сколько Вам удобно подъехать? Офис работает с понедельника по пятницу с 11:00 до 19:00, для оформления нужно приехать не позднее 18:00.";
 }
 
-function visitNonWorkingDayReply(input: Pick<AgentTurnInput, "text" | "currentTurnMessages" | "messages" | "settings">, facts: ApplicationFacts): string | undefined {
+function visitNonWorkingDayReply(input: Pick<AgentTurnInput, "text" | "currentTurnMessages" | "messages" | "settings">, _facts: ApplicationFacts): string | undefined {
   const lastAssistant = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
   const text = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "").trim().toLocaleLowerCase("ru-RU");
   // A direct availability question such as «завтра можно?» must be checked
@@ -1670,7 +1675,7 @@ function visitNonWorkingDayReply(input: Pick<AgentTurnInput, "text" | "currentTu
 }
 
 function isVisitAvailabilityQuestion(text: string): boolean {
-  return /(?:сегодня|завтра|понедель|вторник|сред|четверг|пятниц|суббот|воскрес).{0,80}(?:можно|получится|подъех|приех)|(?:можно|получится).{0,80}(?:сегодня|завтра|понедель|вторник|сред|четверг|пятниц|суббот|воскрес)/iu.test(text);
+  return /(?:сегодня|послезавтра|завтра|понедель|вторник|сред|четверг|пятниц|суббот|воскрес).{0,80}(?:можно|получится|подъех|приех)|(?:можно|получится).{0,80}(?:сегодня|послезавтра|завтра|понедель|вторник|сред|четверг|пятниц|суббот|воскрес)/iu.test(text);
 }
 
 function visitDateFromReply(text: string, timezone: string): string | undefined {
@@ -1720,7 +1725,8 @@ function validUtcDate(year: number, month: number, day: number): Date | undefine
 }
 
 function relativeVisitDate(text: string, timezone: string): string | undefined {
-  const offset = /сегодня/iu.test(text) ? 0 : /завтра/iu.test(text) ? 1 : undefined;
+  // «послезавтра» contains «завтра», so the more specific word is checked first.
+  const offset = /сегодня/iu.test(text) ? 0 : /послезавтра/iu.test(text) ? 2 : /завтра/iu.test(text) ? 1 : undefined;
   if (offset === undefined) return undefined;
   const date = new Date(`${currentDateTime(timezone).slice(0, 10)}T00:00:00Z`);
   date.setUTCDate(date.getUTCDate() + offset);
@@ -1924,13 +1930,9 @@ function isOfficeLocationQuestion(text: string | undefined): boolean {
   return /(?:куда\s+(?:ехать|приезжать|подъехать)|где\s+(?:вы|офис|находит)|адрес|как\s+доехать)/iu.test(text ?? "");
 }
 
-function isLoanByPowerOfAttorneyQuestion(text: string | undefined): boolean {
-  return !isNotarialPowerOfAttorneyForCompanyQuestion(text)
-    && /(?:займ|кредит|оформлени[ея]).{0,60}(?:по|с)\s+доверенност|(?:по|с)\s+доверенност.{0,60}(?:займ|кредит|оформ)/iu.test(text ?? "");
-}
-
-function isNotarialPowerOfAttorneyForCompanyQuestion(text: string | undefined): boolean {
-  return /(?:(?:довер|нотир)\p{L}*).{0,100}(?:сотрудник|автоломбард|компани)|(?:сотрудник|автоломбард|компани).{0,100}(?:довер|нотир)\p{L}*/iu.test(text ?? "");
+/** A non-owner disclosure is a colloquial form of the approved UNA-registration FAQ. */
+function isVehicleRegistrationOwnershipQuestion(text: string): boolean {
+  return /(?:оформлен|зарегистрирован)\p{L}*.{0,60}\s+не\s*на\s*(?:меня|мне|я)(?:\s|$)|(?:автомобил|машин|мошин|авто)\p{L}*.{0,80}(?:не\s*мо[яйеи]|чуж\p{L}*|друг(?:ого|ая|ой)\s+(?:человек|лиц))/iu.test(text);
 }
 
 function replacePrematureVisitQuestion(reply: string, facts: ApplicationFacts, stageCompletion = deriveStageCompletion(facts)): string {
@@ -2570,6 +2572,20 @@ function enforceIdentityAnswer(reply: string, input: Pick<AgentTurnInput, "text"
     .trim();
 }
 
+/** Existing-loan support text is valid only for an explicit current-turn servicing request. */
+function removeUnpromptedExistingContractRedirect(reply: string, input: Pick<AgentTurnInput, "text" | "currentTurnMessages">): string {
+  const text = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "").trim();
+  if (isExplicitExistingContractRequest(text)) return reply;
+  return reply
+    .replace(/(?:я\s+айлин\s*[—-]\s*виртуальн\p{L}*\s+помощник\s+по\s+вопросам\s+оформления\s+новых\s+займов\.?\s*)?если\s+у\s+вас\s+уже\s+оформлен\s+займ,?\s+пожалуйста,?\s+позвоните[\s\S]{0,500}?(?:решить\s+ваш\s+вопрос|помогут\s+решить\s+ваш\s+вопрос)\.?/giu, "")
+    .replace(/[ \t]{2,}/gu, " ")
+    .trim();
+}
+
+function isExplicitExistingContractRequest(text: string): boolean {
+  return /(?:действующ(?:ий|ему)\s+(?:займ|договор)|(?:остат(?:ок|лось)|задолженн\p{L}*|долг\p{L}*)[^.!?]{0,60}(?:по\s+(?:моему\s+)?(?:займу|договор)|у\s+меня)|(?:проверьте|проверить)[^.!?]{0,60}оплат|(?:я\s+)?оплатил(?:а)?\b|реквизит\p{L}*[^.!?]{0,60}(?:оплат|договор)|(?:вернуть|забрать)[^.!?]{0,60}документ|(?:не\s+работает|перестал\p{L}*\s+работать)[^.!?]{0,60}(?:gps|гпс|датчик)|(?:gps|гпс|датчик)[^.!?]{0,40}(?:не\s+работа|сломал|перестал\p{L}*\s+работа|замен))/iu.test(text);
+}
+
 function residencePatchFromExplicitClientText(input: Pick<AgentTurnInput, "text" | "currentTurnMessages" | "messages">, patch: Partial<ApplicationFacts>, previousFacts: ApplicationFacts, modelAssertedResidence: boolean): Partial<ApplicationFacts> {
   const text = input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text;
   const lastAssistant = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
@@ -2909,6 +2925,11 @@ function clearNegation(text: string): boolean {
  * stays model-owned; this accepts only a direct choice of parking. */
 function explicitlyAcceptsParkingAlternative(text: string): boolean {
   return /(?:\b(?:понял(?:а)?|тогда|давайте|хорошо|ладно|ок(?:ей)?)\b.{0,40}(?:стоянк|парковк)|(?:стоянк|парковк).{0,40}\b(?:тогда|давайте|подходит)\b|\bу\s+меня\b.{0,30}(?:стоянк|парковк)|(?:^|\s)д\s+(?:стоянк|парковк))/iu.test(text);
+}
+
+/** Regex fallback for a direct fact after the semantic parking classifier is unavailable or undecided. */
+function explicitlyStatesGuarantorAvailable(text: string): boolean {
+  return /(?:^|\s)(?:у\s+меня\s+)?(?:есть|имеется|будет|найду|приведу)\s+(?:такой\s+)?поручител\p{L}*(?:[.!]?\s*)$/iu.test(text.trim());
 }
 
 function guarantorPatchFromClearReply(

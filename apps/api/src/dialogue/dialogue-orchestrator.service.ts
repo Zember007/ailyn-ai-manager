@@ -119,7 +119,9 @@ export class DialogueOrchestratorService {
       // The main model can omit the final canonical prompt while routing a
       // factual question to knowledge. Do not let the KB answer terminate the
       // application: derive the next required action from server-owned facts.
-      const workflowFollowUp = extractWorkflowFollowUp(turn.reply)
+      const workflowFollowUp = turn.result.dialogueState.status === "redirect_existing_contract"
+        ? ""
+        : extractWorkflowFollowUp(turn.reply)
         || nextRequiredStageQuestion(turnFacts, deriveStageCompletion(turnFacts, settings))
         // A completed application has no further collection action. The
         // knowledge contract still receives a string in that terminal case.
