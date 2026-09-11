@@ -1460,7 +1460,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     && loanQuestionKind === "none"
     ? parsed.contextualAcknowledgement
     : undefined;
-  const workflowFollowUp = accidentNotDrivableNotice || (!contextualAcknowledgement && repeatedStageReply) || rejectedMoneyClarification || belowMinimumReply || visitProgress || visitTimeClarification || visitNonWorkingDay || hasPendingMoneyCurrencyClarification(internalReply)
+  const workflowFollowUp = accidentNotDrivableNotice || rejectedMoneyClarification || belowMinimumReply || visitProgress || visitTimeClarification || visitNonWorkingDay || hasPendingMoneyCurrencyClarification(internalReply)
     ? undefined
     : serverWorkflowFollowUp(loanQuestionKind, effectiveFacts, stageCompletion, requestedAmountLimit, workflowSelectedLimitNotice);
   const answerBeforeWorkflow = isLoanRateQuestion(loanQuestionKind)
@@ -1480,12 +1480,12 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   // the explanation with the same question the client just queried.
   const responsePlan = workflowStageClarification
     ? appendRequiredWorkflowFollowUp(workflowStageClarification, workflowFollowUp)
-    : (contextualAcknowledgement ? undefined : repeatedStageReply) ?? appendRequiredWorkflowFollowUp(
-    appendContinuationAfterRegion10PolicyQuestion(
-      removeModelWorkflowQuestion(removeQuestionsForKnownLeadFacts(removeUnaskedProgramDetails(removeRepeatedProgramExplanation(enforceFirstContactGreeting(serverSafeAnswer, input), effectiveFacts, input), input, programSelectionOnly), effectiveFacts, input.facts)),
-      input,
-      effectiveFacts
-    ),
+    : appendRequiredWorkflowFollowUp(
+      (contextualAcknowledgement ? undefined : repeatedStageReply) ?? appendContinuationAfterRegion10PolicyQuestion(
+        removeModelWorkflowQuestion(removeQuestionsForKnownLeadFacts(removeUnaskedProgramDetails(removeRepeatedProgramExplanation(enforceFirstContactGreeting(serverSafeAnswer, input), effectiveFacts, input), input, programSelectionOnly), effectiveFacts, input.facts)),
+        input,
+        effectiveFacts
+      ),
       isIdentityQuestion(input) ? undefined : workflowFollowUp
     );
   return {
@@ -2493,7 +2493,7 @@ export function enforceFirstContactGreeting(reply: string, input: Pick<AgentTurn
   // A bare greeting is not a request for free-form assistance. Keep first
   // contact fully server-owned so the model cannot add «Как я могу помочь?»
   // or another unasked offer before the required vehicle question.
-  if (isGreetingOnly(input)) return officialGreeting;
+  if (isGreetingOnly(input)) return [officialGreeting, nextRequiredStageQuestion({})].join("\n\n");
   return [officialGreeting, rest].filter(Boolean).join("\n\n");
 }
 

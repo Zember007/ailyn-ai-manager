@@ -4696,6 +4696,22 @@ describe("single-agent dialogue", () => {
     expect(output.result?.leadCardPatch.clientPaused).toBeUndefined();
   });
 
+  it("appends the server visit question after a repeated-stage explanation", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult, reply: "Офис работает с понедельника по пятницу.", currentStageResponse: "unrelated", leadCardPatch: {}
+    }) } }] }) } as any;
+    const visitQuestion = "Офис работает с понедельника по пятницу с 11:00 до 19:00. Для оформления нужно приехать не позднее 18:00. На какой день и время Вам удобно подъехать?";
+
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: visitQuestion, createdAt: "now" } as any],
+      facts: { vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 3_000_000, requestedAmount: 200_000, requestedProgram: "parking", residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY", documentsProvided: true, documents: { car_photo: "received" }, familyStatus: "single" },
+      settings: {}, text: "не понял", attachments: []
+    });
+
+    expect(output.reply).toContain("Офис работает с понедельника по пятницу");
+    expect(output.reply).toContain("На какой день и время");
+  });
+
   it("explains the active visit stage for the colloquial question а зачем тебе", async () => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
       ...validResult, reply: "Распознано.", currentStageResponse: "unrelated", leadCardPatch: {}
