@@ -23,6 +23,10 @@ export const agentTurnResultSchema = z.object({
   activeWorkflowClarification: z.enum(["guarantor"]).optional(),
   /** The client asks why the current stage needs data, without supplying or correcting any fact. Never persisted. */
   currentStageClarification: z.boolean().default(false),
+  /** Relation of the current client turn to the last workflow question; never persisted. */
+  currentStageResponse: z.enum(["answer", "clarification", "unrelated", "unknown"]).default("unknown"),
+  /** Safe client-facing acknowledgement for an otherwise unhandled turn; never persisted. */
+  contextualAcknowledgement: z.object({ text: z.string().min(2).max(400), resumeWorkflow: z.boolean() }).strict().optional(),
   /** The current client turn explicitly supplies or corrects their residence. Never persisted. */
   residenceStatement: z.boolean().optional(),
   /** The current client turn explicitly chooses a loan programme. Never persisted. */

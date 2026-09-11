@@ -51,6 +51,18 @@ const approvedFaqChunks = approvedKnowledgeSeeds
   }));
 
 /**
+ * Server fallback for a product-policy topic expressed in the current client
+ * message. It deliberately ignores dialogue history: old assistant text must
+ * not turn an unrelated answer into a new knowledge request. Whitespace is
+ * removed before comparison so common typos such as «не находу» still match
+ * the approved alias «не на ходу».
+ */
+export function hasApprovedKnowledgeMatch(text: string): boolean {
+  const current = text.toLocaleLowerCase("ru-RU");
+  return approvedFaqChunks.some((chunk) => hasExactApprovedFaqAlias(chunk, current));
+}
+
+/**
  * Gives the knowledge model a short, ordered evidence packet instead of a
  * large undifferentiated document dump. FAQ answers have the highest
  * priority; section 3.18 is always included next because it owns questions
@@ -275,8 +287,12 @@ function approvedFaqScore(chunk: KnowledgeContextChunk, tokens: Set<string>, cur
 
 function hasExactApprovedFaqAlias(chunk: KnowledgeContextChunk, current: string): boolean {
   const aliases = "aliases" in chunk && Array.isArray(chunk.aliases) ? chunk.aliases : [];
+  const compactCurrent = current.replace(/\s+/gu, "");
   return aliases.some(
-    (alias): alias is string => typeof alias === "string" && alias.trim().length >= 5 && current.includes(alias.toLocaleLowerCase("ru-RU"))
+    (alias): alias is string => typeof alias === "string" && alias.trim().length >= 5 && (
+      current.includes(alias.toLocaleLowerCase("ru-RU"))
+      || compactCurrent.includes(alias.toLocaleLowerCase("ru-RU").replace(/\s+/gu, ""))
+    )
   );
 }
 

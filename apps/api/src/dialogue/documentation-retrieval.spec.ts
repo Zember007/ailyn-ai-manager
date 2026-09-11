@@ -1,7 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { isMaximumLoanKnowledgeQuestion, prioritizedKnowledgeForQuestion, selectRelevantDocumentation } from "./documentation-retrieval.js";
+import { hasApprovedKnowledgeMatch, isMaximumLoanKnowledgeQuestion, prioritizedKnowledgeForQuestion, selectRelevantDocumentation } from "./documentation-retrieval.js";
 
 describe("selectRelevantDocumentation", () => {
+  it("matches an approved knowledge alias despite a missing space", () => {
+    expect(hasApprovedKnowledgeMatch("машина не находу")).toBe(true);
+    expect(hasApprovedKnowledgeMatch("нет")).toBe(false);
+
+    const result = selectRelevantDocumentation({ facts: {}, currentMessage: "машина не находу", messages: [] });
+    expect(result.mandatoryAnswer).toContain("принять его в залог не сможем");
+  });
+
   it("always supplies only the compact approved-answer core", () => {
     const result = selectRelevantDocumentation({ facts: {}, currentMessage: "здравствуйте", messages: [] });
 

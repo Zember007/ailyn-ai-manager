@@ -136,7 +136,7 @@ export const approvedKnowledgeSeeds: Omit<KnowledgeItemDto, "id">[] = [
     key: "maximum_loan_range",
     category: "loan_terms",
     aliases: ["какая максимальная сумма возможна", "какая максимальная сумма", "сколько максимум дадите", "сколько денег дадите", "какой лимит", "какие лимиты", "сколько можно получить", "до какой суммы дадите"],
-    answerRu: "Какая максимальная сумма возможна?\nБез изъятия: от 50 000 сом до MAX_LIMIT_WITHOUT сом\nСо стоянкой: от 50 000 сом до MAX_LIMIT_PARK сом",
+    answerRu: "\nБез изъятия: от 50 000 сом до MAX_LIMIT_WITHOUT сом\nСо стоянкой: от 50 000 сом до MAX_LIMIT_PARK сом",
     priority: 120, status: "approved", version: 2, active: true
   },
   {

@@ -9,7 +9,7 @@ import { RouterAiClient } from "../ai/router-ai/router-ai.client.js";
 import type { InboundAttachment } from "../channels/channel.interface.js";
 import { BackendLogsService } from "../logs/backend-logs.service.js";
 import { attachmentFactsForCurrentStage, deriveStageCompletion, effectiveFactsForTurn, isCarPhotoStagePrompt } from "./agent-turn-reconciliation.js";
-import { isMaximumLoanKnowledgeQuestion, prioritizedKnowledgeForQuestion, selectRelevantDocumentation } from "./documentation-retrieval.js";
+import { hasApprovedKnowledgeMatch, isMaximumLoanKnowledgeQuestion, prioritizedKnowledgeForQuestion, selectRelevantDocumentation } from "./documentation-retrieval.js";
 import { agentTurnResultSchema, dialogueSummarySchema, knowledgeAnswerSchema, type AgentTurnResult } from "./agent-turn.contracts.js";
 import { moneyNormalizationSchema } from "./pipeline.contracts.js";
 import { calculateLoanPricing, type LoanPricing, type LoanPricingSettings } from "./loan-pricing.js";
@@ -1139,6 +1139,7 @@ function localAttachmentRecovery(input: AgentTurnInput): AgentTurnResult {
   return {
     reply,
     currentStageClarification: false,
+    currentStageResponse: "unknown",
     hasMoney: false,
     needsKnowledgeLookup: false,
     language: input.facts.language ?? "ru",
@@ -1222,7 +1223,9 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   const workflowStageClarification = modelCurrentStageClarification
     ? workflowStageExplanation(input) ?? "Уточняем эти данные для предварительного рассмотрения заявки."
     : workflowWhyQuestion;
-  const stageResponse = Boolean(workflowStageClarification) || modelCurrentStageClarification || activeWorkflowClarification || inactiveGuarantorClarification || parkingAlternativeGuarantorAnswer || (isResponseToLastWorkflowQuestion(input) && modelKnowledgeRequest?.required !== true);
+  const approvedKnowledgeTopic = hasApprovedKnowledgeMatch(semanticText ?? "");
+  const modelMarksCurrentStageUnrelated = parsed.currentStageResponse === "unrelated";
+  const stageResponse = !approvedKnowledgeTopic && !modelMarksCurrentStageUnrelated && (Boolean(workflowStageClarification) || modelCurrentStageClarification || activeWorkflowClarification || inactiveGuarantorClarification || parkingAlternativeGuarantorAnswer || (isResponseToLastWorkflowQuestion(input) && modelKnowledgeRequest?.required !== true));
   // The main model semantically detects natural-language questions which do
   // not have a question mark (for example «А кофе есть»). Pattern matching
   // remains only the fallback inside requiresKnowledgeAnswer.
@@ -1234,6 +1237,8 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     && loanQuestionKind === "none"
     && !asksProgrammeDetails(semanticText ?? "");
   const mayNeedKnowledge = !programSelectionOnly && (
+    approvedKnowledgeTopic
+    ||
     modelKnowledgeRequest?.required === true
     || maximumLoanQuestion
     || requiresKnowledgeAnswer(semanticInput, leadCardFacts, loanQuestionKind)
@@ -1245,9 +1250,9 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   // answer such as «нету» cannot be upgraded into a question by any model
   // field or by a generic fallback.
   const bareNonQuestion = !/[?？]/u.test(semanticText ?? "") && wordCount(semanticText ?? "") < 2;
-  const knowledgeRequest = bareNonQuestion || (!maximumLoanQuestion && stageResponse) || !mayNeedKnowledge
+  const knowledgeRequest = (!approvedKnowledgeTopic && (bareNonQuestion || (!maximumLoanQuestion && stageResponse))) || !mayNeedKnowledge
     ? undefined
-    : modelKnowledgeRequest ?? (ownershipRegistrationQuestion || independentOfficeQuestion || isExplicitQuestionText(semanticText ?? "")
+    : modelKnowledgeRequest ?? (approvedKnowledgeTopic || ownershipRegistrationQuestion || independentOfficeQuestion || isExplicitQuestionText(semanticText ?? "")
       ? { required: true as const, reason: "missing_approved_answer" as const }
       : isLikelyKnowledgeQuestion(semanticText ?? "")
         ? { required: true as const, reason: "missing_approved_answer" as const }
@@ -1272,7 +1277,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     // new question. The closing acknowledgement is one-shot; every later
     // inbound reopens the final-question state before workflow recalculation.
     ...(input.facts.clientClosed && Boolean(semanticText?.trim()) ? { clientClosed: false } : {}),
-    ...accidentNotDrivablePatch(semanticText),
+    ...accidentNotDrivablePatch(semanticText, input.messages),
     ...(isClearDocumentsRefusal(input) ? { declinedDocuments: true } : {}),
     ...(isClearCarPhotoRefusal(input) ? { declinedCarPhoto: true } : {})
   };
@@ -1421,9 +1426,6 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   const accidentNotDrivableNotice = !input.facts.accidentNotDrivable && effectiveFacts.accidentNotDrivable
     ? "Автомобиль после серьёзного ДТП и не на ходу не принимается как подходящий залог."
     : undefined;
-  const workflowFollowUp = accidentNotDrivableNotice || repeatedStageReply || rejectedMoneyClarification || belowMinimumReply || visitProgress || visitTimeClarification || visitNonWorkingDay || hasPendingMoneyCurrencyClarification(internalReply)
-    ? undefined
-    : serverWorkflowFollowUp(loanQuestionKind, effectiveFacts, stageCompletion, requestedAmountLimit, workflowSelectedLimitNotice);
   const completionNotice = stageCompletion.visit && effectiveFacts.clientClosed
     ? "Спасибо за обращение. Ожидайте звонка менеджера, он подтвердит время визита."
     : undefined;
@@ -1431,7 +1433,8 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   // visit branch. The calculation itself is server-owned; after answering,
   // the normal workflow appender returns to the outstanding action.
   const optionalStageDeclineNotice = optionalStageDeclineNoticeForTurn(input.facts, effectiveFacts);
-  const directAnswer = workflowStageClarification ?? accidentNotDrivableNotice ?? repeatedStageReply ?? completionNotice ?? attachmentAcceptanceNotice ?? optionalStageDeclineNotice ?? visitNonWorkingDay ?? visitNotice ?? visitProgress ?? visitTimeClarification ?? residenceLimitNotice ?? programmeChangeGuarantorNotice ?? acceptedLimitNotice ?? (region10Answer ? [region10Answer, olderVehicleNotice].filter(Boolean).join("\n\n") : undefined) ?? olderVehicleNotice ?? spouseVisitAnswer(input) ?? familyNotice ?? unknownVehicleValueNotice ?? waitingForVehicleValueNotice;
+  const directAnswerWithoutRepeatedStage = workflowStageClarification ?? accidentNotDrivableNotice ?? completionNotice ?? attachmentAcceptanceNotice ?? optionalStageDeclineNotice ?? visitNonWorkingDay ?? visitNotice ?? visitProgress ?? visitTimeClarification ?? residenceLimitNotice ?? programmeChangeGuarantorNotice ?? acceptedLimitNotice ?? (region10Answer ? [region10Answer, olderVehicleNotice].filter(Boolean).join("\n\n") : undefined) ?? olderVehicleNotice ?? spouseVisitAnswer(input) ?? familyNotice ?? unknownVehicleValueNotice ?? waitingForVehicleValueNotice;
+  const directAnswer = directAnswerWithoutRepeatedStage ?? repeatedStageReply;
   // A direct approved FAQ outranks all free-form model prose. This prevents
   // plausible but unsupported claims such as a parking location or credit
   // eligibility from reaching the client. The final output renderer receives
@@ -1445,9 +1448,24 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     : inactiveGuarantorClarification
       ? "При Вашей прописке в Бишкеке или Чуйской области поручитель не требуется."
       : undefined;
+  // This is intentionally the last prose fallback. It is valid only when the
+  // current message changed no fact and every server-owned answer path (rule,
+  // calculation, active-stage answer and knowledge lookup) is absent.
+  const contextualAcknowledgement = !knowledgeRequest
+    && !stageResponse
+    && !leadPatchChangesFacts(leadCardFacts, input.facts)
+    && input.attachments.length === 0
+    && !mandatoryKnowledgeAnswer
+    && !directAnswerWithoutRepeatedStage
+    && loanQuestionKind === "none"
+    ? parsed.contextualAcknowledgement
+    : undefined;
+  const workflowFollowUp = contextualAcknowledgement?.resumeWorkflow === false || accidentNotDrivableNotice || (!contextualAcknowledgement && repeatedStageReply) || rejectedMoneyClarification || belowMinimumReply || visitProgress || visitTimeClarification || visitNonWorkingDay || hasPendingMoneyCurrencyClarification(internalReply)
+    ? undefined
+    : serverWorkflowFollowUp(loanQuestionKind, effectiveFacts, stageCompletion, requestedAmountLimit, workflowSelectedLimitNotice);
   const answerBeforeWorkflow = isLoanRateQuestion(loanQuestionKind)
     ? ""
-    : workflowStageClarification ?? workflowClarificationAnswer ?? mandatoryKnowledgeAnswer ?? directAnswer ?? removeIncorrectResidenceClarificationProse(
+    : workflowStageClarification ?? workflowClarificationAnswer ?? mandatoryKnowledgeAnswer ?? contextualAcknowledgement?.text ?? directAnswer ?? removeIncorrectResidenceClarificationProse(
     removeForbiddenMetaPhrases(dropUnsupportedFallbackForNonQuestion(replaceUnsupportedFallbackWithApprovedAnswer(guardedModelReply, mandatoryKnowledgeAnswer, input), semanticText)),
     input,
     effectiveFacts
@@ -1462,7 +1480,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   // the explanation with the same question the client just queried.
   const responsePlan = workflowStageClarification
     ? appendRequiredWorkflowFollowUp(workflowStageClarification, workflowFollowUp)
-    : repeatedStageReply ?? appendRequiredWorkflowFollowUp(
+    : (contextualAcknowledgement ? undefined : repeatedStageReply) ?? appendRequiredWorkflowFollowUp(
     appendContinuationAfterRegion10PolicyQuestion(
       removeModelWorkflowQuestion(removeQuestionsForKnownLeadFacts(removeUnaskedProgramDetails(removeRepeatedProgramExplanation(enforceFirstContactGreeting(serverSafeAnswer, input), effectiveFacts, input), input, programSelectionOnly), effectiveFacts, input.facts)),
       input,
@@ -1587,10 +1605,11 @@ export function hasSeveralClientQuestions(text: string): boolean {
 /** Delivery by tow truck after an accident is an unambiguous statement that
  * the vehicle is not drivable. This eligibility rule cannot depend on the
  * current document/photo stage or on a model extracting the boolean field. */
-function accidentNotDrivablePatch(text: string | undefined): Partial<ApplicationFacts> {
+function accidentNotDrivablePatch(text: string | undefined, messages: Stage1Message[]): Partial<ApplicationFacts> {
   const normalized = text?.toLocaleLowerCase("ru-RU") ?? "";
-  const mentionsAccident = /(?:дтп|авари(?:я|и|ю|ей|ями)?|после\s+удара)/iu.test(normalized);
-  const confirmsNotDrivable = /(?:эвакуатор(?:е|ом|а|ы)?|не\s+на\s+ходу|не\s+едет|не\s+заводит(?:ся)?)/iu.test(normalized);
+  const recentContext = messages.slice(-2).map((message) => message.body).join(" ").toLocaleLowerCase("ru-RU");
+  const mentionsAccident = /(?:дтп|авари(?:я|и|ю|ей|ями)?|после\s+удара)/iu.test(`${normalized} ${recentContext}`);
+  const confirmsNotDrivable = /(?:эвакуатор(?:е|ом|а|ы)?|не\s*на\s*ходу|не\s+едет|не\s+заводит(?:ся)?)/iu.test(normalized);
   return mentionsAccident && confirmsNotDrivable ? { accidentNotDrivable: true } : {};
 }
 
@@ -1600,7 +1619,7 @@ function isGenericClarificationReply(reply: string): boolean {
 
 /** A recognised fact always takes precedence over the model's generic fallback. */
 function hasRecognizedFactsForTurn(previous: ApplicationFacts, current: ApplicationFacts): boolean {
-  const ignored = new Set(["language", "stageCompletion", "knowledgeRequest"]);
+  const ignored = new Set(["language", "stageCompletion", "knowledgeRequest", "reportedInvalidVehicleYear"]);
   const keys = new Set([...Object.keys(previous), ...Object.keys(current)]);
   return [...keys].some((key) => {
     if (ignored.has(key)) return false;
@@ -2032,10 +2051,10 @@ export function nextRequiredStageQuestion(facts: ApplicationFacts, completion = 
   if (!completion.family) return nextFamilyStageQuestion(facts);
   if (completion.readyForVisit && !completion.visit) {
     if (facts.visitDate && !facts.visitTime) {
-      return "Офис работает с понедельника по пятницу с 11:00 до 19:00. Для оформления нужно приехать не позднее 18:00. В какое время Вам удобно подъехать?";
+      return "Офис работает с 11:00 до 19:00. Для оформления нужно приехать не позднее 18:00. В какое время Вам удобно подъехать?";
     }
     if (facts.visitTime && !facts.visitDate) {
-      return "Офис работает с понедельника по пятницу с 11:00 до 19:00. На какой день Вам удобно подъехать?";
+      return "Офис работает с понедельника по пятницу. На какой день Вам удобно подъехать?";
     }
     return "Офис работает с понедельника по пятницу с 11:00 до 19:00. Для оформления нужно приехать не позднее 18:00. На какой день и время Вам удобно подъехать?";
   }
@@ -3188,7 +3207,7 @@ function workflowStageExplanation(input: Pick<AgentTurnInput, "text" | "currentT
  * recognises broader wording through `currentStageClarification`. */
 function workflowWhyReply(input: Pick<AgentTurnInput, "text" | "currentTurnMessages" | "messages">): string | undefined {
   const text = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "").trim();
-  if (!/^(?:(?:а|и|ну)\s+)?(?:(?:зачем|почему|для\s+чего)(?:\s+(?:эта|эта\s+самая|такая|данная)?\s*(?:информаци\p{L}*|данн\p{L}*|это|нужн\p{L}*))?|что\s+это\s+да[её]т|для\s+чего\s+(?:это|нужно)|почему\s+(?:это|нужно))(?:(?:\s+вообще)?)[?!.…\s]*$/iu.test(text)) return undefined;
+  if (!/^(?:(?:а|и|ну)\s+)?(?:(?:зачем|почему)(?:\s+(?:тебе|вам))?(?:\s+(?:эта|эта\s+самая|такая|данная)?\s*(?:информаци\p{L}*|данн\p{L}*|это|нужн\p{L}*))?|для\s+чего(?:\s+(?:эта|эта\s+самая|такая|данная)?\s*(?:информаци\p{L}*|данн\p{L}*|это|нужн\p{L}*))?|что\s+это\s+да[её]т)(?:(?:\s+вообще)?)[?!.…\s]*$/iu.test(text)) return undefined;
   return workflowStageExplanation(input);
 }
 

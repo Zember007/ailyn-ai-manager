@@ -4591,6 +4591,146 @@ describe("single-agent dialogue", () => {
     expect(output.reply).not.toContain("документы можно отправить позже");
   });
 
+  it("routes a non-drivable accident follow-up to knowledge instead of consuming it as family status", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult,
+      reply: "Распознано.",
+      leadCardPatch: {}
+    }) } }] }) } as any;
+
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "Автомобиль после серьёзного ДТП принимается только если он на ходу; повреждения могут повлиять на оценочную стоимость. Подскажите, пожалуйста, Ваше семейное положение — Вы в браке, в разводе или не в браке.", createdAt: "now" } as any],
+      facts: { vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 3_000_000, requestedAmount: 600_000, requestedProgram: "parking" },
+      settings: {}, text: "машина не находу", attachments: []
+    });
+
+    expect(output.result?.leadCardPatch).toMatchObject({
+      accidentNotDrivable: true,
+      knowledgeRequest: { required: true, reason: "missing_approved_answer" }
+    });
+    expect(output.result?.leadCardPatch.familyStatus).toBeUndefined();
+  });
+
+  it("honours the model's unrelated-stage classification before regex fallback", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult,
+      reply: "Распознано.",
+      currentStageResponse: "unrelated",
+      leadCardPatch: { knowledgeRequest: { required: true, reason: "missing_approved_answer" } }
+    }) } }] }) } as any;
+
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "Подскажите, пожалуйста, Ваше семейное положение — Вы в браке, в разводе или не в браке.", createdAt: "now" } as any],
+      facts: { vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 3_000_000, requestedAmount: 600_000, requestedProgram: "parking" },
+      settings: {}, text: "а автомобиль на газу принимаете", attachments: []
+    });
+
+    expect(output.result?.leadCardPatch.knowledgeRequest).toEqual({ required: true, reason: "missing_approved_answer" });
+    expect(output.result?.leadCardPatch.familyStatus).toBeUndefined();
+  });
+
+  it("hands an out-of-stage accident condition to the knowledge agent before resuming the workflow", async () => {
+    const facts = { vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 3_000_000, requestedAmount: 600_000, requestedProgram: "parking" };
+    const application = { id: "app", facts, contactId: "contact", stage: "COLLECTING_FAMILY_STATUS", status: "need_more_data" } as any;
+    const conversation = { id: "conversation", messages: [], application, channel: "web-test" } as any;
+    const store = {
+      getOrCreateConversation: vi.fn().mockResolvedValue({ conversation, application }),
+      addMessage: vi.fn().mockResolvedValue({ id: "message", author: "client", body: "машина не находу", createdAt: "now" }),
+      updateFacts: vi.fn().mockResolvedValue(["accidentNotDrivable"]), saveAgentState: vi.fn(), getApplication: vi.fn().mockResolvedValue(application), getConversation: vi.fn().mockResolvedValue(conversation), addAttachment: vi.fn(), createManagerNotification: vi.fn()
+    } as any;
+    const agent = {
+      run: vi.fn().mockResolvedValue({
+        result: { ...validResult, reply: "Распознано.", leadCardPatch: { ...facts, accidentNotDrivable: true, knowledgeRequest: { required: true, reason: "missing_approved_answer" } } },
+        reply: "Распознано.", model: "workflow-model", promptVersion: "v1"
+      }),
+      answerWithKnowledge: vi.fn().mockResolvedValue({ reply: "Если автомобиль после ДТП не на ходу, принять его в залог не сможем.", answerFound: true, model: "knowledge-model" })
+    } as any;
+
+    const output = await new DialogueOrchestratorService(agent, store, { getValues: vi.fn().mockResolvedValue({}) } as any, { log: vi.fn() } as any)
+      .receive({ externalMessageId: "m", channel: "web-test", externalContactId: "c", text: "машина не находу", attachments: [], timestamp: new Date() });
+
+    expect(agent.answerWithKnowledge).toHaveBeenCalledWith(expect.objectContaining({ text: "машина не находу" }));
+    expect(output.reply).toContain("принять его в залог не сможем");
+    expect(output.reply).not.toContain("семейное положение");
+  });
+
+  it("keeps a friendly contextual acknowledgement before the pending visit after an unhandled reaction", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult, reply: "Распознано.", currentStageResponse: "unrelated", contextualAcknowledgement: { text: "Понимаю, сумма может не подойти.", resumeWorkflow: true }, leadCardPatch: {}
+    }) } }] }) } as any;
+    const visitQuestion = "Офис работает с понедельника по пятницу с 11:00 до 19:00. Для оформления нужно приехать не позднее 18:00. На какой день и время Вам удобно подъехать?";
+
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: visitQuestion, createdAt: "now" } as any],
+      facts: { vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 3_000_000, requestedAmount: 200_000, requestedProgram: "parking", residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY", documentsProvided: true, documents: { car_photo: "received" }, familyStatus: "single" },
+      settings: {}, text: "мало", attachments: []
+    });
+
+    expect(output.result?.contextualAcknowledgement).toEqual({ text: "Понимаю, сумма может не подойти.", resumeWorkflow: true });
+    expect(output.result?.leadCardPatch).toEqual(expect.objectContaining({
+      vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 3_000_000, requestedAmount: 200_000, requestedProgram: "parking", residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY", documentsProvided: true, familyStatus: "single"
+    }));
+    expect(output.reply).toContain("сумма может не подойти");
+    expect(output.reply).toContain("На какой день и время");
+    expect(output.result?.leadCardPatch.knowledgeRequest).toBeUndefined();
+  });
+
+  it("does not repeat the visit question after an explicit refusal to book", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult,
+      reply: "Распознано.",
+      currentStageResponse: "unrelated",
+      contextualAcknowledgement: { text: "Хорошо, запись пока не будем оформлять.", resumeWorkflow: false },
+      leadCardPatch: {}
+    }) } }] }) } as any;
+    const visitQuestion = "Офис работает с понедельника по пятницу с 11:00 до 19:00. Для оформления нужно приехать не позднее 18:00. На какой день и время Вам удобно подъехать?";
+
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: visitQuestion, createdAt: "now" } as any],
+      facts: { vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 3_000_000, requestedAmount: 200_000, requestedProgram: "parking", residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY", documentsProvided: true, documents: { car_photo: "received" }, familyStatus: "single" },
+      settings: {}, text: "не хочу запись", attachments: []
+    });
+
+    expect(output.reply).toContain("запись пока не будем оформлять");
+    expect(output.reply).not.toContain("На какой день и время");
+    expect(output.result?.leadCardPatch.clientPaused).toBeUndefined();
+  });
+
+  it("explains the active visit stage for the colloquial question а зачем тебе", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult, reply: "Распознано.", currentStageResponse: "unrelated", leadCardPatch: {}
+    }) } }] }) } as any;
+    const visitQuestion = "Офис работает с понедельника по пятницу с 11:00 до 19:00. Для оформления нужно приехать не позднее 18:00. На какой день и время Вам удобно подъехать?";
+
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: visitQuestion, createdAt: "now" } as any],
+      facts: { vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 3_000_000, requestedAmount: 200_000, requestedProgram: "parking", residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY", documentsProvided: true, documents: { car_photo: "received" }, familyStatus: "single" },
+      settings: {}, text: "а зачем тебе", attachments: []
+    });
+
+    expect(output.reply).toContain("Дата и время нужны");
+    expect(output.reply).toContain("На какой день и время");
+  });
+
+  it("lets a knowledge request win over contextual acknowledgement prose", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult,
+      reply: "Распознано.",
+      currentStageResponse: "unrelated",
+      contextualAcknowledgement: { text: "Этот fallback не должен быть показан.", resumeWorkflow: true },
+      leadCardPatch: { knowledgeRequest: { required: true, reason: "missing_approved_answer" } }
+    }) } }] }) } as any;
+
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "Подскажите, пожалуйста, Ваше семейное положение — Вы в браке, в разводе или не в браке.", createdAt: "now" } as any],
+      facts: { vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 3_000_000, requestedAmount: 200_000, requestedProgram: "parking" },
+      settings: {}, text: "а wi-fi у вас есть", attachments: []
+    });
+
+    expect(output.result?.leadCardPatch.knowledgeRequest).toEqual({ required: true, reason: "missing_approved_answer" });
+    expect(output.reply).not.toContain("Этот fallback");
+  });
+
   it("provides a server-built working-day calendar for a visit request", async () => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify(validResult) } }] }) } as any;
     const service = new AgentTurnService(client);
