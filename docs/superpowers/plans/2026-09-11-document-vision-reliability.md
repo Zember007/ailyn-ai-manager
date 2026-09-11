@@ -12,3 +12,9 @@
 - [x] Run the focused dialogue tests, typecheck, and lint; record any pre-existing unrelated suite failures separately.
 
 **Verification (2026-09-11):** The focused ID/STS/FIO tests (including the new per-image classification regression) pass; `pnpm --filter @ailyn/api typecheck` and `pnpm lint` pass. The full dialogue spec currently has 74 failures in the existing dirty worktree, so it is not a clean baseline for this focused change.
+
+## Follow-up: combined document photos
+
+- [x] Add a regression for two photos where each photo contains both an ID side and an STS side.
+- [x] Extend the focused vision output with `documentTypes`, while retaining one primary stored attachment type.
+- [x] Derive all document completion facts and FIO from `documentTypes`; verify the focused test, typecheck and lint.

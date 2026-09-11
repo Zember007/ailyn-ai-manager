@@ -533,7 +533,7 @@ export class AgentTurnService {
         reasoning: { enabled: false },
         response_format: { type: "json_object" },
         messages: [
-          { role: "system", content: "Ты — точный классификатор каждого приложенного изображения и OCR документов Кыргызстана. Верни строго JSON {\"fullName\":string|null,\"ownerFullName\":string|null,\"attachments\":[{\"attachmentId\":string,\"type\":\"id_front\"|\"id_back\"|\"vehicle_registration_front\"|\"vehicle_registration_back\"|\"car\"|\"unknown\"|\"poor_quality\",\"status\":\"received\"|\"poor_quality\"}]}. Верни ровно один объект attachments для КАЖДОГО attachmentId из входа. Не пропускай фото: если тип нельзя надёжно определить, поставь unknown; если изображение слишком размыто/тёмное для классификации — poor_quality со status poor_quality. ID — физический ID/паспорт или его экран в Tunduk; СТС — свидетельство о регистрации ТС или его экран в Tunduk; car — видимый автомобиль без документа. Сторону ID/СТС указывай только когда она видна, иначе unknown. Просмотри каждое ID и каждое СТС на всех фото и всегда ищи полное читаемое ФИО: fullName только с лицевой стороны ID/паспорта, ownerFullName только из подписанного поля собственника на СТС. Не переносить ФИО собственника в fullName, не угадывать и не сокращать имя. Не используй имя файла как источник данных и не добавляй текст вне JSON." },
+          { role: "system", content: "Ты — точный классификатор каждого приложенного изображения и OCR документов Кыргызстана. Верни строго JSON {\"fullName\":string|null,\"ownerFullName\":string|null,\"attachments\":[{\"attachmentId\":string,\"type\":\"id_front\"|\"id_back\"|\"vehicle_registration_front\"|\"vehicle_registration_back\"|\"car\"|\"unknown\"|\"poor_quality\",\"documentTypes\":[\"id_front\"|\"id_back\"|\"vehicle_registration_front\"|\"vehicle_registration_back\"],\"status\":\"received\"|\"poor_quality\"}]}. Верни ровно один объект attachments для КАЖДОГО attachmentId из входа. Не пропускай фото: если тип нельзя надёжно определить, поставь unknown; если изображение слишком размыто/тёмное для классификации — poor_quality со status poor_quality. type — основной, самый заметный тип файла. documentTypes — ВСЕ видимые стороны ID и СТС в этом изображении; их может быть несколько, например [\"id_back\",\"vehicle_registration_front\"]. ID — физический ID/паспорт или его экран в Tunduk; СТС — свидетельство о регистрации ТС или его экран в Tunduk; car — видимый автомобиль без документа. Сторону ID/СТС указывай только когда она видна, иначе unknown и пустой documentTypes. Просмотри каждое ID и каждое СТС на всех фото и всегда ищи полное читаемое ФИО: fullName только с лицевой стороны ID/паспорта, ownerFullName только из подписанного поля собственника на СТС. Не переносить ФИО собственника в fullName, не угадывать и не сокращать имя. Не используй имя файла как источник данных и не добавляй текст вне JSON." },
           {
             role: "user",
             content: [
@@ -559,6 +559,9 @@ export class AgentTurnService {
         ...(parsed.leadCardPatch.documents ?? {}),
         ...Object.fromEntries([
           ...Object.entries(extracted.documents).filter(([, present]) => present).map(([type]) => [type, "received"]),
+          ...extracted.attachments.flatMap((attachment) =>
+            attachment.documentTypes.map((type) => [type, attachment.status === "poor_quality" ? "poor_quality" : "received"])
+          ),
           ...focusedAttachments
             .filter((attachment) => isDocumentAttachmentType(attachment.type))
             .map((attachment) => [attachment.type, attachment.status === "poor_quality" ? "poor_quality" : "received"])
@@ -1049,8 +1052,8 @@ function explicitSingleMoneyRole(text: string | undefined): "requestedAmount" | 
   // the desired loan amount. Prefer the local predicate attached to the only
   // numeric mention over broad words elsewhere in the sentence.
   if (/(?:стоит|стоимость|цена|оцен[а-яё]*)[^.!?]{0,24}\d[\d\s.,]*(?:\s*(?:млн|миллион[а-яё]*|тыс[а-яё]*|тыщ|[кk]))?/iu.test(source)) return "vehicleValue";
-  if (/(?:нужн|надо|хочу|получить|требуется|потребуется|дайте|выдайте)[^.!?]{0,24}\d[\d\s.,]*(?:\s*(?:млн|миллион[а-яё]*|тыс[а-яё]*|тыщ|[кk]))?/iu.test(source)) return "requestedAmount";
-  const requested = /(?:нужн|надо|сумм(?:а)?\s+займ|займ|получить|хочу|хотел(?:ось)?|надобно|требуется|потреб(?:уется|овалось|ую)|дайте|выдайте|дадите)/iu.test(source);
+  if (/(?:нуж\p{L}*|надо|хочу|получить|требуется|потребуется|дайте|выдайте)[^.!?]{0,24}\d[\d\s.,]*(?:\s*(?:млн|миллион[а-яё]*|тыс[а-яё]*|тыщ|[кk]))?/iu.test(source)) return "requestedAmount";
+  const requested = /(?:нуж\p{L}*|надо|сумм(?:а)?\s+займ|займ|получить|хочу|хотел(?:ось)?|надобно|требуется|потреб(?:уется|овалось|ую)|дайте|выдайте|дадите)/iu.test(source);
   const vehicle = /(?:стоит|стоимость|цена|оцен|машина|авто|автомобил|рыночн)/iu.test(source);
   if (requested === vehicle) return undefined;
   return requested ? "requestedAmount" : "vehicleValue";
@@ -1225,7 +1228,13 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   // with rates or other programme terms. The combined limit-and-rate kind is
   // deliberately excluded: it explicitly asks for both.
   const limitOnlyQuestion = loanQuestionKind === "maximum_limit" && !hasSeveralClientQuestions(semanticText ?? "");
-  const mayNeedKnowledge = !limitOnlyQuestion && (
+  const explicitProgramSelection = (parsed.programStatement === true
+    && (parsed.leadCardPatch.requestedProgram === "without_storage" || parsed.leadCardPatch.requestedProgram === "parking"))
+    || hasExplicitProgramSelection(input);
+  const programSelectionOnly = explicitProgramSelection
+    && loanQuestionKind === "none"
+    && !asksProgrammeDetails(semanticText ?? "");
+  const mayNeedKnowledge = !limitOnlyQuestion && !programSelectionOnly && (
     modelKnowledgeRequest?.required === true
     || requiresKnowledgeAnswer(semanticInput, leadCardFacts, loanQuestionKind)
     || isVehicleRegistrationOwnershipQuestion(semanticText ?? "")
@@ -1474,7 +1483,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     ? appendRequiredWorkflowFollowUp(workflowStageClarification, workflowFollowUp)
     : repeatedStageReply ?? appendRequiredWorkflowFollowUp(
     appendContinuationAfterRegion10PolicyQuestion(
-      removeModelWorkflowQuestion(removeQuestionsForKnownLeadFacts(removeUnaskedProgramDetails(removeRepeatedProgramExplanation(enforceFirstContactGreeting(serverSafeAnswer, input), effectiveFacts, input), input), effectiveFacts, input.facts)),
+      removeModelWorkflowQuestion(removeQuestionsForKnownLeadFacts(removeUnaskedProgramDetails(removeRepeatedProgramExplanation(enforceFirstContactGreeting(serverSafeAnswer, input), effectiveFacts, input), input, programSelectionOnly), effectiveFacts, input.facts)),
       input,
       effectiveFacts
     ),
@@ -2591,7 +2600,7 @@ function nextLeadCardQuestionAfterResidence(facts: ApplicationFacts): string | u
   return undefined;
 }
 
-function enforceFirstContactGreeting(reply: string, input: Pick<AgentTurnInput, "messages" | "text" | "currentTurnMessages" | "hadPriorAssistantMessage">): string {
+export function enforceFirstContactGreeting(reply: string, input: Pick<AgentTurnInput, "messages" | "text" | "currentTurnMessages" | "hadPriorAssistantMessage">): string {
   const officialGreeting = "Здравствуйте! Меня зовут Айлин. Я менеджер по оформлению новых займов автоломбарда «Молодой». Информируем Вас, что мы не выдаем займ под залог автомобиля с регионом 10.";
   const hasPriorAssistantMessage = input.hadPriorAssistantMessage || input.messages.some((message) => message.author === "ai");
   // First contact is a compliance requirement, so do not rely on the model
@@ -3453,6 +3462,17 @@ function modelMoneyPatchForTurn(patch: Partial<ApplicationFacts>, input: Pick<Ag
   // limit, not proof of either the car's value or the amount the client wants
   // to request. Do not let an extraction model turn that question into facts.
   if (isMaximumLimitQuestion(loanQuestionKind)) return result;
+  const text = input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "";
+  const deterministicMoney = resolveMoneyFacts({ text, currentFacts: {} });
+  const onlyMention = deterministicMoney.mentions.length === 1 ? deterministicMoney.mentions[0] : undefined;
+  // A single amount with an explicit client-side role is already resolved by
+  // the dedicated money normalizer before this agent runs. The dialogue model
+  // must not reinterpret it from history and write a second role into the
+  // card. In particular, «требуется 1 миллион» is only a requested loan,
+  // never an implied price of the vehicle.
+  if (onlyMention?.roleCandidate === "requestedAmount" || onlyMention?.roleCandidate === "vehicleValue") {
+    return result;
+  }
   const foreignCurrencyMentioned = /(?:\busd\b|\$|dollars?|доллар|\beur(?:o)?s?\b|€|евро|\bkzt\b|₸|тенге|\brub\b|₽|руб)/iu.test(input.text ?? "");
   // For KGS-only turns the main agent is the fast-path money parser. It
   // understands conversational spellings and returns the normalized number;
@@ -3467,7 +3487,6 @@ function modelMoneyPatchForTurn(patch: Partial<ApplicationFacts>, input: Pick<Ag
     input.pricing?.withoutStorage.publicMax,
     input.pricing?.parking.publicMax
   ].filter((value): value is number => typeof value === "number"));
-  const text = input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "";
   const requestedAmountCorrection = isRequestedAmountCorrectionText(text);
   for (const key of ["vehicleValue", "requestedAmount"] as const) {
     // The model occasionally assigns the same corrected number to both
@@ -3521,9 +3540,20 @@ function programFromExplicitReply(text: string): "without_storage" | "parking" |
   return undefined;
 }
 
-function removeUnaskedProgramDetails(reply: string, input: Pick<AgentTurnInput, "text" | "currentTurnMessages">): string {
+function asksProgrammeDetails(text: string): boolean {
+  return /(?:ставк\p{L}*|процент\p{L}*|услови\p{L}*|тариф\p{L}*|скольк\p{L}*\s+(?:стоит|платить)|как\s+(?:работает|устроен\p{L}*))(?:[^?!]{0,100}(?:стоянк|парковк|программ|изъяти))?|(?:стоянк|парковк|программ|изъяти)[^?!]{0,100}(?:ставк\p{L}*|процент\p{L}*|услови\p{L}*|тариф\p{L}*|скольк\p{L}*\s+(?:стоит|платить)|как\s+(?:работает|устроен\p{L}*))/iu.test(text);
+}
+
+function removeUnaskedProgramDetails(reply: string, input: Pick<AgentTurnInput, "text" | "currentTurnMessages">, programSelectionOnly = false): string {
   const text = input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "";
-  if (/(?:процент|ставк|без\s+изъяти|со\s+стоянк|парковк)/iu.test(text)) return reply;
+  if (asksProgrammeDetails(text)) return reply;
+  if (programSelectionOnly) {
+    return reply
+      .split(/(?<=[.!?])\s+/u)
+      .filter((sentence) => !/(?:по\s+программе\s+(?:со\s+стоянкой|без\s+изъятия)|автомобил\p{L}*\s+(?:размещ|оста[её]тся)|охраняем\p{L}*\s+(?:стоянк|парковк)|ставк\p{L}*|парковк\p{L}*\s+\d|дополнительно\s+оплач)/iu.test(sentence))
+      .join(" ")
+      .trim();
+  }
   return reply
     .split(/\n\s*\n/gu)
     .filter((paragraph) => !/(?:ставк|процент).{0,240}(?:программ|стоянк|изъят)|(?:программ|стоянк|изъят).{0,240}(?:ставк|процент)/iu.test(paragraph))
@@ -3598,12 +3628,13 @@ function parseAgentJson(value: string | undefined): Record<string, unknown> {
 
 type RecognizedAttachmentType = "id_front" | "id_back" | "vehicle_registration_front" | "vehicle_registration_back" | "car" | "unknown" | "poor_quality";
 type RecognizedAttachmentStatus = "received" | "poor_quality" | "blocked";
+type DocumentAttachmentType = "id_front" | "id_back" | "vehicle_registration_front" | "vehicle_registration_back";
 
 function parseDocumentIdentityExtraction(value: string | undefined): {
   fullName?: string;
   ownerFullName?: string;
   documents: Partial<Record<"id_front" | "id_back" | "vehicle_registration_front" | "vehicle_registration_back", boolean>>;
-  attachments: Array<{ attachmentId: string; type: RecognizedAttachmentType; status: RecognizedAttachmentStatus }>;
+  attachments: Array<{ attachmentId: string; type: RecognizedAttachmentType; status: RecognizedAttachmentStatus; documentTypes: DocumentAttachmentType[] }>;
   hasAttachmentClassification: boolean;
 } {
   const payload = parseAgentJson(value);
@@ -3622,6 +3653,7 @@ function parseDocumentIdentityExtraction(value: string | undefined): {
   const rawAttachments = payload.attachments;
   const attachmentTypes = new Set<RecognizedAttachmentType>(["id_front", "id_back", "vehicle_registration_front", "vehicle_registration_back", "car", "unknown", "poor_quality"]);
   const attachmentStatuses = new Set<RecognizedAttachmentStatus>(["received", "poor_quality", "blocked"]);
+  const documentAttachmentTypes = new Set<DocumentAttachmentType>(["id_front", "id_back", "vehicle_registration_front", "vehicle_registration_back"]);
   const attachments = Array.isArray(rawAttachments)
     ? rawAttachments.flatMap((candidate) => {
       if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return [];
@@ -3630,12 +3662,18 @@ function parseDocumentIdentityExtraction(value: string | undefined): {
       const type = typeof row.type === "string" ? row.type : "";
       const suppliedStatus = typeof row.status === "string" ? row.status : undefined;
       if (!attachmentId || !attachmentTypes.has(type as RecognizedAttachmentType)) return [];
+      const documentTypes = Array.isArray(row.documentTypes)
+        ? [...new Set(row.documentTypes.filter((item): item is DocumentAttachmentType => typeof item === "string" && documentAttachmentTypes.has(item as DocumentAttachmentType)))]
+        : [];
+      if (isDocumentAttachmentType(type as RecognizedAttachmentType) && !documentTypes.includes(type as DocumentAttachmentType)) {
+        documentTypes.push(type as DocumentAttachmentType);
+      }
       const status = type === "poor_quality"
         ? "poor_quality"
         : attachmentStatuses.has(suppliedStatus as RecognizedAttachmentStatus)
           ? suppliedStatus as RecognizedAttachmentStatus
           : "received";
-      return [{ attachmentId, type: type as RecognizedAttachmentType, status }];
+      return [{ attachmentId, type: type as RecognizedAttachmentType, status, documentTypes }];
     })
     : [];
   return {
@@ -3665,7 +3703,12 @@ function mergeFocusedAttachmentClassification(
   }
   return [
     ...existing.filter((attachment) => !imageIds.has(attachment.attachmentId)),
-    ...images.map((attachment) => byId.get(attachment.id) ?? { attachmentId: attachment.id, type: "unknown" as const, status: "received" as const })
+    ...images.map((attachment) => {
+      const recognized = byId.get(attachment.id);
+      return recognized
+        ? { attachmentId: recognized.attachmentId, type: recognized.type, status: recognized.status }
+        : { attachmentId: attachment.id, type: "unknown" as const, status: "received" as const };
+    })
   ];
 }
 

@@ -1,7 +1,7 @@
 import { Injectable } from "@nestjs/common";
 import type { ApplicationFacts } from "@ailyn/business-rules";
 import type { NormalizedMoneyValue } from "../ai/ai-provider.interface.js";
-import { AgentTurnService, hasSeveralClientQuestions, isClearMoneyConfirmationRejection, nextRequiredStageQuestion, suppressInactiveGuarantorPrompts, type PendingMoneyClarificationDecision } from "./agent-turn.service.js";
+import { AgentTurnService, enforceFirstContactGreeting, hasSeveralClientQuestions, isClearMoneyConfirmationRejection, nextRequiredStageQuestion, suppressInactiveGuarantorPrompts, type PendingMoneyClarificationDecision } from "./agent-turn.service.js";
 import { attachmentFactsForCurrentStage, deriveStageCompletion, effectiveFactsForTurn, isCarPhotoStagePrompt, selectedProgramLimit } from "./agent-turn-reconciliation.js";
 import type { InboundMessage } from "../channels/channel.interface.js";
 import { SettingsService } from "../settings/settings.service.js";
@@ -202,8 +202,13 @@ export class DialogueOrchestratorService {
     if (turn.result) {
       const turnResult = turn.result;
       const { knowledgeRequest: _knowledgeRequest, ...leadCardPatch } = turnResult.leadCardPatch;
+      // The dialogue model receives a full lead-card view and can echo or
+      // hallucinate a second money role. A single client amount that has an
+      // explicit role in this turn is an immutable boundary: it cannot create
+      // the other monetary fact at persistence time.
+      const guardedLeadCardPatch = discardConflictingSingleMoneyRole(leadCardPatch, text);
       const modelPatch: Partial<ApplicationFacts> = {
-        ...leadCardPatch,
+        ...guardedLeadCardPatch,
         ...(turnResult.language === "unknown" ? {} : { language: turnResult.language })
       };
       const lastAssistantReply = [...modelMessages].reverse().find((message) => message.author === "ai")?.body ?? "";
@@ -259,10 +264,19 @@ export class DialogueOrchestratorService {
     // The output model and server follow-up can independently include the
     // same instruction. Deduplicate at the final delivery boundary so the
     // persisted and returned message are identical.
-    const reply = ensureNonEmptyClientReply(
+    const plannedReply = ensureNonEmptyClientReply(
       removeEarlierDuplicateSentences(renderClientReply ? turn.reply : composeReply(turn.reply, currency.clientText)),
       application.facts
     );
+    // Knowledge lookup replaces the main-turn response with its own approved
+    // answer. Re-apply the compliance greeting at the final delivery boundary
+    // so the first visible reply always has it, including FAQ/KB paths.
+    const reply = enforceFirstContactGreeting(plannedReply, {
+      messages: conversation.messages,
+      text,
+      currentTurnMessages,
+      hadPriorAssistantMessage: conversation.messages.some((message) => message.author === "ai")
+    });
     // The batcher may process several already-received client messages in
     // sequence. Facts and client messages must commit after every one, but
     // only the final combined reply may appear in the visible history.
@@ -298,7 +312,12 @@ export class DialogueOrchestratorService {
 
   /** Publishes the one visible reply after a sequentially processed batch. */
   async publishDeferredBatchReply(result: DialogueResult, reply: string, sourceMessageId: string): Promise<DialogueResult> {
-    const visibleReply = ensureNonEmptyClientReply(removeEarlierDuplicateSentences(reply), result.application.facts);
+    const plannedReply = ensureNonEmptyClientReply(removeEarlierDuplicateSentences(reply), result.application.facts);
+    const visibleReply = enforceFirstContactGreeting(plannedReply, {
+      messages: result.conversation.messages,
+      text: "",
+      hadPriorAssistantMessage: result.conversation.messages.some((message) => message.author === "ai")
+    });
     await this.store.addMessage(result.conversation, {
       author: "ai", body: visibleReply, attachmentIds: [], attachments: [],
       metadata: {
@@ -451,6 +470,19 @@ function supplementNormalizedMoney(values: NormalizedMoneyValue[], text: string,
   return mayReplaceVehicleValue
     ? result
     : result.filter((value) => value.field !== "vehicleValue");
+}
+
+/** Final persistence boundary for the main dialogue model's lead-card patch.
+ * The dedicated normalizer resolves current-turn money first; this guard
+ * prevents a model echo from turning one explicit amount into two facts. */
+function discardConflictingSingleMoneyRole(patch: Partial<ApplicationFacts>, text: string): Partial<ApplicationFacts> {
+  const mentions = detectMoneyMentions(text);
+  const role = mentions.length === 1 ? mentions[0]?.roleCandidate : undefined;
+  if (role !== "requestedAmount" && role !== "vehicleValue") return patch;
+  const conflictingKeys = role === "requestedAmount"
+    ? new Set(["vehicleValue", "vehicleValueSourceCurrency"])
+    : new Set(["requestedAmount", "requestedAmountSourceCurrency"]);
+  return Object.fromEntries(Object.entries(patch).filter(([key]) => !conflictingKeys.has(key))) as Partial<ApplicationFacts>;
 }
 
 /** A narrow role guard for a correction of the amount requested by client. */
