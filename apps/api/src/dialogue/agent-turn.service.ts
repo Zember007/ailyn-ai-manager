@@ -9,7 +9,7 @@ import { RouterAiClient } from "../ai/router-ai/router-ai.client.js";
 import type { InboundAttachment } from "../channels/channel.interface.js";
 import { BackendLogsService } from "../logs/backend-logs.service.js";
 import { attachmentFactsForCurrentStage, deriveStageCompletion, effectiveFactsForTurn, isCarPhotoStagePrompt } from "./agent-turn-reconciliation.js";
-import { prioritizedKnowledgeForQuestion, selectRelevantDocumentation } from "./documentation-retrieval.js";
+import { isMaximumLoanKnowledgeQuestion, prioritizedKnowledgeForQuestion, selectRelevantDocumentation } from "./documentation-retrieval.js";
 import { agentTurnResultSchema, dialogueSummarySchema, knowledgeAnswerSchema, type AgentTurnResult } from "./agent-turn.contracts.js";
 import { moneyNormalizationSchema } from "./pipeline.contracts.js";
 import { calculateLoanPricing, type LoanPricing, type LoanPricingSettings } from "./loan-pricing.js";
@@ -23,7 +23,6 @@ const MAX_LOG_VALUE_LENGTH = 4000;
 const DEFAULT_OFFICE_ADDRESS = "Б. Молодой Гвардии, 22, Бишкек";
 const DEFAULT_TWO_GIS_URL = "https://go.2gis.com/Y34m4";
 const DEFAULT_GOOGLE_MAPS_URL = "https://maps.app.goo.gl/9xiWLVvdyRgn3Sx4A";
-const MAXIMUM_PROGRAMME_SELECTION_ACTION = "select_program_for_maximum";
 export const OLDER_VEHICLE_PROGRAM_NOTICE = "По общему правилу мы принимаем в залог автомобили старше 15 лет только на стоянку, но если вы планируете получить займ без изъятия, то мы готовы рассмотреть вашу заявку индивидуально.";
 // The complete lead card keeps durable facts, while a compact recent tail is
 // enough to resolve conversational references. Keeping this bounded is one of
@@ -59,8 +58,6 @@ type AgentTurnInput = {
   inactiveGuarantorClarification?: boolean;
   /** Preserves first-contact semantics after obsolete workflow text is suppressed from history. */
   hadPriorAssistantMessage?: boolean;
-  /** Server-owned action retained outside durable lead-card facts. */
-  pendingAction?: typeof MAXIMUM_PROGRAMME_SELECTION_ACTION;
   conversationId?: string;
   signal?: AbortSignal;
 };
@@ -202,6 +199,8 @@ export class AgentTurnService {
     const officeLocationResponse = isOfficeLocationQuestion(input.text)
       ? officeLocationReply(input.settings)
       : undefined;
+    const maximumLoanQuestion = isMaximumLoanKnowledgeQuestion(input.text ?? "");
+    const maximumLoanAnswer = maximumLoanKnowledgeAnswer(input.facts, input.settings);
     const context = {
       currentMessage: input.text ?? "",
       currentTurnMessages: input.currentTurnMessages ?? (input.text === undefined ? [] : [{ index: 1, text: input.text }]),
@@ -212,6 +211,9 @@ export class AgentTurnService {
       // Server-owned settings, not model knowledge, are authoritative for
       // office location and map links.
       officeLocationResponse,
+      // The FAQ owns the wording and routing. These values are rendered by
+      // the server only: a model must never invent or retain a stale maximum.
+      maximumLoanAnswer: maximumLoanQuestion ? maximumLoanAnswer : undefined,
       // Keep the model focused on the approved answer most relevant to this
       // message. The packet always starts with FAQ, then section 3.18 rules,
       // instead of making it search a large, competing corpus by itself.
@@ -244,7 +246,9 @@ export class AgentTurnService {
       // The office location is server-owned configuration, including live map
       // links, and therefore remains verbatim. Every knowledge-base response
       // comes from the dedicated model and is adapted to the current message.
-      const reply = removeInternalPricingInstruction(officeLocationResponse ?? ensureGeneralRateCoverage(parsed.data.reply, input.text));
+      const reply = maximumLoanQuestion
+        ? maximumLoanKnowledgeReply(input.text, maximumLoanAnswer)
+        : removeInternalPricingInstruction(officeLocationResponse ?? ensureGeneralRateCoverage(parsed.data.reply, input.text));
       await this.logs?.log("dialogue.knowledge-model", "Knowledge model response received", {
         conversationId: input.conversationId,
         metadata: { model: response.model ?? model, answerFound }
@@ -1164,7 +1168,6 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     knowledgeRequest: modelKnowledgeRequest,
     // This is server-owned state. A maximum question only becomes an amount
     // preference when it answers the canonical amount-stage question.
-    requestedMaximumAmount: _modelRequestedMaximumAmount,
     ...leadCardFacts
   } = parsed.leadCardPatch;
   // `clientQuestion` is an optional extraction from a secondary branch
@@ -1176,7 +1179,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   // The model is the primary semantic classifier for money questions. Text
   // patterns below are deliberately only an outage/legacy fallback.
   const loanQuestionKind = resolveLoanQuestionKind(parsed.loanQuestionKind, semanticText);
-  const maximumAmountStageResponse = isMaximumAmountStageResponse(input, loanQuestionKind);
+  const maximumLoanQuestion = isMaximumLoanKnowledgeQuestion(semanticText ?? "");
   const semanticInput = clientQuestion
     ? { ...input, text: clientQuestion, currentTurnMessages: [{ index: 1, text: clientQuestion }] }
     : input;
@@ -1223,19 +1226,16 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   // The main model semantically detects natural-language questions which do
   // not have a question mark (for example «А кофе есть»). Pattern matching
   // remains only the fallback inside requiresKnowledgeAnswer.
-  // A money-limit question is answered exclusively by the server pricing
-  // calculation. A model-supplied KB request must never replace that answer
-  // with rates or other programme terms. The combined limit-and-rate kind is
-  // deliberately excluded: it explicitly asks for both.
-  const limitOnlyQuestion = loanQuestionKind === "maximum_limit" && !hasSeveralClientQuestions(semanticText ?? "");
   const explicitProgramSelection = (parsed.programStatement === true
     && (parsed.leadCardPatch.requestedProgram === "without_storage" || parsed.leadCardPatch.requestedProgram === "parking"))
     || hasExplicitProgramSelection(input);
   const programSelectionOnly = explicitProgramSelection
+    && !maximumLoanQuestion
     && loanQuestionKind === "none"
     && !asksProgrammeDetails(semanticText ?? "");
-  const mayNeedKnowledge = !limitOnlyQuestion && !programSelectionOnly && (
+  const mayNeedKnowledge = !programSelectionOnly && (
     modelKnowledgeRequest?.required === true
+    || maximumLoanQuestion
     || requiresKnowledgeAnswer(semanticInput, leadCardFacts, loanQuestionKind)
     || isVehicleRegistrationOwnershipQuestion(semanticText ?? "")
   );
@@ -1245,7 +1245,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   // answer such as «нету» cannot be upgraded into a question by any model
   // field or by a generic fallback.
   const bareNonQuestion = !/[?？]/u.test(semanticText ?? "") && wordCount(semanticText ?? "") < 2;
-  const knowledgeRequest = limitOnlyQuestion || bareNonQuestion || stageResponse || !mayNeedKnowledge
+  const knowledgeRequest = bareNonQuestion || (!maximumLoanQuestion && stageResponse) || !mayNeedKnowledge
     ? undefined
     : modelKnowledgeRequest ?? (ownershipRegistrationQuestion || independentOfficeQuestion || isExplicitQuestionText(semanticText ?? "")
       ? { required: true as const, reason: "missing_approved_answer" as const }
@@ -1263,8 +1263,6 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     ...residencePatchFromExplicitClientText(input, leadCardFacts, input.facts, parsed.residenceStatement === true),
     ...requestedAmountResetPatch(input),
     ...repeatedRequestedAmountPatch(input, input.facts),
-    ...maximumAmountStagePreferencePatch(maximumAmountStageResponse),
-    ...maximumLoanAmountPatch(input, input.facts, maximumAmountStageResponse),
     ...guarantorPatchFromClearReply(input, input.facts, leadCardFacts),
     ...limitChoiceFacts,
     ...familyPatchFromClearReply(input, input.facts, leadCardFacts),
@@ -1278,9 +1276,6 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     ...(isClearDocumentsRefusal(input) ? { declinedDocuments: true } : {}),
     ...(isClearCarPhotoRefusal(input) ? { declinedCarPhoto: true } : {})
   };
-  if (!maximumAmountStageResponse && input.facts.requestedMaximumAmount === true && rawModelPatch.requestedAmount !== undefined) {
-    rawModelPatch.requestedMaximumAmount = false;
-  }
   const minimumLoan = input.pricing?.minimumLoan ?? 50_000;
   const currentRequestedAmount = typeof rawModelPatch.requestedAmount === "number"
     ? rawModelPatch.requestedAmount
@@ -1338,15 +1333,8 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   // Entering the other-region/no-storage branch starts a fresh guarantor
   // decision; a stale answer from an earlier branch must not skip it.
   const guarantorEligibilityReset = guarantorResetForEligibilityChange(input.facts, preliminaryFacts);
-  // A maximum question is informational until the client explicitly chooses
-  // one programme. Only then may the server turn that programme's public max
-  // into the requested application amount.
-  const maximumProgrammeFacts = {
-    ...maximumLoanProgrammeSelectionPatch(input, preliminaryFacts, input.settings),
-    ...requestedMaximumAmountPatch(preliminaryFacts, input.settings)
-  };
-  const candidatePatch = { ...candidateModelPatch, ...guarantorReset, ...guarantorEligibilityReset, ...maximumProgrammeFacts };
-  const candidateFacts = Object.keys(maximumProgrammeFacts).length > 0 || Object.keys(guarantorEligibilityReset).length > 0
+  const candidatePatch = { ...candidateModelPatch, ...guarantorReset, ...guarantorEligibilityReset };
+  const candidateFacts = Object.keys(guarantorEligibilityReset).length > 0
     ? effectiveFactsForTurn({ previous: factsWithoutBelowMinimumAmount, modelPatch: candidatePatch, explicitFacts: {}, currencyFacts: {}, attachmentFacts })
     : preliminaryFacts;
   // A model may understand a time expression perfectly, but it may not create
@@ -1369,7 +1357,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   // OTHER_KG, not that the application cannot be made.
   const resolvingResidenceClarification = isResidenceClarificationQuestion(lastAssistantReply)
     && hasUnresolvedResidence(input.facts);
-  const mandatoryKnowledgeAnswer = isMaximumLimitQuestion(loanQuestionKind) || isLoanRateQuestion(loanQuestionKind) || resolvingResidenceClarification
+  const mandatoryKnowledgeAnswer = maximumLoanQuestion || isLoanRateQuestion(loanQuestionKind) || resolvingResidenceClarification
     ? undefined
     : selectRelevantDocumentation({
       facts: input.facts,
@@ -1394,8 +1382,6 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   // residence correction (for example Cholpon-Ata -> Tokmok) would still use
   // the old region's limits in this same reply.
   const pricing = pricingForEffectiveFacts(input, effectiveFacts);
-  const maximumLoanInputReply = maximumLoanInputExplanation(loanQuestionKind, effectiveFacts);
-  const maximumLoanReply = maximumLoanRangeReply(loanQuestionKind, pricing, effectiveFacts);
   const requestedAmountLimit = requestedAmountLimitReply(pricing, effectiveFacts);
   const selectedLimitNotice = selectedProgramLimitNotice(input.facts, effectiveFacts, pricing);
   const residenceLimitNotice = residenceLimitNoticeForTurn(input.facts, effectiveFacts, pricing);
@@ -1416,7 +1402,6 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   const visitNonWorkingDay = visitNonWorkingDayReply(input, effectiveFacts);
   const attachmentAcceptanceNotice = input.attachments.length > 0 ? "Фотографии получены." : undefined;
   const acceptedLimitNotice = acceptedLimitChoiceNotice(input.facts, effectiveFacts);
-  const maximumChoiceNotice = maximumLoanChoiceNotice(input, input.facts, effectiveFacts);
   const olderVehicleNotice = olderVehicleProgramNotice(input, effectiveFacts);
   const region10Answer = isRegion10PolicyQuestion(input) ? "Автомобили с регионом 10 у нас не принимаются в залог по правилам компании." : undefined;
   // The model interprets the client, but it never owns the application
@@ -1433,16 +1418,12 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
       : undefined;
   const moneyRoleReply = moneyRoleClarificationReply(internalReply, input);
   const repeatedStageReply = repeatedResidenceStageExplanation(input, effectiveFacts, stageCompletion);
-  const maximumProgrammeSelectionPending = isMaximumProgrammeSelectionPending(input, maximumAmountStageResponse, effectiveFacts);
-  const waitingForMaximumProgrammeSelection = input.pendingAction === MAXIMUM_PROGRAMME_SELECTION_ACTION
-    && hasMaximumLoanCalculationInputs(effectiveFacts)
-    && !effectiveFacts.requestedProgram;
   const accidentNotDrivableNotice = !input.facts.accidentNotDrivable && effectiveFacts.accidentNotDrivable
     ? "Автомобиль после серьёзного ДТП и не на ходу не принимается как подходящий залог."
     : undefined;
   const workflowFollowUp = accidentNotDrivableNotice || repeatedStageReply || rejectedMoneyClarification || belowMinimumReply || visitProgress || visitTimeClarification || visitNonWorkingDay || hasPendingMoneyCurrencyClarification(internalReply)
     ? undefined
-    : serverWorkflowFollowUp(semanticText, loanQuestionKind, effectiveFacts, stageCompletion, requestedAmountLimit, workflowSelectedLimitNotice, maximumProgrammeSelectionPending, maximumAmountStageResponse);
+    : serverWorkflowFollowUp(loanQuestionKind, effectiveFacts, stageCompletion, requestedAmountLimit, workflowSelectedLimitNotice);
   const completionNotice = stageCompletion.visit && effectiveFacts.clientClosed
     ? "Спасибо за обращение. Ожидайте звонка менеджера, он подтвердит время визита."
     : undefined;
@@ -1450,7 +1431,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   // visit branch. The calculation itself is server-owned; after answering,
   // the normal workflow appender returns to the outstanding action.
   const optionalStageDeclineNotice = optionalStageDeclineNoticeForTurn(input.facts, effectiveFacts);
-  const directAnswer = workflowStageClarification ?? accidentNotDrivableNotice ?? repeatedStageReply ?? completionNotice ?? attachmentAcceptanceNotice ?? optionalStageDeclineNotice ?? visitNonWorkingDay ?? visitNotice ?? visitProgress ?? visitTimeClarification ?? residenceLimitNotice ?? programmeChangeGuarantorNotice ?? maximumChoiceNotice ?? acceptedLimitNotice ?? (region10Answer ? [region10Answer, olderVehicleNotice].filter(Boolean).join("\n\n") : undefined) ?? olderVehicleNotice ?? maximumLoanInputReply ?? maximumLoanReply ?? spouseVisitAnswer(input) ?? familyNotice ?? unknownVehicleValueNotice ?? waitingForVehicleValueNotice;
+  const directAnswer = workflowStageClarification ?? accidentNotDrivableNotice ?? repeatedStageReply ?? completionNotice ?? attachmentAcceptanceNotice ?? optionalStageDeclineNotice ?? visitNonWorkingDay ?? visitNotice ?? visitProgress ?? visitTimeClarification ?? residenceLimitNotice ?? programmeChangeGuarantorNotice ?? acceptedLimitNotice ?? (region10Answer ? [region10Answer, olderVehicleNotice].filter(Boolean).join("\n\n") : undefined) ?? olderVehicleNotice ?? spouseVisitAnswer(input) ?? familyNotice ?? unknownVehicleValueNotice ?? waitingForVehicleValueNotice;
   // A direct approved FAQ outranks all free-form model prose. This prevents
   // plausible but unsupported claims such as a parking location or credit
   // eligibility from reaching the client. The final output renderer receives
@@ -1465,8 +1446,8 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
       ? "При Вашей прописке в Бишкеке или Чуйской области поручитель не требуется."
       : undefined;
   const answerBeforeWorkflow = isLoanRateQuestion(loanQuestionKind)
-    ? (maximumLoanInputReply ?? maximumLoanReply ?? "")
-    : waitingForMaximumProgrammeSelection ? "" : workflowStageClarification ?? workflowClarificationAnswer ?? mandatoryKnowledgeAnswer ?? directAnswer ?? removeIncorrectResidenceClarificationProse(
+    ? ""
+    : workflowStageClarification ?? workflowClarificationAnswer ?? mandatoryKnowledgeAnswer ?? directAnswer ?? removeIncorrectResidenceClarificationProse(
     removeForbiddenMetaPhrases(dropUnsupportedFallbackForNonQuestion(replaceUnsupportedFallbackWithApprovedAnswer(guardedModelReply, mandatoryKnowledgeAnswer, input), semanticText)),
     input,
     effectiveFacts
@@ -1501,8 +1482,6 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
       ? { stage: "EXISTING_CONTRACT_REDIRECT", status: "redirect_existing_contract", nextAction: "redirect_existing_contract" }
       : accidentNotDrivableNotice
       ? { stage: "REFUSED", status: "refuse", nextAction: "none" }
-      : maximumProgrammeSelectionPending
-      ? { ...parsed.dialogueState, nextAction: MAXIMUM_PROGRAMME_SELECTION_ACTION }
       : region10PolicyQuestion && !input.facts.vehicleRegistrationRegion && parsed.dialogueState.stage === "REFUSED"
       ? { stage: "COLLECTING_VEHICLE", status: "need_more_data", nextAction: "continue_application" }
       : parsed.dialogueState,
@@ -1872,15 +1851,6 @@ function acceptedLimitChoiceNotice(previous: ApplicationFacts, current: Applicat
   return `Продолжим по программе ${program} на сумму ${formatSomMoney(current.requestedAmount)} сом.`;
 }
 
-function maximumLoanChoiceNotice(input: Pick<AgentTurnInput, "text" | "currentTurnMessages" | "pendingAction">, previous: ApplicationFacts, current: ApplicationFacts): string | undefined {
-  if (previous.requestedAmount === current.requestedAmount || current.requestedAmount === undefined || !current.requestedProgram) return undefined;
-  const text = input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text;
-  const program = current.requestedProgram === "parking" ? "со стоянкой" : "без изъятия";
-  if (input.pendingAction === MAXIMUM_PROGRAMME_SELECTION_ACTION || current.requestedMaximumAmount === true || requestsMaximumLoanAmount(text)) return `По программе ${program} доступно до ${formatSomMoney(current.requestedAmount)} сом.`;
-  if (requestsMinimumLoanAmount(text)) return `Минимальная сумма займа — ${formatSomMoney(current.requestedAmount)} сом.`;
-  return undefined;
-}
-
 function removeUnaskedLimitProse(reply: string, _input: Pick<AgentTurnInput, "text" | "currentTurnMessages">): string {
   return reply
     .replace(/\s*По\s+авто[^.!?]*сумм[^.!?]*максимальн[^.!?]*[.!?]/iu, "")
@@ -2109,18 +2079,13 @@ function resolveLoanQuestionKind(modelKind: LoanQuestionKind, text: string | und
   const normalized = text?.toLocaleLowerCase("ru-RU") ?? "";
   const asksRate = /(?:ставк\p{L}*|процент\p{L}*|сколько\s*%)/iu.test(normalized);
   const asksLimit = /(?:дадите|(?:скольк|сколк)\p{L}*[^?!]{0,40}(?:денег|деньг|баб|лав[еэ]|сом|дад\p{L}*|получ\p{L}*)|(?:лимит|максимум|макс|потолок)\p{L}*|(?:денег|деньг|баб|лав[еэ])[^?!]{0,40}(?:(?:скольк|сколк)\p{L}*|дад\p{L}*|может\p{L}*\s+дат\p{L}*|можно|получ\p{L}*)|от\s+(?:скольк|сколк)\p{L}*|до\s+(?:скольк|сколк)\p{L}*(?:\s+дад\p{L}*)?)/iu.test(normalized);
-  if (asksLimit && asksRate) return "maximum_limit_and_rate";
-  if (asksLimit) return "maximum_limit";
+  if (asksLimit) return asksRate ? "loan_rate" : "none";
   if (asksRate) return "loan_rate";
   // A rate answer is unsafe unless the client explicitly asked about a
   // percentage in this turn. Never let stale dialogue context or a model
   // hallucination turn a generic money question into a rate explanation.
   if (!asksRate && (modelKind === "loan_rate" || modelKind === "maximum_limit_and_rate")) return "none";
-  return modelKind;
-}
-
-function isMaximumLimitQuestion(kind: LoanQuestionKind): boolean {
-  return kind === "maximum_limit" || kind === "maximum_preference" || kind === "maximum_limit_and_rate";
+  return "none";
 }
 
 function isLoanRateQuestion(kind: LoanQuestionKind): boolean {
@@ -2152,34 +2117,32 @@ function removeInternalPricingInstruction(reply: string): string {
     .trim();
 }
 
-/** A concise answer to the amount question, not a general limit question. */
-function requestsMaximumLoanAmount(text: string | undefined): boolean {
-  return /^(?:максимальн\p{L}*|по\s+максимум(?:у)?|максимум)[.!\s]*$/iu.test(text?.trim() ?? "");
-}
-
-function requestsMinimumLoanAmount(text: string | undefined): boolean {
-  return /^(?:минимальн\p{L}*|по\s+минимум(?:у)?|минимум)[.!\s]*$/iu.test(text?.trim() ?? "");
-}
-
-function maximumLoanInputExplanation(kind: LoanQuestionKind, facts: ApplicationFacts): string | undefined {
-  if (!isMaximumLimitQuestion(kind)) return undefined;
-  if (hasMaximumLoanCalculationInputs(facts)) return undefined;
-  const missing = [
-    facts.vehicleValue === undefined ? "ориентировочная стоимость автомобиля" : undefined,
-    !facts.residenceRegion || !facts.residenceCategory ? "Ваша прописка" : undefined
-  ].filter((value): value is string => Boolean(value));
-  return `Предварительный диапазон займа — от 50 000 сом до максимальной суммы, которую рассчитаю по стоимости автомобиля и Вашей прописке. Чтобы назвать точный верхний предел, нужны: ${missing.join(", ")}.`;
-}
-
-function maximumLoanRangeReply(kind: LoanQuestionKind, pricing: LoanPricing | undefined, facts: ApplicationFacts): string | undefined {
-  if (!isMaximumLimitQuestion(kind) || !hasMaximumLoanCalculationInputs(facts)) return undefined;
-  const withoutStorage = pricing?.withoutStorage;
-  const parking = pricing?.parking;
-  if (!withoutStorage?.available || typeof withoutStorage.publicMax !== "number" || !parking?.available || typeof parking.publicMax !== "number") return undefined;
+/** Replaces the two placeholders in the approved maximum-loan FAQ. */
+function maximumLoanKnowledgeAnswer(facts: ApplicationFacts, settings: object): string {
+  if (!hasMaximumLoanCalculationInputs(facts)) {
+    const missing = [
+      facts.vehicleValue === undefined ? "ориентировочная стоимость автомобиля" : undefined,
+      !facts.residenceRegion || !facts.residenceCategory ? "Ваша прописка" : undefined
+    ].filter((value): value is string => Boolean(value));
+    return `Максимальную сумму смогу рассчитать после того, как узнаю: ${missing.join(" и ")}.`;
+  }
+  const pricing = calculateLoanPricing(facts, settings as LoanPricingSettings);
+  const withoutStorage = pricing.withoutStorage;
+  const parking = pricing.parking;
+  if (!withoutStorage.available || typeof withoutStorage.publicMax !== "number" || !parking.available || typeof parking.publicMax !== "number") {
+    return "Максимальную сумму смогу рассчитать после уточнения стоимости автомобиля и прописки.";
+  }
   return [
     `Без изъятия: от 50 000 сом до ${formatSomMoney(withoutStorage.publicMax)} сом`,
     `Со стоянкой: от 50 000 сом до ${formatSomMoney(parking.publicMax)} сом`
   ].join("\n");
+}
+
+/** Rate wording stays in the approved knowledge path; maximum values are server substitutions. */
+function maximumLoanKnowledgeReply(text: string | undefined, maximumAnswer: string): string {
+  const asksRate = /(?:процент|ставк|сколько\s*%)/iu.test(text ?? "");
+  const rateAnswer = asksRate ? ensureGeneralRateCoverage("", text) : "";
+  return [rateAnswer, maximumAnswer].filter(Boolean).join("\n\n");
 }
 
 /** Limits need only the car's value and resolved registration, not its model, year, requested amount, or programme. */
@@ -2191,17 +2154,6 @@ function hasMaximumLoanCalculationInputs(facts: ApplicationFacts): boolean {
   );
 }
 
-/** A maximum quote is an informational calculation, so request only its two inputs. */
-function nextMaximumLoanCalculationQuestion(facts: ApplicationFacts): string | undefined {
-  if (facts.vehicleValue === undefined) return "Какая ориентировочная стоимость автомобиля?";
-  if (!facts.residenceRegion || !facts.residenceCategory) {
-    return hasUnresolvedResidence(facts)
-      ? "Подскажите, пожалуйста, это в Чуйской области?"
-      : "Подскажите, пожалуйста, Вашу прописку — Бишкек, Чуйская область или другой регион Кыргызстана.";
-  }
-  return undefined;
-}
-
 /** A request to replace the amount without naming a replacement must reopen
  * the amount branch. Keeping the previous amount would leave stageCompletion
  * true and could incorrectly continue at documents or visit. */
@@ -2209,7 +2161,7 @@ function requestedAmountResetPatch(input: Pick<AgentTurnInput, "text" | "current
   const text = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "").trim();
   if (/\d/u.test(text)) return {};
   return /(?:друг(?:ая|ую|ой)|ин(?:ая|ую|ой)|нов(?:ая|ую|ой)|изменить|поменять)[^.!?]{0,30}сумм\p{L}*(?:\s+займ\p{L}*)?|сумм\p{L}*[^.!?]{0,30}(?:друг(?:ая|ую|ой)|ин(?:ая|ую|ой)|нов(?:ая|ую|ой)|изменить|поменять)/iu.test(text)
-    ? { requestedAmount: undefined, requestedProgram: undefined, requestedMaximumAmount: false }
+    ? { requestedAmount: undefined, requestedProgram: undefined }
     : {};
 }
 
@@ -2237,66 +2189,6 @@ function isAlreadyProvidedReply(input: Pick<AgentTurnInput, "text" | "currentTur
   const text = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "").trim();
   return /^(?:(?:я|вы)\s+)?(?:уже|же)\s*(?:говорил(?:а)?|сказал(?:а)?|писал(?:а)?|написал(?:а)?|указывал(?:а)?|сообщал(?:а)?)(?:\s+(?:это|вам))?[.!\s]*$/iu.test(text)
     || /^(?:я\s+)?(?:это\s+)?(?:уже\s+)?(?:говорил(?:а)?|сказал(?:а)?|писал(?:а)?|написал(?:а)?|указывал(?:а)?)[.!\s]*$/iu.test(text);
-}
-
-function maximumLoanProgrammeSelectionPatch(input: Pick<AgentTurnInput, "messages" | "pendingAction">, facts: ApplicationFacts, settings: object): Partial<ApplicationFacts> {
-  const lastAssistant = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
-  const selectingMaximumProgramme = isMaximumProgrammeSelectionQuestion(lastAssistant)
-    // Conversations persisted before the explicit action used a generic
-    // programme prompt. The stored action gives that prompt its missing
-    // meaning without broadening generic programme selections globally.
-    || (input.pendingAction === MAXIMUM_PROGRAMME_SELECTION_ACTION && isProgramSelectionQuestion(lastAssistant));
-  if (!selectingMaximumProgramme || facts.requestedAmount !== undefined || !facts.requestedProgram) return {};
-  const pricing = calculateLoanPricing(facts, settings as LoanPricingSettings);
-  const selected = facts.requestedProgram === "parking" ? pricing.parking : pricing.withoutStorage;
-  return selected.available && typeof selected.publicMax === "number" ? { requestedAmount: selected.publicMax } : {};
-}
-
-function maximumAmountStagePreferencePatch(isMaximumAmountStageResponse: boolean): Partial<ApplicationFacts> {
-  return isMaximumAmountStageResponse ? { requestedMaximumAmount: true } : {};
-}
-
-function maximumLoanAmountPatch(input: Pick<AgentTurnInput, "text" | "currentTurnMessages" | "pricing" | "settings">, facts: ApplicationFacts, isMaximumAmountStageResponse: boolean): Partial<ApplicationFacts> {
-  const text = input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text;
-  if (!facts.requestedProgram) return {};
-  const pricing = input.pricing ?? calculateLoanPricing(facts, input.settings as LoanPricingSettings);
-  if (requestsMinimumLoanAmount(text)) return { requestedAmount: pricing.minimumLoan };
-  if (!isMaximumAmountStageResponse && !requestsMaximumLoanAmount(text)) return {};
-  const selectedPricing = facts.requestedProgram === "without_storage" ? pricing.withoutStorage : pricing.parking;
-  return selectedPricing?.available && typeof selectedPricing.publicMax === "number"
-    ? { requestedAmount: selectedPricing.publicMax }
-    : {};
-}
-
-function maximumChoiceFollowUp(isMaximumAmountStageResponse: boolean, facts: ApplicationFacts): string | undefined {
-  if (!isMaximumAmountStageResponse) return undefined;
-  if (!facts.requestedProgram) return "Вас интересует займ без изъятия автомобиля или с постановкой автомобиля на охраняемую стоянку?";
-  if (!facts.residenceRegion || !facts.residenceCategory) return "Подскажите, пожалуйста, Вашу прописку — Бишкек, Чуйская область или другой регион Кыргызстана.";
-  return undefined;
-}
-
-const MAXIMUM_PROGRAMME_SELECTION_PROMPT = "Какую программу выбираете для максимальной суммы — без изъятия автомобиля или со стоянкой?";
-
-function isMaximumProgrammeSelectionPending(input: Pick<AgentTurnInput, "pendingAction">, maximumAmountStageResponse: boolean, facts: ApplicationFacts): boolean {
-  if (input.pendingAction === MAXIMUM_PROGRAMME_SELECTION_ACTION) return !facts.requestedProgram;
-  return maximumAmountStageResponse && !facts.requestedProgram;
-}
-
-function isMaximumAmountStageResponse(input: Pick<AgentTurnInput, "messages">, loanQuestionKind: LoanQuestionKind): boolean {
-  if (!isMaximumLimitQuestion(loanQuestionKind)) return false;
-  const lastAssistant = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
-  return /(?:^|[.!?]\s*)Какая\s+сумма\s+займа\s+Вам\s+необходима\?\s*$/iu.test(lastAssistant.trim());
-}
-
-function requestedMaximumAmountPatch(facts: ApplicationFacts, settings: object): Partial<ApplicationFacts> {
-  if (facts.requestedMaximumAmount !== true || facts.requestedAmount !== undefined || !facts.requestedProgram) return {};
-  const pricing = calculateLoanPricing(facts, settings as LoanPricingSettings);
-  const selected = facts.requestedProgram === "parking" ? pricing.parking : pricing.withoutStorage;
-  return selected.available && typeof selected.publicMax === "number" ? { requestedAmount: selected.publicMax } : {};
-}
-
-function isMaximumProgrammeSelectionQuestion(text: string): boolean {
-  return /какую\s+программ\p{L}*\s+выбираете[^?]{0,120}максимальн\p{L}*\s+сумм/iu.test(text);
 }
 
 function requestedAmountLimitReply(pricing: LoanPricing | undefined, facts: ApplicationFacts): string | undefined {
@@ -2489,47 +2381,13 @@ function removeQuestionsForKnownLeadFacts(reply: string, facts: ApplicationFacts
  * application prompt here too, so the model cannot advance, reorder, or
  * reopen a stage with a differently worded question.
  */
-function serverWorkflowFollowUp(text: string | undefined, loanQuestionKind: LoanQuestionKind, facts: ApplicationFacts, completion: StageCompletion, amountLimitReply: string | undefined, selectedLimitNotice: string | undefined, maximumProgrammeSelectionPending = false, maximumAmountStageResponse = false): string | undefined {
-  // Once all inputs for a maximum calculation are known, do not turn the
-  // calculation into a repeated request for the amount the client needs.
-  // Before that point, answer the question and append the one missing stage
-  // so the client knows exactly what to provide next.
-  const canCalculateMaximum = hasMaximumLoanCalculationInputs(facts);
-  // A maximum question is informational, not a durable request for the
-  // maximum. Once car data is known, collect registration before the usual
-  // requested-amount stage without persisting programme or amount.
-  if (maximumProgrammeSelectionPending && completion.vehicle && !canCalculateMaximum) {
-    return hasUnresolvedResidence(facts)
-      ? "Подскажите, пожалуйста, это в Чуйской области?"
-      : "Подскажите, пожалуйста, Вашу прописку — Бишкек, Чуйская область или другой регион Кыргызстана.";
-  }
-  const regularNextQuestion = nextRequiredStageQuestion(facts, completion);
-  const nextQuestion = !isMaximumLimitQuestion(loanQuestionKind)
-    ? regularNextQuestion
-    : !canCalculateMaximum
-      ? nextMaximumLoanCalculationQuestion(facts)
-      // The informational maximum answer must not reopen model/year
-      // collection. Resume the application only if those facts were already
-      // provided before this question.
-      : facts.vehicleModel && facts.vehicleYear
-        ? regularNextQuestion
-        : undefined;
+function serverWorkflowFollowUp(loanQuestionKind: LoanQuestionKind, facts: ApplicationFacts, completion: StageCompletion, amountLimitReply: string | undefined, selectedLimitNotice: string | undefined): string | undefined {
+  const nextQuestion = nextRequiredStageQuestion(facts, completion);
   // An invalid corrected amount must interrupt even a completed/visited
   // application. Completion flags for unrelated stages stay intact, so this
   // check has to precede the terminal-question branch.
   if (amountLimitReply) return amountLimitReply;
   if (completion.visit) return facts.clientClosed ? undefined : FINAL_QUESTIONS_PROMPT;
-  // This must take precedence over every later stage and over informational
-  // questions. The client has an unresolved choice of amount/programme, so
-  // no guarantor, documents or family prompt may be appended yet.
-  if (maximumProgrammeSelectionPending && canCalculateMaximum) {
-    // A maximum quote must not replace an already active later action such as
-    // the guarantor question. It only asks for programme selection when the
-    // application has not selected either programme yet.
-    return facts.requestedProgram ? regularNextQuestion : MAXIMUM_PROGRAMME_SELECTION_PROMPT;
-  }
-  const maximumChoiceFollowUpQuestion = maximumChoiceFollowUp(maximumAmountStageResponse, facts);
-  if (maximumChoiceFollowUpQuestion) return maximumChoiceFollowUpQuestion;
   if (isLoanRateQuestion(loanQuestionKind)) return nextQuestion;
   return [selectedLimitNotice, nextQuestion].filter(Boolean).join("\n\n") || undefined;
 }
@@ -3108,7 +2966,7 @@ function unresolvedBinaryDecisionReply(
   // A short factual question such as «какой поручитель» often arrives without
   // a question mark. It must reach the approved-knowledge path, rather than
   // being misread as an unclear yes/no answer to the preceding stage.
-  if (!clientReply || workflowWhyReply(input) || isLikelyKnowledgeQuestion(clientReply) || detectMoneyMentions(clientReply).length > 0 || isMaximumLimitQuestion(loanQuestionKind) || isLoanRateQuestion(loanQuestionKind)) return undefined;
+  if (!clientReply || workflowWhyReply(input) || isLikelyKnowledgeQuestion(clientReply) || detectMoneyMentions(clientReply).length > 0 || isMaximumLoanKnowledgeQuestion(clientReply) || isLoanRateQuestion(loanQuestionKind)) return undefined;
   const repeatQuestion = (): string | undefined => {
     const question = lastAssistantQuestion(lastAssistant);
     return question ? clarificationOf(question) : undefined;
@@ -3284,9 +3142,6 @@ function workflowStageExplanation(input: Pick<AgentTurnInput, "text" | "currentT
   if (/какая\s+сумма\s+займа/iu.test(lastAssistant)) {
     return "Сумма нужна, чтобы проверить, подходит ли она под условия займа для Вашего автомобиля.";
   }
-  if (isMaximumProgrammeSelectionQuestion(lastAssistant)) {
-    return "Выбор программы нужен, чтобы назвать максимальную сумму именно по выбранному варианту займа.";
-  }
   if (isAmountLimitChoiceQuestion(lastAssistant)) {
     return "Нужно выбрать вариант, потому что запрошенная сумма превышает доступный лимит: можно уменьшить сумму или рассмотреть стоянку.";
   }
@@ -3456,13 +3311,13 @@ function enforceOptionalStageRefusalMessage(reply: string, input: Pick<AgentTurn
   return reply;
 }
 
-function modelMoneyPatchForTurn(patch: Partial<ApplicationFacts>, input: Pick<AgentTurnInput, "text" | "currentTurnMessages" | "pricing">, hasMoney: boolean, loanQuestionKind: LoanQuestionKind): Partial<ApplicationFacts> {
+function modelMoneyPatchForTurn(patch: Partial<ApplicationFacts>, input: Pick<AgentTurnInput, "text" | "currentTurnMessages" | "pricing">, hasMoney: boolean, _loanQuestionKind: LoanQuestionKind): Partial<ApplicationFacts> {
   const result = Object.fromEntries(Object.entries(patch).filter(([key]) => !unnormalizedMoneyFactKeys.has(key))) as Partial<ApplicationFacts>;
   // A number next to «дадите» is part of a question about the available
   // limit, not proof of either the car's value or the amount the client wants
   // to request. Do not let an extraction model turn that question into facts.
-  if (isMaximumLimitQuestion(loanQuestionKind)) return result;
   const text = input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "";
+  if (isMaximumLoanKnowledgeQuestion(text)) return result;
   const deterministicMoney = resolveMoneyFacts({ text, currentFacts: {} });
   const onlyMention = deterministicMoney.mentions.length === 1 ? deterministicMoney.mentions[0] : undefined;
   // A single amount with an explicit client-side role is already resolved by

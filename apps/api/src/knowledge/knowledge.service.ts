@@ -133,6 +133,13 @@ export const approvedKnowledgeSeeds: Omit<KnowledgeItemDto, "id">[] = [
     priority: 80, status: "approved", version: 2, active: true
   },
   {
+    key: "maximum_loan_range",
+    category: "loan_terms",
+    aliases: ["какая максимальная сумма возможна", "какая максимальная сумма", "сколько максимум дадите", "сколько денег дадите", "какой лимит", "какие лимиты", "сколько можно получить", "до какой суммы дадите"],
+    answerRu: "Какая максимальная сумма возможна?\nБез изъятия: от 50 000 сом до MAX_LIMIT_WITHOUT сом\nСо стоянкой: от 50 000 сом до MAX_LIMIT_PARK сом",
+    priority: 120, status: "approved", version: 2, active: true
+  },
+  {
     key: "remote_application",
     category: "process",
     aliases: ["дистанционно", "онлайн оформление", "без приезда"],
@@ -255,7 +262,7 @@ export const approvedKnowledgeSeeds: Omit<KnowledgeItemDto, "id">[] = [
   {
     key: "accident_tow_truck",
     category: "vehicle_eligibility",
-    aliases: ["машина после дтп", "автомобиль после дтп", "авто после аварии", "можно на эвакуаторе", "привезти эвакуатором", "машина не на ходу после дтп"],
+    aliases: ["машина после дтп", "автомобиль после дтп", "авто после аварии", "можно на эвакуаторе", "привезти эвакуатором", "машина не на ходу после дтп", "машина не на ходу"],
     answerRu: "Автомобиль после серьёзного ДТП принимается только если он на ходу; повреждения могут повлиять на оценочную стоимость. Если автомобиль нужно привезти эвакуатором, то есть он не на ходу, принять его в залог не сможем.",
     priority: 100, status: "approved", version: 1, active: true
   },

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { prioritizedKnowledgeForQuestion, selectRelevantDocumentation } from "./documentation-retrieval.js";
+import { isMaximumLoanKnowledgeQuestion, prioritizedKnowledgeForQuestion, selectRelevantDocumentation } from "./documentation-retrieval.js";
 
 describe("selectRelevantDocumentation", () => {
   it("always supplies only the compact approved-answer core", () => {
@@ -40,6 +40,22 @@ describe("selectRelevantDocumentation", () => {
 
     const maximum = selectRelevantDocumentation({ facts: {}, currentMessage: "сколько денег по максимуму дадите", messages: [] });
     expect(maximum.commonKnowledge.some((chunk) => chunk.section === "5.23.1")).toBe(false);
+  });
+
+  it.each([
+    "а проценты какие и сумма максимальная",
+    "сколько денег дадите",
+    "какой лимит можно получить",
+    "до какой суммы дадите"
+  ])("routes a maximum-loan wording to the placeholder FAQ: %s", (currentMessage) => {
+    const result = selectRelevantDocumentation({ facts: {}, currentMessage, messages: [] });
+
+    expect(isMaximumLoanKnowledgeQuestion(currentMessage)).toBe(true);
+    expect(result.knowledge.some((chunk) => chunk.key === "faq_maximum_loan_range")).toBe(true);
+  });
+
+  it("does not mistake a stated vehicle value for a maximum-loan question", () => {
+    expect(isMaximumLoanKnowledgeQuestion("машина стоит 3 млн сом")).toBe(false);
   });
 
   it("finds the approved GPS answer during a targeted knowledge lookup", () => {

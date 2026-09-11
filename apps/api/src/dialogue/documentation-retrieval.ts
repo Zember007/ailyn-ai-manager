@@ -9,6 +9,17 @@ type KnowledgeContextChunk = DocumentationChunk | (typeof approvedFaqChunks)[num
 type DocumentationStage = DocumentationChunk["primaryStage"];
 const stageInstructionsByStage: Partial<Record<DocumentationStage, string>> = agentStageInstructions;
 
+/**
+ * The maximum-loan FAQ needs stricter matching than a generic money turn:
+ * «машина стоит 2 млн» must not trigger it, while colloquial questions such
+ * as «сколько денег дадите» must. This is the routing filter for the
+ * MAX_LIMIT placeholders; it does not write application facts.
+ */
+export function isMaximumLoanKnowledgeQuestion(text: string): boolean {
+  const normalized = text.toLocaleLowerCase("ru-RU");
+  return /(?:максим\p{L}*|макс\b|лимит\p{L}*|потолок\p{L}*|до\s+какой\s+сумм\p{L}*|скольк\p{L}*[^?!\n]{0,45}(?:денег|деньг|дад\p{L}*|получ\p{L}*|можно\s+взять)|(?:денег|деньг)[^?!\n]{0,45}(?:скольк\p{L}*|дад\p{L}*|получ\p{L}*|можно\s+взять)|какую\s+сумм\p{L}*[^?!\n]{0,30}(?:дад\p{L}*|можно\s+получ\p{L}*))/iu.test(normalized);
+}
+
 const requiredDocumentKeys = ["id_front", "id_back", "vehicle_registration_front", "vehicle_registration_back"] as const;
 // These passages are safe to expose on every turn: global answer rules plus
 // short, high-frequency FAQ/redirect answers (including timing and existing
@@ -113,9 +124,11 @@ export function selectRelevantDocumentation(input: {
   // Rates are not general conversation context: exposing them on every turn
   // makes the model answer a maximum-loan question with percentages.
   const asksInterestRate = /(?:процент|ставк)/iu.test(input.currentMessage ?? "");
+  const asksMaximumLoan = isMaximumLoanKnowledgeQuestion(input.currentMessage ?? "");
   const commonKnowledge = [
     ...baseCommonKnowledge,
-    ...(asksInterestRate ? [findChunk((chunk) => chunk.section === "5.23.1")] : [])
+    ...(asksInterestRate ? [findChunk((chunk) => chunk.section === "5.23.1")] : []),
+    ...(asksMaximumLoan ? approvedFaqChunks.filter((chunk) => chunk.key === "faq_maximum_loan_range") : [])
   ].filter((chunk): chunk is DocumentationChunk => Boolean(chunk));
   const stages = relevantStages(input.facts, current);
   const tokens = new Set(current.match(/[\p{L}\p{N}]{3,}/gu) ?? []);

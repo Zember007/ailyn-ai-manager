@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { AgentTurnService, nextRequiredStageQuestion, OLDER_VEHICLE_PROGRAM_NOTICE } from "./agent-turn.service.js";
 import { agentStageInstructions } from "./agent-stage-instructions.js";
-import { DialogueOrchestratorService, composeReply, removeEarlierDuplicateSentences, resolveForeignCurrencyFacts, resolveNormalizedMoneyFacts } from "./dialogue-orchestrator.service.js";
+import { DialogueOrchestratorService, composeReply, removeEarlierDuplicateSentences, replaceMaximumLimitPlaceholders, resolveForeignCurrencyFacts, resolveNormalizedMoneyFacts } from "./dialogue-orchestrator.service.js";
 import { generatedDocumentationChunks } from "./documentation-chunks.generated.js";
 
 process.env.DATABASE_URL ??= "postgresql://test:test@localhost:5432/ailyn";
@@ -1229,6 +1229,24 @@ describe("single-agent dialogue", () => {
 
     expect(store.updateFacts).toHaveBeenCalledWith(application, expect.objectContaining({ requestedAmount: 1_000_000 }));
     expect(store.updateFacts).toHaveBeenCalledWith(application, expect.not.objectContaining({ vehicleValue: 1_000_000 }));
+  });
+
+  it("persists only vehicle value when a price correction is echoed into both money fields", async () => {
+    const application = { id: "app", facts: { vehicleValue: 2_000_000, requestedAmount: 600_000 }, contactId: "contact", stage: "NEW", status: "need_more_data" } as any;
+    const conversation = { id: "conversation", messages: [], application, channel: "web-test" } as any;
+    const store = { getOrCreateConversation: vi.fn().mockResolvedValue({ conversation, application }), addMessage: vi.fn().mockResolvedValue({ id: "inbound", author: "client", body: "авто стоит 3 млн", createdAt: "now" }), updateFacts: vi.fn().mockResolvedValue(["vehicleValue"]), saveAgentState: vi.fn(), getApplication: vi.fn().mockResolvedValue(application), getConversation: vi.fn().mockResolvedValue(conversation), addAttachment: vi.fn(), createManagerNotification: vi.fn() } as any;
+    const agent = {
+      normalizeMoney: vi.fn().mockResolvedValue([
+        { field: "vehicleValue", amount: 3_000_000, currency: "KGS", confidence: 0.99 },
+        { field: "requestedAmount", amount: 3_000_000, currency: "KGS", confidence: 0.99 }
+      ]),
+      run: vi.fn().mockResolvedValue({ result: { ...validResult, hasMoney: true, leadCardPatch: { vehicleValue: 3_000_000, requestedAmount: 3_000_000 } }, reply: "Распознано.", model: "one", promptVersion: "v1" })
+    } as any;
+
+    await new DialogueOrchestratorService(agent, store, { getValues: vi.fn().mockResolvedValue({}) } as any, { log: vi.fn() } as any)
+      .receive({ externalMessageId: "m", channel: "web-test", externalContactId: "c", text: "авто стоит 3 млн", attachments: [], timestamp: new Date() });
+
+    expect(store.updateFacts).toHaveBeenCalledWith(application, expect.objectContaining({ vehicleValue: 3_000_000, requestedAmount: 600_000 }));
   });
 
   it("appends the current server stage after a knowledge answer even when the workflow model omitted it", async () => {
@@ -2844,6 +2862,72 @@ describe("single-agent dialogue", () => {
     });
 
     expect(reply?.reply).toBe("Да.");
+  });
+
+  it("substitutes both maximum-loan placeholders after the knowledge route", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ reply: "Точный максимум после осмотра.", answerFound: true }) } }] }) } as any;
+    const reply = await new AgentTurnService(client).answerWithKnowledge({
+      messages: [],
+      facts: { vehicleValue: 3_000_000, residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY" } as any,
+      settings: {},
+      text: "а проценты какие и сумма максимальная",
+      workflowFollowUp: ""
+    });
+
+    expect(reply?.reply).toContain("ставка определяется индивидуально");
+    expect(reply?.reply).toContain("2,4% в месяц");
+    expect(reply?.reply).toContain("Без изъятия: от 50 000 сом до 600 000 сом");
+    expect(reply?.reply).toContain("Со стоянкой: от 50 000 сом до 1 500 000 сом");
+    expect(reply?.reply).not.toContain("Точный максимум после осмотра");
+  });
+
+  it("routes a combined rate and maximum question to knowledge without selecting a programme", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult, loanQuestionKind: "loan_rate", leadCardPatch: {}, reply: "Распознано."
+    }) } }] }) } as any;
+    const output = await new AgentTurnService(client).run({
+      messages: [],
+      facts: { vehicleValue: 3_000_000, residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY" } as any,
+      settings: {},
+      text: "а проценты какие и сумма максимальная",
+      attachments: []
+    });
+
+    expect(output.result?.leadCardPatch.knowledgeRequest).toEqual({ required: true, reason: "missing_approved_answer" });
+    expect(output.result?.leadCardPatch.requestedProgram).toBeUndefined();
+    expect(output.result?.leadCardPatch.requestedAmount).toBeUndefined();
+  });
+
+  it("does not calculate a maximum until both value and residence are known", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ reply: "ignored", answerFound: true }) } }] }) } as any;
+    const reply = await new AgentTurnService(client).answerWithKnowledge({
+      messages: [], facts: { vehicleValue: 3_000_000 } as any, settings: {}, text: "сколько максимум дадите", workflowFollowUp: ""
+    });
+
+    expect(reply?.reply).toBe("Максимальную сумму смогу рассчитать после того, как узнаю: Ваша прописка.");
+  });
+
+  it("never sends unresolved maximum-limit placeholders to the client", () => {
+    const template = "По программе со стоянкой ставка составляет 2,4% в месяц.\nБез изъятия: от 50 000 сом до MAX_LIMIT_WITHOUT сом\nСо стоянкой: от 50 000 сом до MAX_LIMIT_PARK сом";
+    const reply = replaceMaximumLimitPlaceholders(template, {
+      vehicleValue: 3_000_000, residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY"
+    } as any, {});
+
+    expect(reply).toContain("до 600 000 сом");
+    expect(reply).toContain("до 1 500 000 сом");
+    expect(reply).not.toMatch(/MAX_LIMIT_/u);
+  });
+
+  it("removes an unresolved maximum template when calculation inputs are missing", () => {
+    const reply = replaceMaximumLimitPlaceholders(
+      "Без изъятия: от 50 000 сом до MAX_LIMIT_WITHOUT сом Со стоянкой: от 50 000 сом до MAX_LIMIT_PARK сом",
+      {},
+      {}
+    );
+
+    expect(reply).toContain("ориентировочная стоимость автомобиля");
+    expect(reply).toContain("Ваша прописка");
+    expect(reply).not.toMatch(/MAX_LIMIT_/u);
   });
 
   it("uses only the exact currency-exchange answer instead of a bundled nearby-services reply", async () => {

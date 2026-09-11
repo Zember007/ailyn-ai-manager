@@ -81,8 +81,6 @@ export interface ApplicationFacts {
   reportedInvalidVehicleYear?: number | null;
   vehicleValue?: number;
   requestedAmount?: number;
-  /** The client chose the maximum available amount in response to the amount stage. */
-  requestedMaximumAmount?: boolean;
   /** Audit-only source currency; lead-card monetary values remain KGS. */
   vehicleValueSourceCurrency?: "KGS" | "USD" | "EUR" | "KZT" | "RUB";
   requestedAmountSourceCurrency?: "KGS" | "USD" | "EUR" | "KZT" | "RUB";

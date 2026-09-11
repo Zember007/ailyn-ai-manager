@@ -1,7 +1,8 @@
 import { Injectable } from "@nestjs/common";
 import type { ApplicationFacts } from "@ailyn/business-rules";
 import type { NormalizedMoneyValue } from "../ai/ai-provider.interface.js";
-import { AgentTurnService, enforceFirstContactGreeting, hasSeveralClientQuestions, isClearMoneyConfirmationRejection, nextRequiredStageQuestion, suppressInactiveGuarantorPrompts, type PendingMoneyClarificationDecision } from "./agent-turn.service.js";
+import { AgentTurnService, enforceFirstContactGreeting, isClearMoneyConfirmationRejection, nextRequiredStageQuestion, suppressInactiveGuarantorPrompts, type PendingMoneyClarificationDecision } from "./agent-turn.service.js";
+import { isMaximumLoanKnowledgeQuestion } from "./documentation-retrieval.js";
 import { attachmentFactsForCurrentStage, deriveStageCompletion, effectiveFactsForTurn, isCarPhotoStagePrompt, selectedProgramLimit } from "./agent-turn-reconciliation.js";
 import type { InboundMessage } from "../channels/channel.interface.js";
 import { SettingsService } from "../settings/settings.service.js";
@@ -77,7 +78,9 @@ export class DialogueOrchestratorService {
       : undefined;
     // Keep an invalid low amount out of persisted facts. The agent receives it
     // separately only to form the confirmation or minimum-loan response.
-    const currencyFactsForTurn = belowMinimumRequestedAmount === undefined ? currency.facts : {};
+    const currencyFactsForTurn = belowMinimumRequestedAmount === undefined
+      ? discardConflictingSingleMoneyRole(currency.facts, text)
+      : {};
     const normalizedFacts = effectiveFactsForTurn({
       previous: initialApplication.facts,
       modelPatch: {},
@@ -107,18 +110,12 @@ export class DialogueOrchestratorService {
       currencyConversions: currency.conversions,
       moneyClarificationDecision: moneyClarification?.decision === "accept" || moneyClarification?.decision === "reject" ? moneyClarification.decision : undefined,
       minimumRequestedAmountCandidate: belowMinimumRequestedAmount,
-      pendingAction: initialApplication.agentState?.nextAction === "select_program_for_maximum"
-        ? "select_program_for_maximum"
-        : undefined,
       attachments,
       signal: options.signal
     });
     const knowledgeRequest = turn.result?.leadCardPatch.knowledgeRequest;
-    const limitOnlyQuestion = turn.result?.loanQuestionKind === "maximum_limit" && !hasSeveralClientQuestions(text);
-    // A pure limit question is server-calculated. Keep this second boundary
-    // for legacy/malformed turn payloads that might still carry a KB request:
-    // otherwise the KB's rate text could overwrite the limit answer.
-    if (!limitOnlyQuestion && (knowledgeRequest?.required ?? turn.result?.needsKnowledgeLookup) && turn.result) {
+    const maximumLoanQuestion = isMaximumLoanKnowledgeQuestion(text);
+    if ((knowledgeRequest?.required ?? turn.result?.needsKnowledgeLookup) && turn.result) {
       const { knowledgeRequest: _knowledgeRequest, ...turnFacts } = turn.result.leadCardPatch;
       // The main model can omit the final canonical prompt while routing a
       // factual question to knowledge. Do not let the KB answer terminate the
@@ -138,7 +135,10 @@ export class DialogueOrchestratorService {
       const knowledge = await this.agent.answerWithKnowledge({
         conversationId: conversation.id,
         messages: modelMessages,
-        facts: normalizedFacts,
+        // The KB must see facts reconciled from this very client message:
+        // maximum-loan placeholders depend on the just-provided vehicle
+        // value and residence, not only on the persisted pre-turn card.
+        facts: turnFacts,
         settings,
         text: clientQuestion,
         currentTurnMessages,
@@ -153,12 +153,19 @@ export class DialogueOrchestratorService {
         // server-calculated limit plan. Preserve it before the independent
         // KB answer (office address, FAQ, etc.); only a direct rate question
         // may add interest-rate wording.
-        const responsePlan = turn.result.loanQuestionKind === "maximum_limit_and_rate" || turn.result.loanQuestionKind === "maximum_limit"
-          ? [removeTrailingWorkflowFollowUp(turn.reply, workflowFollowUp), knowledge.reply].filter(Boolean).join("\n\n")
+        const responsePlan = maximumLoanQuestion
+          ? knowledge.reply
           : knowledge.reply;
         const reply = appendWorkflowFollowUp(responsePlan, workflowFollowUp);
         const result = { ...turn.result, reply };
         turn = { ...turn, result, reply, model: knowledge.model, promptVersion: `${turn.promptVersion}+knowledge` };
+      }
+    }
+    if (turn.result) {
+      const factsForReply = { ...normalizedFacts, ...turn.result.leadCardPatch };
+      const reply = replaceMaximumLimitPlaceholders(turn.reply, factsForReply, settings);
+      if (reply !== turn.reply) {
+        turn = { ...turn, reply, result: { ...turn.result, reply } };
       }
     }
     // The input model only interprets the turn. At this point the server has
@@ -169,9 +176,7 @@ export class DialogueOrchestratorService {
     // The limit is a closed server calculation, not prose that benefits from
     // rewording. In particular, a formatter must never keep only the later
     // document prompt and drop the calculation the client asked for.
-    const hasServerCalculatedLimit = turn.result?.loanQuestionKind === "maximum_limit"
-      || turn.result?.loanQuestionKind === "maximum_preference"
-      || turn.result?.loanQuestionKind === "maximum_limit_and_rate";
+    const hasServerCalculatedLimit = isMaximumLoanKnowledgeQuestion(text);
     if (renderClientReply && !hasServerCalculatedLimit) {
       const rendered = await renderClientReply.call(this.agent, {
         // FX text is generated by the server too, so it must be part of the
@@ -350,14 +355,42 @@ function appendWorkflowFollowUp(reply: string, followUp: string): string {
   return [reply.trim(), followUp].filter(Boolean).join("\n\n");
 }
 
-/** A factual KB answer is inserted after the server calculation but before
- * the next application question. Keep that question as the final paragraph. */
-function removeTrailingWorkflowFollowUp(reply: string, followUp: string): string {
-  if (!followUp) return reply.trim();
-  const trimmed = reply.trim();
-  return trimmed.endsWith(followUp)
-    ? trimmed.slice(0, trimmed.length - followUp.length).trim()
-    : trimmed;
+/**
+ * A KB template must never reach the client with an unresolved variable.
+ * This is deliberately the final server boundary, after every model and
+ * workflow composer. It also protects a persisted legacy KB answer.
+ */
+export function replaceMaximumLimitPlaceholders(reply: string, facts: ApplicationFacts, settings: object): string {
+  if (!/MAX_LIMIT_(?:WITHOUT|PARK)/iu.test(reply)) return reply;
+  const pricing = calculateLoanPricing(facts, settings);
+  const without = pricing.withoutStorage;
+  const parking = pricing.parking;
+  if (
+    without.available
+    && typeof without.publicMax === "number"
+    && parking.available
+    && typeof parking.publicMax === "number"
+  ) {
+    return reply
+      .replace(/MAX_LIMIT_WITHOUT/giu, formatSomMoney(without.publicMax))
+      .replace(/MAX_LIMIT_PARK/giu, formatSomMoney(parking.publicMax));
+  }
+  const withoutTemplate = /(?:Какая\s+максимальная\s+сумма\s+возможна\?\s*)?Без\s+изъятия:\s*от\s+50\s*000\s+сом\s+до\s+MAX_LIMIT_WITHOUT\s+сом[.!?]?\s*/giu;
+  const parkingTemplate = /Со\s+стоянкой:\s*от\s+50\s*000\s+сом\s+до\s+MAX_LIMIT_PARK\s+сом[.!?]?\s*/giu;
+  const answerWithoutTemplate = reply
+    .replace(withoutTemplate, "")
+    .replace(parkingTemplate, "")
+    .replace(/MAX_LIMIT_(?:WITHOUT|PARK)/giu, "")
+    .replace(/[ \t]{2,}/gu, " ")
+    .trim();
+  const missing = [
+    facts.vehicleValue === undefined ? "ориентировочная стоимость автомобиля" : undefined,
+    !facts.residenceRegion || !facts.residenceCategory ? "Ваша прописка" : undefined
+  ].filter((value): value is string => Boolean(value));
+  const clarification = "Максимальную сумму смогу рассчитать после того, как узнаю: "
+    + (missing.length > 0 ? missing : ["ориентировочная стоимость автомобиля и Ваша прописка"]).join(" и ")
+    + ".";
+  return [answerWithoutTemplate, clarification].filter(Boolean).join("\n\n");
 }
 
 function toPendingInboundMessage(message: InboundMessage): Stage1Message {

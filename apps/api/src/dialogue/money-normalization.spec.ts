@@ -136,6 +136,19 @@ describe("money normalization", () => {
     ]);
   });
 
+  it("recognizes colloquial millions as an explicit vehicle-price correction", () => {
+    const result = resolveMoneyFacts({
+      text: "перепутал, авто стоит 3ляма",
+      currentFacts: { vehicleValue: 2_000_000, requestedAmount: 600_000 }
+    });
+
+    expect(result.vehicleValue).toBe(3_000_000);
+    expect(result.requestedAmount).toBeUndefined();
+    expect(result.mentions).toEqual([
+      expect.objectContaining({ normalizedAmount: 3_000_000, roleCandidate: "vehicleValue" })
+    ]);
+  });
+
   it("uses pending facts and correction cues instead of freezing the first saved amount", () => {
     const pendingAmount = resolveMoneyFacts({
       text: "800 тысяч",
