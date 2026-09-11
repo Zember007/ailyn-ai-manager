@@ -1121,6 +1121,53 @@ describe("single-agent dialogue", () => {
     ]);
   });
 
+  it("corrects a duplicated model value when the client explicitly supplied price and requested amount", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ values: [
+      { field: "vehicleValue", amount: 30_000, currency: "EUR", confidence: 0.99 },
+      { field: "requestedAmount", amount: 30_000, currency: "EUR", confidence: 0.99 }
+    ] }) } }] }) } as any;
+
+    const result = await new AgentTurnService(client).normalizeMoney({
+      text: "королла 2022 года стои 30 тыс евро, надо 10 тыс", facts: {}, messages: []
+    });
+
+    expect(result).toEqual([
+      { field: "vehicleValue", amount: 30_000, currency: "EUR", confidence: 0.99 },
+      { field: "requestedAmount", amount: 10_000, currency: "EUR", confidence: 0.99 }
+    ]);
+  });
+
+  it("never writes one model-recognized amount to both money fields without two explicit client roles", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ values: [
+      { field: "vehicleValue", amount: 30_000, currency: "EUR", confidence: 0.99 },
+      { field: "requestedAmount", amount: 30_000, currency: "EUR", confidence: 0.99 }
+    ] }) } }] }) } as any;
+
+    const result = await new AgentTurnService(client).normalizeMoney({
+      text: "машина стоит 30 тыс евро", facts: {}, messages: []
+    });
+
+    expect(result).toEqual([
+      { field: "vehicleValue", amount: 30_000, currency: "EUR", confidence: 0.99 }
+    ]);
+  });
+
+  it("allows equal money fields only when the client explicitly states both equal values", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ values: [
+      { field: "vehicleValue", amount: 30_000, currency: "EUR", confidence: 0.99 },
+      { field: "requestedAmount", amount: 30_000, currency: "EUR", confidence: 0.99 }
+    ] }) } }] }) } as any;
+
+    const result = await new AgentTurnService(client).normalizeMoney({
+      text: "машина стоит 30 тыс евро. Мне надо 30 тыс евро", facts: {}, messages: []
+    });
+
+    expect(result).toEqual([
+      { field: "vehicleValue", amount: 30_000, currency: "EUR", confidence: 0.99 },
+      { field: "requestedAmount", amount: 30_000, currency: "EUR", confidence: 0.99 }
+    ]);
+  });
+
   it("keeps an explicitly stated vehicle price out of the requested amount when the client also asks for a maximum", async () => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ values: [
       { field: "vehicleValue", amount: 3_000_000, currency: "KGS", confidence: 0.99 },
@@ -2459,9 +2506,10 @@ describe("single-agent dialogue", () => {
   });
 
   it.each([
-    ["где у вас стоянка", "Парковка находится недалеко от нашего офиса и находится под охраной. Точный адрес парковки не сообщается."],
+    ["где у вас стоянка", "Парковка находится недалеко от нашего офиса и находится под охраной. Точный адрес парковки не сообщается. Парковка платная — 130 сом в сутки."],
     ["авто в кредите", "К сожалению, мы не сможем оформить займ, если автомобиль в кредите."],
     ["А вещи надо забрать из авто?", "Вещи в автомобиле можно оставить или забрать — на Ваше усмотрение."],
+    ["а в УНА должна стоять на учете ?", "Да. Для оформления займа автомобиль должен быть зарегистрирован в УНА на человека, который обращается за займом."],
     ["А по доверенности можно займ оформить?", "Нет, оформить займ по доверенности нельзя: собственник автомобиля должен лично присутствовать при осмотре и выдаче займа."],
     ["Можно оформить нотариальную доверенность на сотрудника?", "Да, оформление нотариальной доверенности может быть одним из условий выдачи займа. Более подробно порядок оформления и условия Вы сможете уточнить во время визита в офис у менеджера."]
   ])("never lets the workflow model invent a factual answer to %s", async (text, approvedAnswer) => {
@@ -3042,6 +3090,31 @@ describe("single-agent dialogue", () => {
     expect(output.result?.leadCardPatch.guarantorAvailable).toBeUndefined();
     expect(output.reply).toContain("Без изъятия: от 50 000 сом до 200 000 сом");
     expect(output.reply.match(/У Вас есть такой поручитель\?/gu)).toHaveLength(1);
+  });
+
+  it("extracts vehicle, parking programme, residence and vehicle value from one client message", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult,
+      hasMoney: true,
+      residenceStatement: true,
+      programStatement: true,
+      reply: "Распознано.",
+      leadCardPatch: {
+        vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 6_000_000,
+        requestedProgram: "parking", residenceText: "Ош"
+      }
+    }) } }] }) } as any;
+    const output = await new AgentTurnService(client).run({
+      messages: [], facts: {}, settings: {},
+      text: "Камри 2022, нужна парковка, я из Оша, стоит 6 млн", attachments: []
+    });
+
+    expect(output.result?.leadCardPatch).toMatchObject({
+      vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 6_000_000,
+      requestedProgram: "parking", residenceRegion: "Другой регион Кыргызстана", residenceCategory: "OTHER_KG"
+    });
+    expect(output.result?.leadCardPatch.requestedAmount).toBeUndefined();
+    expect(output.reply).toContain("Какая сумма займа Вам необходима?");
   });
 
   it.each([
@@ -4052,14 +4125,61 @@ describe("single-agent dialogue", () => {
     }
   });
 
+  it("passes every question from one client message to knowledge without replacing the answer with one FAQ", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({
+      model: "knowledge-test-model",
+      choices: [{ message: { content: JSON.stringify({
+        reply: "Парковка находится недалеко от офиса и охраняется. Стоимость парковки — 130 сом в сутки. Вещи в автомобиле можно оставить или забрать — на Ваше усмотрение.",
+        answerFound: true
+      }) } }]
+    }) } as any;
+    const service = new AgentTurnService(client);
+    const text = "а где у вас стоянка, она платная ? и надо ли забирать из машины вещи";
+
+    const output = await service.answerWithKnowledge({ messages: [], facts: {}, settings: {}, text, currentTurnMessages: [{ index: 1, text }], workflowFollowUp: "" });
+
+    expect(output?.reply).toContain("130 сом в сутки");
+    expect(output?.reply).toContain("Вещи в автомобиле");
+    const context = JSON.parse(client.createChatCompletion.mock.calls[0][0].messages[1].content);
+    expect(context.currentMessage).toBe(text);
+    expect(context.currentTurnMessages).toEqual([{ index: 1, text }]);
+  });
+
+  it("answers an accident-and-tow-truck question even when it follows a document request", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn()
+      .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ ...validResult, reply: "Распознано.", leadCardPatch: {} }) } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ decision: "not_an_answer" }) } }] })
+    } as any;
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "Пожалуйста, отправьте фото ID и свидетельства о регистрации автомобиля с обеих сторон.", createdAt: "now" } as any],
+      facts: { vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 3_000_000, requestedAmount: 600_000, requestedProgram: "parking" },
+      settings: {}, text: "нету под рукой, но машина после ДТП, можно ее на эвакуаторе привезти?", attachments: []
+    });
+
+    expect(output.result?.leadCardPatch.accidentNotDrivable).toBe(true);
+    expect(output.result?.dialogueState).toMatchObject({ stage: "REFUSED", status: "refuse" });
+    expect(output.reply).toContain("принять его в залог не сможем");
+    expect(output.reply).not.toContain("документы можно отправить позже");
+  });
+
   it("provides a server-built working-day calendar for a visit request", async () => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify(validResult) } }] }) } as any;
     const service = new AgentTurnService(client);
-    await service.run({ messages: [], facts: {}, settings: { timezone: "Asia/Bishkek" }, text: "завтра в 2", attachments: [] });
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-11T06:00:00.000Z"));
+    try {
+      await service.run({ messages: [], facts: {}, settings: { timezone: "Asia/Bishkek" }, text: "завтра в 2", attachments: [] });
 
-    const context = JSON.parse((client.createChatCompletion.mock.calls[0][0].messages[1].content as Array<{ type: string; text?: string }>)[0].text ?? "{}");
-    expect(context.visitCalendar.officeHours).toContain("ПН–ПТ");
-    expect(context.visitCalendar.dates).toEqual(expect.arrayContaining([expect.objectContaining({ weekday: "суббота", working: false }), expect.objectContaining({ weekday: "воскресенье", working: false })]));
+      const request = client.createChatCompletion.mock.calls[0][0];
+      const context = JSON.parse((request.messages[1].content as Array<{ type: string; text?: string }>)[0].text ?? "{}");
+      expect(request.messages[0].content).toContain("visitCalendar");
+      expect(context.now).toBe("2026-09-11T12:00:00");
+      expect(context.timezone).toBe("Asia/Bishkek");
+      expect(context.visitCalendar.officeHours).toContain("ПН–ПТ");
+      expect(context.visitCalendar.dates).toEqual(expect.arrayContaining([expect.objectContaining({ date: "2026-09-12", weekday: "суббота", working: false })]));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("ignores derived or unknown fields inside the lead card patch", async () => {
@@ -4531,6 +4651,107 @@ describe("single-agent dialogue", () => {
     expect(output.reply).toContain("в 18:00");
   });
 
+  it("explicitly declines a weekend visit and does not persist its slot", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-11T06:00:00.000Z"));
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ ...validResult, reply: "Распознано.", leadCardPatch: {} }) } }] }) } as any;
+    try {
+      const output = await new AgentTurnService(client).run({
+        messages: [{ author: "ai", body: "Офис работает с понедельника по пятницу с 11:00 до 19:00. Для оформления нужно приехать не позднее 18:00. На какой день и время Вам удобно подъехать?", createdAt: "now" } as any],
+        facts: {
+          vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 3_000_000,
+          requestedAmount: 600_000, requestedProgram: "without_storage",
+          residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY",
+          documentsProvided: true, documents: { car_photo: "received" }, familyStatus: "single"
+        } as any,
+        settings: {}, text: "завтра в 5", attachments: []
+      });
+
+      expect(output.result?.leadCardPatch.visitDate).toBeUndefined();
+      expect(output.result?.leadCardPatch.visitTime).toBeUndefined();
+      expect(output.reply).toContain("12 сентября — суббота");
+      expect(output.reply).toContain("только по будням");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("repeats the concrete weekend restriction when the client asks again", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-11T06:00:00.000Z"));
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ ...validResult, reply: "Распознано.", leadCardPatch: {} }) } }] }) } as any;
+    try {
+      const output = await new AgentTurnService(client).run({
+        messages: [{ author: "ai", body: "12 сентября — суббота. Офис работает только по будням, с понедельника по пятницу с 11:00 до 19:00. Для оформления нужно приехать не позднее 18:00. На какой другой рабочий день и время Вам удобно подъехать?", createdAt: "now" } as any],
+        facts: {
+          vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 3_000_000,
+          requestedAmount: 600_000, requestedProgram: "without_storage",
+          residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY",
+          documentsProvided: true, documents: { car_photo: "received" }, familyStatus: "single"
+        } as any,
+        settings: {}, text: "завтра можно?", attachments: []
+      });
+
+      expect(output.reply).toContain("12 сентября — суббота");
+      expect(output.reply).toContain("только по будням");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("checks a direct tomorrow-availability question against the real calendar before visit readiness", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-11T06:00:00.000Z"));
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ ...validResult, reply: "Если офис ещё открыт — да.", leadCardPatch: {} }) } }] }) } as any;
+    try {
+      const output = await new AgentTurnService(client).run({
+        messages: [], facts: {}, settings: {}, text: "завтра можно?", attachments: []
+      });
+
+      expect(output.reply).toContain("12 сентября — суббота");
+      expect(output.reply).toContain("только по будням");
+      expect(output.reply).not.toContain("Если офис ещё открыт");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("records a named weekday visit and confirms its time", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ ...validResult, reply: "Распознано.", leadCardPatch: {} }) } }] }) } as any;
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "Офис работает с понедельника по пятницу с 11:00 до 19:00. Для оформления нужно приехать не позднее 18:00. На какой день и время Вам удобно подъехать?", createdAt: "now" } as any],
+      facts: {
+        vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 3_000_000,
+        requestedAmount: 600_000, requestedProgram: "without_storage",
+        residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY",
+        documentsProvided: true, documents: { car_photo: "received" }, familyStatus: "single"
+      } as any,
+      settings: {}, text: "в понедельник в 3", attachments: []
+    });
+
+    expect(output.result?.leadCardPatch).toEqual(expect.objectContaining({ visitRequested: true, visitTime: "15:00" }));
+    expect(output.result?.leadCardPatch.visitDate).toMatch(/^\d{4}-\d{2}-\d{2}$/u);
+    expect(output.reply).toContain("Записываю Вас на понедельник");
+    expect(output.reply).toContain("в 15:00");
+  });
+
+  it("does not let an unsolicited identity fallback hijack the visit stage", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ ...validResult, reply: "Я Айлин — виртуальный помощник по вопросам оформления новых займов. Если у Вас уже оформлен займ, пожалуйста, позвоните по телефону +996 502 108 108 или напишите в WhatsApp +996 776 108 108. Наши специалисты проверят информацию по Вашему договору и помогут решить Ваш вопрос.", leadCardPatch: {} }) } }] }) } as any;
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "Офис работает с понедельника по пятницу с 11:00 до 19:00. Для оформления нужно приехать не позднее 18:00. На какой день и время Вам удобно подъехать?", createdAt: "now" } as any],
+      facts: {
+        vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 3_000_000,
+        requestedAmount: 600_000, requestedProgram: "without_storage",
+        residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY",
+        documentsProvided: true, documents: { car_photo: "received" }, familyStatus: "single"
+      } as any,
+      settings: {}, text: "ты сломался?", attachments: []
+    });
+
+    expect(output.reply).not.toContain("виртуальный помощник");
+    expect(output.reply).toContain("На какой день и время Вам удобно подъехать?");
+  });
+
   it("does not repeat the residence question after residence is stored in the lead", async () => {
     const repeatedResidenceQuestion = { ...validResult, reply: "Хорошо, продолжаем по программе без изъятия. Подскажите, пожалуйста, Ваша прописка — Бишкек, Чуйская область или другой регион Кыргызстана?" };
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify(repeatedResidenceQuestion) } }] }) } as any;
@@ -4705,6 +4926,29 @@ describe("single-agent dialogue", () => {
     expect(result.facts).toMatchObject({ requestedAmount: 520_000, requestedAmountSourceCurrency: "USD", vehicleValue: 1_740_000, vehicleValueSourceCurrency: "USD" });
     expect(result.clientText).toContain("6 000 долларов США — ориентировочно 520 000 сом");
     expect(result.clientText).toContain("20 000 долларов США — ориентировочно 1 740 000 сом");
+    expect(integrations.convertToSom).toHaveBeenCalledTimes(2);
+  });
+
+  it("shows conversions for both the vehicle price and loan when one normalizer role is missing", async () => {
+    const application = { id: "app", facts: {}, contactId: "contact", stage: "NEW", status: "need_more_data" } as any;
+    const conversation = { id: "conversation", messages: [], application, channel: "web-test" } as any;
+    const store = {
+      getOrCreateConversation: vi.fn().mockResolvedValue({ conversation, application }),
+      addMessage: vi.fn().mockImplementation(async (_conversation: unknown, message: any) => ({ id: message.metadata.externalMessageId, author: message.author, body: message.body, createdAt: "now" })),
+      updateFacts: vi.fn().mockResolvedValue([]), saveAgentState: vi.fn(), getApplication: vi.fn().mockResolvedValue(application), getConversation: vi.fn().mockResolvedValue(conversation), addAttachment: vi.fn(), createManagerNotification: vi.fn()
+    } as any;
+    const agent = {
+      normalizeMoney: vi.fn().mockResolvedValue([{ field: "requestedAmount", amount: 10_000, currency: "EUR", confidence: 0.99 }]),
+      run: vi.fn().mockResolvedValue({ result: { ...validResult, reply: "Вас интересует займ без изъятия автомобиля или с постановкой автомобиля на охраняемую стоянку?", leadCardPatch: {} }, reply: "Вас интересует займ без изъятия автомобиля или с постановкой автомобиля на охраняемую стоянку?", model: "interpreter", promptVersion: "v1" })
+    } as any;
+    const integrations = { convertToSom: vi.fn().mockImplementation(async ({ amount, currency }: { amount: number; currency: string }) => ({ available: true, value: amount * 101, currency, rate: 101, nominal: 1, source: "NBKR", effectiveDate: "2026-09-11" })) } as any;
+
+    const output = await new DialogueOrchestratorService(agent, store, { getValues: vi.fn().mockResolvedValue({}) } as any, { log: vi.fn() } as any, integrations)
+      .receive({ externalMessageId: "m", channel: "web-test", externalContactId: "contact", text: "королла 2022 года стои 30 тыс евро, надо 10 тыс", attachments: [], timestamp: new Date() });
+
+    expect(agent.run).toHaveBeenCalledWith(expect.objectContaining({ facts: expect.objectContaining({ vehicleValue: 3_030_000, vehicleValueSourceCurrency: "EUR", requestedAmount: 1_010_000, requestedAmountSourceCurrency: "EUR" }) }));
+    expect(output.reply).toContain("Стоимость автомобиля: 30 000 евро — ориентировочно 3 030 000 сом.");
+    expect(output.reply).toContain("Необходимая сумма займа: 10 000 евро — ориентировочно 1 010 000 сом.");
     expect(integrations.convertToSom).toHaveBeenCalledTimes(2);
   });
 

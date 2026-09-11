@@ -10,12 +10,24 @@ describe("money normalization", () => {
 
     expect(result.mentions).toEqual(expect.arrayContaining([
       expect.objectContaining({ sourceText: "10 тыс долларов", currency: "USD", roleCandidate: "requestedAmount", normalizedAmount: 10_000 }),
-      expect.objectContaining({ sourceText: "20 тыс", currency: null, roleCandidate: "vehicleValue", normalizedAmount: 20_000 })
+      expect.objectContaining({ sourceText: "20 тыс", currency: "USD", roleCandidate: "vehicleValue", normalizedAmount: 20_000 })
     ]));
     expect(result.requestedAmount).toBe(10_000);
     expect(result.requestedAmountCurrency).toBe("USD");
     expect(result.vehicleValue).toBe(20_000);
-    expect(result.vehicleValueCurrency).toBeUndefined();
+    expect(result.vehicleValueCurrency).toBe("USD");
+  });
+
+  it("handles a misspelled price cue and inherits euro for the shortened requested amount", () => {
+    const result = resolveMoneyFacts({
+      text: "королла 2022 года стои 30 тыс евро, надо 10 тыс",
+      currentFacts: {}
+    });
+
+    expect(result.vehicleValue).toBe(30_000);
+    expect(result.vehicleValueCurrency).toBe("EUR");
+    expect(result.requestedAmount).toBe(10_000);
+    expect(result.requestedAmountCurrency).toBe("EUR");
   });
 
   it("supports spaced, compact, suffix, and decimal money formats", () => {

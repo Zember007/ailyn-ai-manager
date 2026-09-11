@@ -154,9 +154,10 @@ export class AgentTurnService {
         });
         return [];
       }
-      const values = discardConflictingSingleAmountRole(parsed.data.values, input.text, input.facts).map((value) => value.currency !== "KGS" && !explicitlyMentionsCurrency(input.text, value.currency)
+      const modelValues = discardConflictingSingleAmountRole(parsed.data.values, input.text, input.facts).map((value) => value.currency !== "KGS" && !explicitlyMentionsCurrency(input.text, value.currency)
         ? { ...value, currency: "KGS" as const }
         : value);
+      const values = reconcileExplicitMoneyRoles(modelValues, input.text, input.facts);
       if (this.logs?.log) {
         await this.logs.log("dialogue.money-normalizer", "Money normalizer response parsed", {
           conversationId: input.conversationId,
@@ -243,8 +244,17 @@ export class AgentTurnService {
       // Exact approved questions are deterministic. The model may adapt
       // semantically matched answers, but cannot replace an exact FAQ with a
       // neighbouring answer from the same knowledge packet.
-      const answerFound = parsed.data.answerFound || Boolean(documentation.mandatoryAnswer);
-      const reply = officeLocationResponse ?? notarialPowerOfAttorneyResponse ?? powerOfAttorneyResponse ?? documentation.mandatoryAnswer ?? parsed.data.reply;
+      const hasSeveralQuestions = hasSeveralClientQuestions(input.text ?? "");
+      const answerFound = parsed.data.answerFound || (!hasSeveralQuestions && Boolean(documentation.mandatoryAnswer));
+      // An exact single FAQ is safest as server-owned verbatim text. For a
+      // multi-question message it would discard every other answer, so the
+      // knowledge model instead composes answers from the ordered evidence.
+      const singleQuestionOverride = hasSeveralQuestions
+        ? undefined
+        : officeLocationResponse ?? notarialPowerOfAttorneyResponse ?? powerOfAttorneyResponse;
+      const reply = singleQuestionOverride
+        ?? (!hasSeveralQuestions ? documentation.mandatoryAnswer : undefined)
+        ?? parsed.data.reply;
       await this.logs?.log("dialogue.knowledge-model", "Knowledge model response received", {
         conversationId: input.conversationId,
         metadata: { model: response.model ?? model, answerFound }
@@ -689,7 +699,9 @@ export class AgentTurnService {
     // guarantor, after documents, or together with a correction to another
     // card field. Do not bind programme normalization only to its collection
     // question.
-    if (!clientReply || (!isProgramSelectionQuestion(lastAssistant) && !hasExplicitProgramSelectionSignal(clientReply))) return parsed;
+    if (!clientReply || (!parsed.programStatement && !isProgramSelectionQuestion(lastAssistant) && !hasExplicitProgramSelectionSignal(clientReply))) return parsed;
+    const modelSelectedProgram = parsed.leadCardPatch.requestedProgram;
+    if (parsed.programStatement && (modelSelectedProgram === "without_storage" || modelSelectedProgram === "parking")) return parsed;
     try {
       const response = await this.client.createChatCompletion({
         model: this.config.routerAiTextModel ?? "routerai-text-model-not-configured",
@@ -1199,7 +1211,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   const schedulingVisitReply = isVisitSchedulingReply(input, input.facts);
   const rawModelPatch = {
     ...(schedulingVisitReply ? {} : modelMoneyPatchForTurn(modelFactsWithoutResidence, input, parsed.hasMoney, loanQuestionKind)),
-    ...residencePatchFromExplicitClientText(input, leadCardFacts, input.facts),
+    ...residencePatchFromExplicitClientText(input, leadCardFacts, input.facts, parsed.residenceStatement === true),
     ...requestedAmountResetPatch(input),
     ...repeatedRequestedAmountPatch(input, input.facts),
     ...maximumAmountStagePreferencePatch(maximumAmountStageResponse),
@@ -1213,6 +1225,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     // new question. The closing acknowledgement is one-shot; every later
     // inbound reopens the final-question state before workflow recalculation.
     ...(input.facts.clientClosed && Boolean(semanticText?.trim()) ? { clientClosed: false } : {}),
+    ...accidentNotDrivablePatch(semanticText),
     ...(isClearDocumentsRefusal(input) ? { declinedDocuments: true } : {}),
     ...(isClearCarPhotoRefusal(input) ? { declinedCarPhoto: true } : {})
   };
@@ -1240,7 +1253,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   const acceptedGuarantorParkingAlternative = isActiveGuarantorParkingAlternative(lastAssistantReply, input.facts)
     && rawModelPatch.requestedProgram === "parking";
   const explicitlyInvalidatesProgramme = Object.prototype.hasOwnProperty.call(rawModelPatch, "requestedProgram") && rawModelPatch.requestedProgram === undefined;
-  if (!hasExplicitProgramSelection(input) && !acceptedGuarantorParkingAlternative && limitChoiceFacts.requestedProgram !== "parking" && !explicitlyInvalidatesProgramme) delete rawModelPatch.requestedProgram;
+  if (!hasExplicitProgramSelection(input) && parsed.programStatement !== true && !acceptedGuarantorParkingAlternative && limitChoiceFacts.requestedProgram !== "parking" && !explicitlyInvalidatesProgramme) delete rawModelPatch.requestedProgram;
   const region10PolicyQuestion = isRegion10PolicyQuestion(input);
   const candidateModelPatch = region10PolicyQuestion
     ? Object.fromEntries(Object.entries(rawModelPatch).filter(([key]) => key !== "vehicleRegistrationRegion")) as Partial<ApplicationFacts>
@@ -1352,6 +1365,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   const visitNotice = visitConfirmationNotice(input, input.facts, effectiveFacts);
   const visitProgress = visitProgressReply(input.facts, effectiveFacts);
   const visitTimeClarification = visitTimeClarificationReply(input, effectiveFacts);
+  const visitNonWorkingDay = visitNonWorkingDayReply(input, effectiveFacts);
   const attachmentAcceptanceNotice = input.attachments.length > 0 ? "Фотографии получены." : undefined;
   const acceptedLimitNotice = acceptedLimitChoiceNotice(input.facts, effectiveFacts);
   const maximumChoiceNotice = maximumLoanChoiceNotice(input, input.facts, effectiveFacts);
@@ -1375,7 +1389,10 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   const waitingForMaximumProgrammeSelection = input.pendingAction === MAXIMUM_PROGRAMME_SELECTION_ACTION
     && hasMaximumLoanCalculationInputs(effectiveFacts)
     && !effectiveFacts.requestedProgram;
-  const workflowFollowUp = repeatedStageReply || rejectedMoneyClarification || belowMinimumReply || visitProgress || visitTimeClarification || hasPendingMoneyCurrencyClarification(internalReply)
+  const accidentNotDrivableNotice = !input.facts.accidentNotDrivable && effectiveFacts.accidentNotDrivable
+    ? "Автомобиль после серьёзного ДТП и не на ходу не принимается как подходящий залог."
+    : undefined;
+  const workflowFollowUp = accidentNotDrivableNotice || repeatedStageReply || rejectedMoneyClarification || belowMinimumReply || visitProgress || visitTimeClarification || visitNonWorkingDay || hasPendingMoneyCurrencyClarification(internalReply)
     ? undefined
     : serverWorkflowFollowUp(semanticText, loanQuestionKind, effectiveFacts, stageCompletion, requestedAmountLimit, workflowSelectedLimitNotice, maximumProgrammeSelectionPending, maximumAmountStageResponse);
   const completionNotice = stageCompletion.visit && effectiveFacts.clientClosed
@@ -1385,7 +1402,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   // visit branch. The calculation itself is server-owned; after answering,
   // the normal workflow appender returns to the outstanding action.
   const optionalStageDeclineNotice = optionalStageDeclineNoticeForTurn(input.facts, effectiveFacts);
-  const directAnswer = repeatedStageReply ?? completionNotice ?? attachmentAcceptanceNotice ?? optionalStageDeclineNotice ?? visitNotice ?? visitProgress ?? visitTimeClarification ?? residenceLimitNotice ?? programmeChangeGuarantorNotice ?? maximumChoiceNotice ?? acceptedLimitNotice ?? (region10Answer ? [region10Answer, olderVehicleNotice].filter(Boolean).join("\n\n") : undefined) ?? olderVehicleNotice ?? maximumLoanInputReply ?? maximumLoanReply ?? spouseVisitAnswer(input) ?? familyNotice ?? unknownVehicleValueNotice ?? waitingForVehicleValueNotice;
+  const directAnswer = accidentNotDrivableNotice ?? repeatedStageReply ?? completionNotice ?? attachmentAcceptanceNotice ?? optionalStageDeclineNotice ?? visitNonWorkingDay ?? visitNotice ?? visitProgress ?? visitTimeClarification ?? residenceLimitNotice ?? programmeChangeGuarantorNotice ?? maximumChoiceNotice ?? acceptedLimitNotice ?? (region10Answer ? [region10Answer, olderVehicleNotice].filter(Boolean).join("\n\n") : undefined) ?? olderVehicleNotice ?? maximumLoanInputReply ?? maximumLoanReply ?? spouseVisitAnswer(input) ?? familyNotice ?? unknownVehicleValueNotice ?? waitingForVehicleValueNotice;
   // A direct approved FAQ outranks all free-form model prose. This prevents
   // plausible but unsupported claims such as a parking location or credit
   // eligibility from reaching the client. The final output renderer receives
@@ -1427,7 +1444,9 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     // retain a stale top-level model hint after server validation rejected it.
     needsKnowledgeLookup: knowledgeRequest?.required ?? false,
     leadCardPatch: { ...effectiveFacts, ...(knowledgeRequest ? { knowledgeRequest } : {}) },
-    dialogueState: maximumProgrammeSelectionPending
+    dialogueState: accidentNotDrivableNotice
+      ? { stage: "REFUSED", status: "refuse", nextAction: "none" }
+      : maximumProgrammeSelectionPending
       ? { ...parsed.dialogueState, nextAction: MAXIMUM_PROGRAMME_SELECTION_ACTION }
       : region10PolicyQuestion && !input.facts.vehicleRegistrationRegion && parsed.dialogueState.stage === "REFUSED"
       ? { stage: "COLLECTING_VEHICLE", status: "need_more_data", nextAction: "continue_application" }
@@ -1440,11 +1459,58 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
       ? "Тогда уточните, какую сумму вы имели в виду?"
       : vehicleNeedClarification
       ? enforceFirstContactGreeting(vehicleNeedClarification, input)
-      : unresolvedBinaryDecisionReply(input, effectiveFacts, loanQuestionKind) ?? visitTimeClarification ?? responsePlan)))
+      : unresolvedBinaryDecisionReply(input, effectiveFacts, loanQuestionKind) ?? visitNonWorkingDay ?? visitTimeClarification ?? responsePlan)))
   };
 }
 
 /** The customer-facing term is fixed even when a model repeats an old alias. */
+/**
+ * A model must not copy one recognized number into both money fields. Two
+ * values with the same amount/currency are permitted only when the client
+ * explicitly attached that value to both roles in this very message.
+ */
+function reconcileExplicitMoneyRoles(values: NormalizedMoneyValue[], text: string | undefined, facts: ApplicationFacts): NormalizedMoneyValue[] {
+  const deterministic = resolveMoneyFacts({ text, currentFacts: facts });
+  const vehicleCurrency = deterministic.vehicleValueCurrency ?? "KGS";
+  const requestedCurrency = deterministic.requestedAmountCurrency ?? "KGS";
+  const roles = new Map(values.map((value) => [value.field, value]));
+  const vehicle = roles.get("vehicleValue");
+  const requested = roles.get("requestedAmount");
+  if (!vehicle && !requested) return values;
+
+  const reconciled = deterministic.vehicleValue !== undefined && deterministic.requestedAmount !== undefined
+    ? [
+        ...(vehicle ? [{ field: "vehicleValue" as const, amount: deterministic.vehicleValue, currency: vehicleCurrency, confidence: Math.max(vehicle.confidence, deterministic.vehicleValueConfidence) }] : []),
+        ...(requested ? [{ field: "requestedAmount" as const, amount: deterministic.requestedAmount, currency: requestedCurrency, confidence: Math.max(requested.confidence, deterministic.requestedAmountConfidence) }] : [])
+      ]
+    : values;
+
+  const reconciledVehicle = reconciled.find((value) => value.field === "vehicleValue");
+  const reconciledRequested = reconciled.find((value) => value.field === "requestedAmount");
+  if (!reconciledVehicle || !reconciledRequested || reconciledVehicle.amount !== reconciledRequested.amount || reconciledVehicle.currency !== reconciledRequested.currency) {
+    return reconciled;
+  }
+  if (clientExplicitlyStatedEqualMoneyRoles(text)) return reconciled;
+
+  const mentions = detectMoneyMentions(text ?? "");
+  const hasVehicleRole = mentions.some((mention) => mention.roleCandidate === "vehicleValue");
+  const hasRequestedRole = mentions.some((mention) => mention.roleCandidate === "requestedAmount");
+  if (hasVehicleRole && !hasRequestedRole) return reconciled.filter((value) => value.field === "vehicleValue");
+  if (hasRequestedRole && !hasVehicleRole) return reconciled.filter((value) => value.field === "requestedAmount");
+  // With no unambiguous client role, dropping both is safer than writing an
+  // invented duplicate to the lead card.
+  return [];
+}
+
+function clientExplicitlyStatedEqualMoneyRoles(text: string | undefined): boolean {
+  const mentions = detectMoneyMentions(text ?? "");
+  const vehicleValues = mentions.filter((mention) => mention.roleCandidate === "vehicleValue");
+  const requestedValues = mentions.filter((mention) => mention.roleCandidate === "requestedAmount");
+  return vehicleValues.some((vehicle) => requestedValues.some((requested) =>
+    vehicle.normalizedAmount === requested.normalizedAmount && vehicle.currency === requested.currency
+  ));
+}
+
 function normalizeVehicleRegistrationTerminology(reply: string): string {
   return reply.replace(/тех\.?\s*паспорт(?:а|у|ом|е)?(?:\s+автомобил(?:я|ю|ем))?/giu, (match) => {
     const normalized = match.toLocaleLowerCase("ru-RU");
@@ -1468,6 +1534,30 @@ function normalizeTechnicalReply(reply: string): string {
   if (/^распознано[.!\s]*$/iu.test(reply)) return "";
   if (/^нужно\s+уточнение[.!\s]*$/iu.test(reply)) return "Не смогла понять. Напишите, пожалуйста, подробнее.";
   return reply;
+}
+
+/** A single turn can contain several factual questions; exact-FAQ shortcut
+ * must not replace the knowledge model's combined evidence-based answer. */
+function hasSeveralClientQuestions(text: string): boolean {
+  const explicitQuestionCount = (text.match(/[?？]/gu) ?? []).length;
+  if (explicitQuestionCount >= 2) return true;
+  const questionSignals = [
+    // JavaScript's \b is ASCII-only, so it does not recognise Russian word
+    // boundaries. These are deliberately broad question stems instead.
+    /где/iu, /сколько/iu, /какой|какая|какие/iu,
+    /платн\p{L}*/iu, /нужн\p{L}*\s+ли/iu, /можно/iu, /надо/iu
+  ].filter((pattern) => pattern.test(text)).length;
+  return questionSignals >= 2;
+}
+
+/** Delivery by tow truck after an accident is an unambiguous statement that
+ * the vehicle is not drivable. This eligibility rule cannot depend on the
+ * current document/photo stage or on a model extracting the boolean field. */
+function accidentNotDrivablePatch(text: string | undefined): Partial<ApplicationFacts> {
+  const normalized = text?.toLocaleLowerCase("ru-RU") ?? "";
+  const mentionsAccident = /(?:дтп|авари(?:я|и|ю|ей|ями)?|после\s+удара)/iu.test(normalized);
+  const confirmsNotDrivable = /(?:эвакуатор(?:е|ом|а|ы)?|не\s+на\s+ходу|не\s+едет|не\s+заводит(?:ся)?)/iu.test(normalized);
+  return mentionsAccident && confirmsNotDrivable ? { accidentNotDrivable: true } : {};
 }
 
 function isGenericClarificationReply(reply: string): boolean {
@@ -1507,6 +1597,9 @@ function visitPatchFromClearReply(input: Pick<AgentTurnInput, "text" | "currentT
   const settings = input.settings as Record<string, unknown>;
   const timezone = typeof settings.timezone === "string" ? settings.timezone : "Asia/Bishkek";
   const visitDate = visitDateFromReply(text, timezone);
+  // Preserve neither date nor time for weekends: the reply renderer below
+  // explains the concrete day and asks for another working day instead.
+  if (visitDate && !isWorkingVisitDate(visitDate)) return {};
   // The time must be tied to «в» (or an explicit hour suffix), otherwise the
   // date day in «6 октября» is incorrectly treated as 18:00.
   const timeMatch = text.match(/(?:(?:^|[\s,])в\s+(\d{1,2})(?::(\d{2}))?|(?:^|[\s,])(\d{1,2})(?::(\d{2}))?\s*(?:час(?:а|ов)?|ч))\s*(утра|дня|вечера)?(?!\p{L})/iu);
@@ -1526,7 +1619,7 @@ function visitPatchFromClearReply(input: Pick<AgentTurnInput, "text" | "currentT
 }
 
 function isVisitSchedulingQuestion(text: string): boolean {
-  return /(?:на\s+какой\s+день|день\s+и\s+время|когда\s+вам\s+удобно|в\s+какое\s+время).{0,100}(?:подъехать|приехать)/iu.test(text);
+  return /(?:на\s+какой(?:\s+(?:другой|рабочий)){0,2}\s+день|день\s+и\s+время|когда\s+вам\s+удобно|в\s+какое\s+время).{0,100}(?:подъехать|приехать)/iu.test(text);
 }
 
 function isVisitSchedulingReply(input: Pick<AgentTurnInput, "text" | "currentTurnMessages" | "messages">, facts: ApplicationFacts): boolean {
@@ -1558,9 +1651,34 @@ function visitTimeClarificationReply(input: Pick<AgentTurnInput, "text" | "curre
   return "Завтра подойдёт. Во сколько Вам удобно подъехать? Офис работает с понедельника по пятницу с 11:00 до 19:00, для оформления нужно приехать не позднее 18:00.";
 }
 
+function visitNonWorkingDayReply(input: Pick<AgentTurnInput, "text" | "currentTurnMessages" | "messages" | "settings">, facts: ApplicationFacts): string | undefined {
+  const lastAssistant = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
+  const text = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "").trim().toLocaleLowerCase("ru-RU");
+  // A direct availability question such as «завтра можно?» must be checked
+  // against the real calendar even before the application is ready to book.
+  // Otherwise a generic KB answer about arriving later today can incorrectly
+  // promise a Saturday or Sunday visit.
+  if (!isVisitSchedulingQuestion(lastAssistant) && !isVisitAvailabilityQuestion(text)) return undefined;
+  const timezone = typeof (input.settings as Record<string, unknown>).timezone === "string"
+    ? (input.settings as Record<string, unknown>).timezone as string
+    : "Asia/Bishkek";
+  const date = visitDateFromReply(text, timezone);
+  if (!date || isWorkingVisitDate(date)) return undefined;
+  const weekday = new Intl.DateTimeFormat("ru-RU", { weekday: "long", timeZone: "UTC" }).format(new Date(`${date}T00:00:00Z`));
+  const displayDate = new Intl.DateTimeFormat("ru-RU", { day: "numeric", month: "long", timeZone: "UTC" }).format(new Date(`${date}T00:00:00Z`));
+  return `${displayDate} — ${weekday}. Офис работает только по будням, с понедельника по пятницу с 11:00 до 19:00. Для оформления нужно приехать не позднее 18:00. На какой другой рабочий день и время Вам удобно подъехать?`;
+}
+
+function isVisitAvailabilityQuestion(text: string): boolean {
+  return /(?:сегодня|завтра|понедель|вторник|сред|четверг|пятниц|суббот|воскрес).{0,80}(?:можно|получится|подъех|приех)|(?:можно|получится).{0,80}(?:сегодня|завтра|понедель|вторник|сред|четверг|пятниц|суббот|воскрес)/iu.test(text);
+}
+
 function visitDateFromReply(text: string, timezone: string): string | undefined {
   const relative = relativeVisitDate(text, timezone);
   if (relative) return relative;
+
+  const weekday = weekdayVisitDate(text, timezone);
+  if (weekday) return weekday;
 
   const monthMatch = text.match(/(?:^|[^\p{L}\d])(\d{1,2})\s+(январ\p{L}*|феврал\p{L}*|март\p{L}*|апрел\p{L}*|мая|июн\p{L}*|июл\p{L}*|август\p{L}*|сентябр\p{L}*|(?:октябр|котябр)\p{L}*|ноябр\p{L}*|декабр\p{L}*)(?!\p{L})/iu);
   if (!monthMatch) return undefined;
@@ -1606,9 +1724,26 @@ function relativeVisitDate(text: string, timezone: string): string | undefined {
   if (offset === undefined) return undefined;
   const date = new Date(`${currentDateTime(timezone).slice(0, 10)}T00:00:00Z`);
   date.setUTCDate(date.getUTCDate() + offset);
-  // The office accepts visits Monday through Friday only.
-  if (date.getUTCDay() === 0 || date.getUTCDay() === 6) return undefined;
   return date.toISOString().slice(0, 10);
+}
+
+function weekdayVisitDate(text: string, timezone: string): string | undefined {
+  const match = text.match(/(?:в\s+)?(понедельник|вторник|сред[ау]|четверг|пятниц[ау]|суббот[ау]|воскресень[ея])/iu);
+  if (!match) return undefined;
+  const weekday = new Map<string, number>([
+    ["понедельник", 1], ["вторник", 2], ["среда", 3], ["среду", 3], ["четверг", 4],
+    ["пятница", 5], ["пятницу", 5], ["суббота", 6], ["субботу", 6], ["воскресенье", 0], ["воскресенья", 0]
+  ]).get(match[1]!.toLocaleLowerCase("ru-RU"));
+  if (weekday === undefined) return undefined;
+  const date = new Date(`${currentDateTime(timezone).slice(0, 10)}T00:00:00Z`);
+  const distance = (weekday - date.getUTCDay() + 7) % 7;
+  date.setUTCDate(date.getUTCDate() + distance);
+  return date.toISOString().slice(0, 10);
+}
+
+function isWorkingVisitDate(value: string): boolean {
+  const date = new Date(`${value}T00:00:00Z`);
+  return date.getUTCDay() !== 0 && date.getUTCDay() !== 6;
 }
 
 function limitChoicePatch(choice: AgentTurnResult["limitChoice"], input: Pick<AgentTurnInput, "text" | "currentTurnMessages" | "messages" | "pricing">, facts: ApplicationFacts): Partial<ApplicationFacts> {
@@ -2428,10 +2563,14 @@ function enforceIdentityAnswer(reply: string, input: Pick<AgentTurnInput, "text"
   // A model can otherwise emit it as a generic fallback for an unfamiliar
   // spelling (for example a misspelled locality), which hijacks the active
   // application stage and falsely redirects a new-loan client.
-  return reply.replace(IDENTITY_REPLY, "").replace(/[ \t]{2,}/gu, " ").trim();
+  return reply
+    .replace(IDENTITY_REPLY, "")
+    .replace(/я\s+Айлин\s*[—-]\s*виртуальн\p{L}*\s+помощник[\s\S]{0,500}?(?:whatsapp|ватсап)[\s\S]{0,80}\+?\d[\d\s-]{8,}/iu, "")
+    .replace(/[ \t]{2,}/gu, " ")
+    .trim();
 }
 
-function residencePatchFromExplicitClientText(input: Pick<AgentTurnInput, "text" | "currentTurnMessages" | "messages">, patch: Partial<ApplicationFacts>, previousFacts: ApplicationFacts): Partial<ApplicationFacts> {
+function residencePatchFromExplicitClientText(input: Pick<AgentTurnInput, "text" | "currentTurnMessages" | "messages">, patch: Partial<ApplicationFacts>, previousFacts: ApplicationFacts, modelAssertedResidence: boolean): Partial<ApplicationFacts> {
   const text = input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text;
   const lastAssistant = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
   const explicitChuyCategory = explicitChuyResidenceCategory(text);
@@ -2482,7 +2621,7 @@ function residencePatchFromExplicitClientText(input: Pick<AgentTurnInput, "text"
   const explicitlyMentionsResidence = /(?:пропис\p{L}*|зарегистрир\p{L}*|регистрац\p{L}*|место\s+жительств\p{L}*)/iu.test(text ?? "");
   if ((isGuarantorQuestion(lastAssistant) || isGuarantorParkingAlternativeQuestion(lastAssistant)) && !localityInGuarantorReply && !explicitlyMentionsResidence) return {};
   const isResidenceCollectionStage = isResidenceCollectionQuestion(lastAssistant);
-  const isResidenceUpdate = isResidenceUpdateTurn(text ?? "", lastAssistant, previousFacts);
+  const isResidenceUpdate = modelAssertedResidence || isResidenceUpdateTurn(text ?? "", lastAssistant, previousFacts);
   const clientLocality = localityInGuarantorReply ?? resolveKyrgyzstanLocality(text);
   // The main model can provide a spelling hint only after an explicit
   // residence statement/correction in this turn. It cannot turn an unrelated
@@ -3169,7 +3308,7 @@ function hasExplicitProgramSelection(input: Pick<AgentTurnInput, "text" | "curre
 }
 
 function hasExplicitProgramSelectionSignal(text: string): boolean {
-  return /(?:без\s+изъяти|со\s+стоянк|на\s+стоянк|остав(?:ить|лю|ляем)[^.!?\n]{0,40}(?:у\s+себя|на\s+(?:стоянк|парковк))|(?:давай(?:те)?|хочу|выбира(?:ю|ем)|тогда|будет)[^.!?\n]{0,40}(?:стоянк|парковк|без\s+изъяти))/iu.test(text);
+  return /(?:без\s+изъяти|со\s+стоянк|на\s+стоянк|остав(?:ить|лю|ляем)[^.!?\n]{0,40}(?:у\s+себя|на\s+(?:стоянк|парковк))|(?:давай(?:те)?|хочу|выбира(?:ю|ем)|тогда|будет|нуж(?:на|ен|но)|надо)[^.!?\n]{0,40}(?:стоянк|парковк|без\s+изъяти))/iu.test(text);
 }
 
 function isProgramSelectionQuestion(text: string): boolean {

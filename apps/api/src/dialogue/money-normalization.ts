@@ -35,7 +35,10 @@ const moneyPattern =
 // A request such as "1 млн дадите?" is a requested loan, never an implied
 // vehicle value merely because the message also names a car and its year.
 const requestedCuePattern = /(нужн|надо|сумм|займ|получить|оформить|хочу|хотел(?:ось)?|надобно|требуется|дайте|выдайте|дадите)/i;
-const vehicleCuePattern = /(стоит|сто[ий]мост|цена|оцен|машина|авто|автомобил|рыночн)/i;
+// `стои` is a common dropped-final-letter typo in chat messages. Keep the
+// boundary narrow so it still denotes the vehicle-price cue rather than an
+// arbitrary substring.
+const vehicleCuePattern = /(?:стоит|стои(?=[\s,.!?]|$)|сто[ий]мост|цена|оцен|машина|авто|автомобил|рыночн)/i;
 const requestedCorrectionPattern = /(?:уже|теперь|нет|не\s+так|точнее|лучше|надо\s+больше|нужно\s+больше|хочу\s+больше)[^.!?]{0,40}(?:нужн|надо|сумм|займ|получить|хочу)?/i;
 const vehicleCorrectionPattern = /(?:уже|теперь|нет|не\s+так|точнее|ошиб(?:ся|лась)|перепутал(?:ся|ась)?|сто(?:ит|[ий]мост)|цен[ауы])[^.!?]{0,40}(?:сто(?:ит|[ий]мост)|цен[ауы]|оцен|доллар|евро|тенге|руб)/i;
 
@@ -54,7 +57,11 @@ export function resolveMoneyFacts(input: {
   if (requested && requested.roleCandidate === "unknown") {
     requested.roleCandidate = "requestedAmount";
   }
-
+  // `chooseMoneyMention` can select an ordinary parsed mention instead of a
+  // synthetic shorthand fallback. Apply the same, sentence-bounded currency
+  // inheritance to that selected value before it reaches conversion.
+  if (requested && !requested.currency) requested.currency = inheritedClauseCurrency(input.text ?? "", mentions, requested);
+  if (vehicle && !vehicle.currency) vehicle.currency = inheritedClauseCurrency(input.text ?? "", mentions, vehicle);
   return {
     mentions,
     requestedAmount: requested?.normalizedAmount,
@@ -64,6 +71,15 @@ export function resolveMoneyFacts(input: {
     vehicleValueCurrency: vehicle?.currency ?? undefined,
     vehicleValueConfidence: vehicle?.confidence ?? 0
   };
+}
+
+function inheritedClauseCurrency(text: string, mentions: MoneyMention[], mention: MoneyMention): MoneyCurrencyCode | null {
+  const start = mention.start ?? 0;
+  if (!/(?:тыс|тыщ|\d\s*[кk](?=\s|$))/iu.test(mention.sourceText)) return null;
+  const clauseStart = Math.max(text.lastIndexOf(".", start - 1), text.lastIndexOf(";", start - 1)) + 1;
+  const prior = mentions.filter((candidate) => (candidate.start ?? -1) >= clauseStart && (candidate.end ?? 0) <= start && candidate.currency);
+  const currencies = new Set(prior.map((candidate) => candidate.currency));
+  return currencies.size === 1 ? prior.at(-1)?.currency ?? null : null;
 }
 
 export function detectMoneyMentions(text: string): MoneyMention[] {
@@ -151,6 +167,20 @@ export function detectMoneyMentions(text: string): MoneyMention[] {
     if (!inherited || currencies.size !== 1 || !/(?:тыс|тыщ|\d\s*[кk](?=\s|$))/iu.test(inherited.sourceText)) continue;
     const amount = Number(rawNumber) * 1_000;
     mentions.push({ sourceText: rawNumber, amount, normalizedAmount: amount, currency: inherited.currency, roleCandidate: "vehicleValue", confidence: 0.9, start, end: start + rawNumber.length });
+  }
+
+  // If the short second value contains its own multiplier but omits only the
+  // currency ("стоит 30 тыс евро, надо 10 тыс"), the first-pass matcher has
+  // already created it and the loops above intentionally skip duplicates.
+  // Inherit the one explicit currency within that same clause instead.
+  for (const mention of mentions) {
+    if (mention.currency || (mention.roleCandidate !== "requestedAmount" && mention.roleCandidate !== "vehicleValue")) continue;
+    if (!/(?:тыс|тыщ|\d\s*[кk](?=\s|$))/iu.test(mention.sourceText)) continue;
+    const start = mention.start ?? 0;
+    const clauseStart = Math.max(source.lastIndexOf(".", start - 1), source.lastIndexOf(";", start - 1)) + 1;
+    const prior = mentions.filter((candidate) => (candidate.start ?? -1) >= clauseStart && (candidate.end ?? 0) <= start && candidate.currency);
+    const currencies = new Set(prior.map((candidate) => candidate.currency));
+    if (currencies.size === 1) mention.currency = prior.at(-1)?.currency ?? null;
   }
 
   return dedupeMentions(mentions);

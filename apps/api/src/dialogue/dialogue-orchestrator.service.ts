@@ -124,14 +124,18 @@ export class DialogueOrchestratorService {
         // A completed application has no further collection action. The
         // knowledge contract still receives a string in that terminal case.
         || "";
-      const clientQuestion = turn.result.clientQuestion ?? text;
+      // A branch classifier may isolate one question while interpreting an
+      // active stage response. That extraction is useful for the stage, but
+      // must never truncate a multi-question client message before knowledge
+      // retrieval: the knowledge agent needs every question in this turn.
+      const clientQuestion = text;
       const knowledge = await this.agent.answerWithKnowledge({
         conversationId: conversation.id,
         messages: modelMessages,
         facts: normalizedFacts,
         settings,
         text: clientQuestion,
-        currentTurnMessages: turn.result.clientQuestion ? [{ index: 1, text: clientQuestion }] : currentTurnMessages,
+        currentTurnMessages,
         workflowFollowUp,
         signal: options.signal
       });
@@ -565,6 +569,10 @@ export function removeEarlierDuplicateSentences(reply: string): string {
   const firstByFragment = new Map<string, number>();
   const remove = new Set<number>();
   for (const [index, sentence] of sentences.entries()) {
+    // These are distinct server-owned conversion records. They necessarily
+    // share phrases such as "евро — ориентировочно … сом", but their role and
+    // amount differ; never let generic prose deduplication remove one.
+    if (/(?:стоимость\s+автомобиля|необходимая\s+сумма\s+займа)\s*:/iu.test(sentence)) continue;
     const words = sentence.toLocaleLowerCase("ru-RU").match(/[\p{L}\p{N}]+/gu) ?? [];
     if (words.length < 3) continue;
     for (let start = 0; start <= words.length - 3; start += 1) {

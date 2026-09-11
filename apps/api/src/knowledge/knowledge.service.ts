@@ -253,6 +253,20 @@ export const approvedKnowledgeSeeds: Omit<KnowledgeItemDto, "id">[] = [
     priority: 100, status: "approved", version: 1, active: true
   },
   {
+    key: "accident_tow_truck",
+    category: "vehicle_eligibility",
+    aliases: ["машина после дтп", "автомобиль после дтп", "авто после аварии", "можно на эвакуаторе", "привезти эвакуатором", "машина не на ходу после дтп"],
+    answerRu: "Автомобиль после серьёзного ДТП принимается только если он на ходу; повреждения могут повлиять на оценочную стоимость. Если автомобиль нужно привезти эвакуатором, то есть он не на ходу, принять его в залог не сможем.",
+    priority: 100, status: "approved", version: 1, active: true
+  },
+  {
+    key: "vehicle_registration_una",
+    category: "vehicle_eligibility",
+    aliases: ["уна", "в уна должна стоять на учете", "в уна должна стоять на учёте", "машина должна быть зарегистрирована в уна", "учет в уна", "учёт в уна"],
+    answerRu: "Да. Для оформления займа автомобиль должен быть зарегистрирован в УНА на человека, который обращается за займом.",
+    priority: 100, status: "approved", version: 1, active: true
+  },
+  {
     key: "income_documents",
     category: "eligibility",
     aliases: ["справка о доходах", "официальная работа", "безработный"],
@@ -290,9 +304,9 @@ export const approvedKnowledgeSeeds: Omit<KnowledgeItemDto, "id">[] = [
   {
     key: "parking_details",
     category: "office",
-    aliases: ["где стоянка", "где у вас стоянка", "где находится парковка", "стоянка в офисе", "охраняемая стоянка"],
-    answerRu: "Парковка находится недалеко от нашего офиса и находится под охраной. Точный адрес парковки не сообщается.",
-    priority: 100, status: "approved", version: 2, active: true
+    aliases: ["где стоянка", "где у вас стоянка", "где находится парковка", "стоянка в офисе", "охраняемая стоянка", "стоянка платная", "парковка платная", "сколько стоит стоянка", "стоимость парковки"],
+    answerRu: "Парковка находится недалеко от нашего офиса и находится под охраной. Точный адрес парковки не сообщается. Парковка платная — 130 сом в сутки.",
+    priority: 100, status: "approved", version: 3, active: true
   },
   {
     key: "walk_in_visit",

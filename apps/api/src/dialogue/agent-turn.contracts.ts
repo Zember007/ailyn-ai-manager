@@ -21,6 +21,10 @@ export const agentTurnResultSchema = z.object({
   clientQuestion: z.string().min(1).max(1000).optional(),
   /** Transient server-owned marker for an explanation of the active workflow request. */
   activeWorkflowClarification: z.enum(["guarantor"]).optional(),
+  /** The current client turn explicitly supplies or corrects their residence. Never persisted. */
+  residenceStatement: z.boolean().optional(),
+  /** The current client turn explicitly chooses a loan programme. Never persisted. */
+  programStatement: z.boolean().optional(),
   // This is a routing signal, not a lead-card fact. It lets the orchestrator
   // pay for money normalization only on turns that actually contain a value.
   hasMoney: z.boolean().default(false),
