@@ -643,20 +643,25 @@ export class AgentTurnService {
     if (!clientReply) return parsed;
     const apply = (duringMarriage: boolean) => ({
       ...parsed,
-      leadCardPatch: { ...parsed.leadCardPatch, familyStatus: "divorced" as const, vehicleBoughtDuringMarriage: duringMarriage }
+      leadCardPatch: {
+        ...parsed.leadCardPatch,
+        familyStatus: "divorced" as const,
+        vehicleBoughtDuringMarriage: duringMarriage,
+        vehiclePurchasedDuringMarriage: duringMarriage
+      }
     });
     try {
       const response = await this.client.createChatCompletion({
         model: this.config.routerAiNormalizerModel ?? this.config.routerAiTextModel ?? "routerai-text-model-not-configured",
         temperature: 0, max_tokens: 30, reasoning: { enabled: false }, response_format: { type: "json_object" },
         messages: [
-          { role: "system", content: "Определи смысл ответа клиента только на вопрос: автомобиль куплен во время брака или после развода. Верни JSON {\"timing\":\"during_marriage\"|\"after_divorce\"|\"undecided\"}. Короткие ответы «в», «во», «во время», «в браке», «во время брака» означают during_marriage. «после», «не в», «не в браке», «вне брака», «после развода» означают after_divorce. Не меняй семейное положение и не добавляй текст." },
+          { role: "system", content: "Определи смысл ответа клиента только на вопрос: автомобиль куплен до брака, во время брака или после развода. Верни JSON {\"timing\":\"before_marriage\"|\"during_marriage\"|\"after_divorce\"|\"undecided\"|\"not_an_answer\"}. «в», «во», «во время», «в браке», «во время брака» означают during_marriage. «до», «до брака», «раньше брака», «до того как поженились», «наверное до ещё» означают before_marriage. «после», «не в», «не в браке», «вне брака», «после развода» означают after_divorce. Отдельный вопрос клиента — not_an_answer. Не меняй семейное положение и не добавляй текст." },
           { role: "user", content: JSON.stringify({ questionAsked: lastAssistant, clientReply }) }
         ]
       }, { timeoutMs: this.config.routerAiTimeoutMs, signal: input.signal });
       const timing = parseAgentJson(response.choices?.[0]?.message?.content).timing;
       if (timing === "during_marriage") return apply(true);
-      if (timing === "after_divorce") return apply(false);
+      if (timing === "before_marriage" || timing === "after_divorce") return apply(false);
     } catch (error) {
       if (input.signal?.aborted) throw error;
       this.logger.warn(`Divorce purchase-timing classifier unavailable: ${formatError(error)}`);
@@ -1245,6 +1250,13 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     residenceRegion: _modelResidenceRegion,
     residenceCategory: _modelResidenceCategory,
     residenceNeedsClarification: _modelResidenceNeedsClarification,
+    // A visit slot is a server-owned pair. The model may understand a date
+    // or time, but it must never create either one—or complete a date-only
+    // reply with a guessed time.
+    visitRequested: _modelVisitRequested,
+    visitDate: _modelVisitDate,
+    visitTime: _modelVisitTime,
+    visitConfirmationPending: _modelVisitConfirmationPending,
     ...modelFactsWithoutResidence
   } = leadCardFacts;
   // The dedicated knowledge model is always used for a factual question,
@@ -1499,6 +1511,12 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   const completionNotice = stageCompletion.visit && effectiveFacts.clientClosed
     ? "Спасибо за обращение. Ожидайте звонка менеджера, он подтвердит время визита."
     : undefined;
+  // A pause is a durable client preference, not an unfinished application
+  // step. Its acknowledgement and lack of a follow-up are server-owned so a
+  // model cannot append the question it was waiting for before the pause.
+  const pauseNotice = effectiveFacts.clientPaused
+    ? "Хорошо, данные и история сохранятся. Когда будете готовы, можно продолжить с этого места."
+    : undefined;
   // A direct question about the loan amount outranks a pending family or
   // visit branch. The calculation itself is server-owned; after answering,
   // the normal workflow appender returns to the outstanding action.
@@ -1506,7 +1524,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   // A direct question about spouse/guarantor requirements is answered from
   // the card before a fallible model label such as current-stage
   // clarification can return the client to the pending visit prompt.
-  const directAnswerWithoutRepeatedStage = relationshipEligibilityAnswer ?? workflowStageClarification ?? accidentNotDrivableNotice ?? completionNotice ?? attachmentAcceptanceNotice ?? optionalStageDeclineNotice ?? visitNonWorkingDay ?? visitNotice ?? visitTimeRecorded ?? visitProgress ?? visitTimeUnavailable ?? visitTimeClarification ?? residenceLimitNotice ?? programmeChangeGuarantorNotice ?? acceptedLimitNotice ?? (region10Answer ? [region10Answer, olderVehicleNotice].filter(Boolean).join("\n\n") : undefined) ?? olderVehicleNotice ?? spouseVisitAnswer(input) ?? familyNotice ?? unknownVehicleValueNotice ?? waitingForVehicleValueNotice;
+  const directAnswerWithoutRepeatedStage = relationshipEligibilityAnswer ?? workflowStageClarification ?? accidentNotDrivableNotice ?? visitNotice ?? completionNotice ?? attachmentAcceptanceNotice ?? optionalStageDeclineNotice ?? visitNonWorkingDay ?? visitTimeRecorded ?? visitProgress ?? visitTimeUnavailable ?? visitTimeClarification ?? residenceLimitNotice ?? programmeChangeGuarantorNotice ?? acceptedLimitNotice ?? (region10Answer ? [region10Answer, olderVehicleNotice].filter(Boolean).join("\n\n") : undefined) ?? olderVehicleNotice ?? spouseVisitAnswer(input) ?? familyNotice ?? unknownVehicleValueNotice ?? waitingForVehicleValueNotice;
   const directAnswer = directAnswerWithoutRepeatedStage ?? repeatedStageReply;
   // A direct approved FAQ outranks all free-form model prose. This prevents
   // plausible but unsupported claims such as a parking location or credit
@@ -1533,7 +1551,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     && loanQuestionKind === "none"
     ? parsed.contextualAcknowledgement
     : undefined;
-  const workflowFollowUp = accidentNotDrivableNotice || rejectedMoneyClarification || belowMinimumReply || visitTimeRecorded || visitProgress || visitTimeUnavailable || visitTimeClarification || visitNonWorkingDay || hasPendingMoneyCurrencyClarification(internalReply)
+  const workflowFollowUp = pauseNotice || accidentNotDrivableNotice || rejectedMoneyClarification || belowMinimumReply || visitTimeRecorded || visitProgress || visitTimeUnavailable || visitTimeClarification || visitNonWorkingDay || hasPendingMoneyCurrencyClarification(internalReply)
     ? undefined
     : serverWorkflowFollowUp(loanQuestionKind, effectiveFacts, stageCompletion, requestedAmountLimit, workflowSelectedLimitNotice);
   const answerBeforeWorkflow = isLoanRateQuestion(loanQuestionKind)
@@ -1541,7 +1559,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     // The server can answer spouse/guarantor eligibility from known facts.
     // That direct question must not be hidden by a model's mistaken label of
     // the same turn as a clarification of the pending visit stage.
-    : relationshipEligibilityAnswer ?? workflowStageClarification ?? workflowClarificationAnswer ?? mandatoryKnowledgeAnswer ?? contextualAcknowledgement?.text ?? directAnswer ?? removeIncorrectResidenceClarificationProse(
+    : pauseNotice ?? relationshipEligibilityAnswer ?? workflowStageClarification ?? workflowClarificationAnswer ?? mandatoryKnowledgeAnswer ?? contextualAcknowledgement?.text ?? directAnswer ?? removeIncorrectResidenceClarificationProse(
     removeForbiddenMetaPhrases(dropUnsupportedFallbackForNonQuestion(replaceUnsupportedFallbackWithApprovedAnswer(guardedModelReply, mandatoryKnowledgeAnswer, input), semanticText)),
     input,
     effectiveFacts
@@ -1574,7 +1592,9 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     // retain a stale top-level model hint after server validation rejected it.
     needsKnowledgeLookup: knowledgeRequest?.required ?? false,
     leadCardPatch: { ...effectiveFacts, ...(knowledgeRequest ? { knowledgeRequest } : {}) },
-    dialogueState: existingContractServiceRequest
+    dialogueState: effectiveFacts.clientPaused
+      ? { stage: "PAUSED", status: "target_reached", nextAction: "pause" }
+      : existingContractServiceRequest
       ? { stage: "EXISTING_CONTRACT_REDIRECT", status: "redirect_existing_contract", nextAction: "redirect_existing_contract" }
       : accidentNotDrivableNotice
       ? { stage: "REFUSED", status: "refuse", nextAction: "none" }
@@ -1731,8 +1751,9 @@ function omitVisitFacts(patch: Partial<ApplicationFacts>): Partial<ApplicationFa
 function visitPatchFromClearReply(input: Pick<AgentTurnInput, "text" | "currentTurnMessages" | "messages" | "settings">, facts: ApplicationFacts): Partial<ApplicationFacts> {
   if (!deriveStageCompletion(facts).readyForVisit) return {};
   const lastAssistant = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
-  if (!isVisitSchedulingQuestion(lastAssistant)) return {};
   const text = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "").trim().toLocaleLowerCase("ru-RU");
+  const correctingBookedVisit = Boolean(facts.visitDate && facts.visitTime && isExplicitVisitTimeCorrection(text));
+  if (!isVisitSchedulingQuestion(lastAssistant) && !correctingBookedVisit) return {};
   const settings = input.settings as Record<string, unknown>;
   const timezone = typeof settings.timezone === "string" ? settings.timezone : "Asia/Bishkek";
   const visitDate = visitDateFromReply(text, timezone);
@@ -1741,7 +1762,10 @@ function visitPatchFromClearReply(input: Pick<AgentTurnInput, "text" | "currentT
   if (visitDate && !isWorkingVisitDate(visitDate)) return {};
   // The time must be tied to «в» (or an explicit hour suffix), otherwise the
   // date day in «6 октября» is incorrectly treated as 18:00.
-  const timeMatch = text.match(/(?:(?:^|[\s,])в\s+(\d{1,2})(?::(\d{2}))?|(?:^|[\s,])(\d{1,2})(?::(\d{2}))?\s*(?:час(?:а|ов)?|ч))\s*(утра|дня|вечера)?(?!\p{L})/iu);
+  const timeMatches = [...text.matchAll(/(?:(?:^|[\s,])в\s+(\d{1,2})(?::(\d{2}))?|(?:^|[\s,])(\d{1,2})(?::(\d{2}))?\s*(?:час(?:а|ов)?|ч))\s*(утра|дня|вечера)?(?!\p{L})/giu)];
+  // In a correction such as «в 3 неудобно, давайте в 6» the final time is
+  // the replacement; never keep the now explicitly rejected first time.
+  const timeMatch = timeMatches.at(-1);
   if (!timeMatch) return visitDate ? { visitRequested: true, visitDate } : {};
   let hour = Number(timeMatch[1] ?? timeMatch[3]);
   const minute = Number(timeMatch[2] ?? timeMatch[4] ?? "0");
@@ -1752,9 +1776,13 @@ function visitPatchFromClearReply(input: Pick<AgentTurnInput, "text" | "currentT
   if (hour < 11 || hour > 18 || minute > 59) return {};
   return {
     visitRequested: true,
-    ...(visitDate ? { visitDate } : {}),
+    ...(visitDate ? { visitDate } : correctingBookedVisit ? { visitDate: facts.visitDate } : {}),
     visitTime: `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`
   };
+}
+
+function isExplicitVisitTimeCorrection(text: string): boolean {
+  return /(?:неудобн|не\s+подходит|давайте|лучше|перенес)[^.!?]{0,80}(?:в\s*)?\d{1,2}(?::\d{2})?|(?:в\s*)?\d{1,2}(?::\d{2})?[^.!?]{0,80}(?:неудобн|не\s+подходит|давайте|лучше|перенес)/iu.test(text);
 }
 
 function isVisitSchedulingQuestion(text: string): boolean {
@@ -2200,7 +2228,7 @@ function repeatedResidenceStageExplanation(input: Pick<AgentTurnInput, "text" | 
 function nextFamilyStageQuestion(facts: ApplicationFacts): string {
   if (!facts.familyStatus || facts.familyStatus === "unknown") return "Подскажите, пожалуйста, Ваше семейное положение — Вы в браке, в разводе или не в браке.";
   if (facts.familyStatus === "divorced" && facts.vehicleBoughtDuringMarriage === undefined) {
-    return "Подскажите, пожалуйста, автомобиль был приобретён во время брака или после развода?";
+    return "Подскажите, пожалуйста, автомобиль был приобретён до брака, во время брака или после развода?";
   }
   if (facts.familyStatus === "married" && facts.spouseAway) {
     if (facts.visitDate || facts.visitTime) return "Супруг или супруга может оформить нотариальное согласие у любого нотариуса по месту нахождения и отправить Вам оригинал. Вам удобнее отменить визит или перенести его на другую дату?";
@@ -2543,7 +2571,7 @@ function removeModelWorkflowQuestion(reply: string): string {
   // sentence explains the rule and its second sentence asks the purchase
   // timing. It must remain atomic so the workflow appender does not preserve
   // the explanation and append the same full prompt a second time.
-  if (/Нотариальное\s+согласие\s+бывшего\s+супруга\s+или\s+супруги\s+не\s+требуется/iu.test(reply) && /автомобиль\s+был\s+приобрет\p{L}*\s+во\s+время\s+брака\s+или\s+после\s+развода/iu.test(reply)) {
+  if (/Нотариальное\s+согласие\s+бывшего\s+супруга\s+или\s+супруги\s+не\s+требуется/iu.test(reply) && /автомобиль\s+был\s+приобрет\p{L}*\s+(?:до\s+брака,?\s+)?во\s+время\s+брака\s+или\s+после\s+развода/iu.test(reply)) {
     return reply.trim();
   }
   // This is a complete server-owned continuation after a newly recorded
@@ -2886,8 +2914,13 @@ function familyPatchFromClearReply(input: Pick<AgentTurnInput, "text" | "current
   // change back to married. Do not let a model patch erase that distinction.
   if (facts.familyStatus === "divorced" && isDivorcePurchaseTimingQuestion(lastAssistant)) {
     patch.familyStatus = "divorced";
-    if (isBoughtDuringMarriageReply(text)) patch.vehicleBoughtDuringMarriage = true;
-    else if (isBoughtAfterDivorceReply(text)) patch.vehicleBoughtDuringMarriage = false;
+    if (isBoughtDuringMarriageReply(text)) {
+      patch.vehicleBoughtDuringMarriage = true;
+      patch.vehiclePurchasedDuringMarriage = true;
+    } else if (isBoughtOutsideMarriageReply(text)) {
+      patch.vehicleBoughtDuringMarriage = false;
+      patch.vehiclePurchasedDuringMarriage = false;
+    }
     return patch;
   }
   const currentStatus = modelPatch.familyStatus ?? facts.familyStatus;
@@ -2898,8 +2931,13 @@ function familyPatchFromClearReply(input: Pick<AgentTurnInput, "text" | "current
   }
   const familyStatus = patch.familyStatus ?? currentStatus;
   if (familyStatus === "divorced" && facts.vehicleBoughtDuringMarriage === undefined) {
-    if (isBoughtDuringMarriageReply(text)) patch.vehicleBoughtDuringMarriage = true;
-    else if (isBoughtAfterDivorceReply(text)) patch.vehicleBoughtDuringMarriage = false;
+    if (isBoughtDuringMarriageReply(text)) {
+      patch.vehicleBoughtDuringMarriage = true;
+      patch.vehiclePurchasedDuringMarriage = true;
+    } else if (isBoughtOutsideMarriageReply(text)) {
+      patch.vehicleBoughtDuringMarriage = false;
+      patch.vehiclePurchasedDuringMarriage = false;
+    }
   }
   if (familyStatus === "married") {
     if (/(?:супруг[аи]?.{0,50}(?:не\s+в\s+бишкек|в\s+отъезд|за\s+границ)|(?:не\s+в\s+бишкек|в\s+отъезд|за\s+границ).{0,50}супруг[аи]?)/iu.test(text)) patch.spouseAway = true;
@@ -2937,7 +2975,7 @@ function familyTransitionNotice(input: Pick<AgentTurnInput, "text" | "currentTur
   if (previous.familyStatus !== current.familyStatus && current.familyStatus === "single") {
     return "Нотариальное согласие супруга или супруги в таком случае не требуется.";
   }
-  if (previous.vehicleBoughtDuringMarriage !== current.vehicleBoughtDuringMarriage && current.familyStatus === "divorced" && (isDivorcePurchaseTimingQuestion(lastAssistant) || isBoughtDuringMarriageReply(text) || isBoughtAfterDivorceReply(text))) {
+  if (previous.vehicleBoughtDuringMarriage !== current.vehicleBoughtDuringMarriage && current.familyStatus === "divorced" && (isDivorcePurchaseTimingQuestion(lastAssistant) || isBoughtDuringMarriageReply(text) || isBoughtOutsideMarriageReply(text))) {
     return current.vehicleBoughtDuringMarriage
       ? "В таком случае, пожалуйста, возьмите с собой оригинал свидетельства о расторжении брака. Если удобно, заранее пришлите его фотографию — это ускорит рассмотрение заявки."
       : "В таком случае свидетельство о расторжении брака не потребуется.";
@@ -2949,7 +2987,7 @@ function familyTransitionNotice(input: Pick<AgentTurnInput, "text" | "currentTur
 }
 
 function isDivorcePurchaseTimingQuestion(text: string): boolean {
-  return /(?:автомобил|авто).{0,80}(?:приобрет|куп).{0,80}(?:во\s+время\s+брака|после\s+развода)/iu.test(text);
+  return /(?:автомобил|авто).{0,80}(?:приобрет|куп).{0,80}(?:до\s+брака|во\s+время\s+брака|после\s+развода)/iu.test(text);
 }
 
 function isBoughtDuringMarriageReply(text: string): boolean {
@@ -2958,16 +2996,16 @@ function isBoughtDuringMarriageReply(text: string): boolean {
     || /(?:куп(?:ил|ила|лен|лена)|приобр[её]л[а-яё]*).{0,40}(?:в(?:о)?\s+)?браке|(?:в(?:о)?\s+)?браке.{0,40}(?:куп(?:ил|ила|лен|лена)|приобр[её]л[а-яё]*)/iu.test(text);
 }
 
-function isBoughtAfterDivorceReply(text: string): boolean {
+function isBoughtOutsideMarriageReply(text: string): boolean {
   return divorcePurchaseTimingFallback(text) === false
-    || /после\s+развод|(?:куп(?:ил|ила|лен|лена)|приобр[её]л[а-яё]*).{0,40}развод/iu.test(text);
+    || /(?:после\s+развод|до\s+(?:брака|свадьбы)|раньше\s+(?:брака|свадьбы)|до\s+того\s+как\s+(?:пожен|распис)|наверное\s+до\b|(?:куп(?:ил|ила|лен|лена)|приобр[её]л[а-яё]*).{0,40}(?:развод|до\s+брака)|(?:развод|до\s+брака).{0,40}(?:куп(?:ил|ила|лен|лена)|приобр[её]л[а-яё]*))/iu.test(text);
 }
 
 /** Outage fallback for short contextual answers to the exact divorce question. */
 function divorcePurchaseTimingFallback(text: string): boolean | undefined {
   const normalized = text.trim().toLocaleLowerCase("ru-RU").replace(/[.!?]+$/u, "").trim();
   if (/^(?:в|во|время|во\s+время|в\s+браке|во\s+время\s+брака|в\s+период\s+брака)$/u.test(normalized)) return true;
-  if (/^(?:после|после\s+развода|не\s+в|не\s+в\s+браке|вне|вне\s+брака)$/u.test(normalized)) return false;
+  if (/^(?:после|после\s+развода|не\s+в|не\s+в\s+браке|вне|вне\s+брака|до|до\s+брака|до\s+свадьбы|раньше|раньше\s+брака|наверное\s+до(?:\s+ещ[её])?)$/u.test(normalized)) return false;
   return undefined;
 }
 
@@ -3159,7 +3197,8 @@ function hasMaterialLeadFactChange(previous: ApplicationFacts, current: Applicat
     "vehicleMake", "vehicleModel", "vehicleYear", "vehicleValue", "vehicleValueSourceCurrency",
     "requestedAmount", "requestedAmountSourceCurrency", "requestedProgram",
     "residenceText", "residenceRegion", "residenceCategory",
-    "familyStatus", "vehicleBoughtDuringMarriage", "guarantorAvailable"
+    "familyStatus", "vehicleBoughtDuringMarriage", "guarantorAvailable",
+    "visitRequested", "visitDate", "visitTime"
   ];
   return keys.some((key) => previous[key] !== current[key]);
 }
