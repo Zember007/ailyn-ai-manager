@@ -1470,6 +1470,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     ? relationshipEligibilityAnswerForFacts(semanticText ?? "", effectiveFacts)
     : undefined;
   const visitNotice = visitConfirmationNotice(input, input.facts, effectiveFacts);
+  const visitTimeRecorded = visitTimeRecordedReply(input, input.facts, effectiveFacts);
   const visitProgress = visitProgressReply(input.facts, effectiveFacts);
   const visitTimeUnavailable = visitTimeUnavailableReply(parsed.visitTimeAvailability, effectiveFacts);
   const visitTimeClarification = visitTimeClarificationReply(input, effectiveFacts);
@@ -1505,7 +1506,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   // A direct question about spouse/guarantor requirements is answered from
   // the card before a fallible model label such as current-stage
   // clarification can return the client to the pending visit prompt.
-  const directAnswerWithoutRepeatedStage = relationshipEligibilityAnswer ?? workflowStageClarification ?? accidentNotDrivableNotice ?? completionNotice ?? attachmentAcceptanceNotice ?? optionalStageDeclineNotice ?? visitNonWorkingDay ?? visitNotice ?? visitProgress ?? visitTimeUnavailable ?? visitTimeClarification ?? residenceLimitNotice ?? programmeChangeGuarantorNotice ?? acceptedLimitNotice ?? (region10Answer ? [region10Answer, olderVehicleNotice].filter(Boolean).join("\n\n") : undefined) ?? olderVehicleNotice ?? spouseVisitAnswer(input) ?? familyNotice ?? unknownVehicleValueNotice ?? waitingForVehicleValueNotice;
+  const directAnswerWithoutRepeatedStage = relationshipEligibilityAnswer ?? workflowStageClarification ?? accidentNotDrivableNotice ?? completionNotice ?? attachmentAcceptanceNotice ?? optionalStageDeclineNotice ?? visitNonWorkingDay ?? visitNotice ?? visitTimeRecorded ?? visitProgress ?? visitTimeUnavailable ?? visitTimeClarification ?? residenceLimitNotice ?? programmeChangeGuarantorNotice ?? acceptedLimitNotice ?? (region10Answer ? [region10Answer, olderVehicleNotice].filter(Boolean).join("\n\n") : undefined) ?? olderVehicleNotice ?? spouseVisitAnswer(input) ?? familyNotice ?? unknownVehicleValueNotice ?? waitingForVehicleValueNotice;
   const directAnswer = directAnswerWithoutRepeatedStage ?? repeatedStageReply;
   // A direct approved FAQ outranks all free-form model prose. This prevents
   // plausible but unsupported claims such as a parking location or credit
@@ -1532,7 +1533,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     && loanQuestionKind === "none"
     ? parsed.contextualAcknowledgement
     : undefined;
-  const workflowFollowUp = accidentNotDrivableNotice || rejectedMoneyClarification || belowMinimumReply || visitProgress || visitTimeUnavailable || visitTimeClarification || visitNonWorkingDay || hasPendingMoneyCurrencyClarification(internalReply)
+  const workflowFollowUp = accidentNotDrivableNotice || rejectedMoneyClarification || belowMinimumReply || visitTimeRecorded || visitProgress || visitTimeUnavailable || visitTimeClarification || visitNonWorkingDay || hasPendingMoneyCurrencyClarification(internalReply)
     ? undefined
     : serverWorkflowFollowUp(loanQuestionKind, effectiveFacts, stageCompletion, requestedAmountLimit, workflowSelectedLimitNotice);
   const answerBeforeWorkflow = isLoanRateQuestion(loanQuestionKind)
@@ -2060,6 +2061,20 @@ function visitProgressReply(previous: ApplicationFacts, current: ApplicationFact
   return nextRequiredStageQuestion(current);
 }
 
+/** Once the server recorded a time, the next server message must never ask
+ * for that time again. A date still missing is the only remaining slot part. */
+function visitTimeRecordedReply(
+  input: Pick<AgentTurnInput, "messages">,
+  previous: ApplicationFacts,
+  current: ApplicationFacts
+): string | undefined {
+  if (previous.visitTime === current.visitTime || !current.visitTime) return undefined;
+  const lastAssistant = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
+  if (!isVisitSchedulingQuestion(lastAssistant)) return undefined;
+  if (current.visitDate) return undefined; // visitConfirmationNotice owns a complete slot.
+  return `Время ${current.visitTime} отмечено. Офис работает с понедельника по пятницу. На какой день Вам удобно подъехать?`;
+}
+
 function approvedOfficeAddress(value: unknown): string {
   if (typeof value !== "string" || !value.trim() || /(?:подтвердить|настройк)/iu.test(value)) return DEFAULT_OFFICE_ADDRESS;
   return value.trim();
@@ -2531,6 +2546,10 @@ function removeModelWorkflowQuestion(reply: string): string {
   if (/Нотариальное\s+согласие\s+бывшего\s+супруга\s+или\s+супруги\s+не\s+требуется/iu.test(reply) && /автомобиль\s+был\s+приобрет\p{L}*\s+во\s+время\s+брака\s+или\s+после\s+развода/iu.test(reply)) {
     return reply.trim();
   }
+  // This is a complete server-owned continuation after a newly recorded
+  // visit time. The remaining question is about the date, not a model retry
+  // of the time prompt, so it must survive the generic model-question scrub.
+  if (/Время\s+\d{2}:\d{2}\s+отмечено/iu.test(reply) && /на\s+какой\s+день[^?!.]*(?:подъехать|приехать)/iu.test(reply)) return reply.trim();
   const isWorkflowQuestion = (question: string): boolean => {
     const normalized = question.toLocaleLowerCase("ru-RU");
     // This is an extraction clarification, not an application-stage prompt:

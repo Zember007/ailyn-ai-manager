@@ -5536,6 +5536,24 @@ describe("single-agent dialogue", () => {
     expect(output.reply).not.toMatch(/в какое время вам удобно подъехать/iu);
   });
 
+  it("never asks for time again after recording a colloquial time without a date", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ ...validResult, reply: "Поняла.", leadCardPatch: {} }) } }] }) } as any;
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "В какое время Вам будет удобно подъехать?", createdAt: "2026-09-12" } as any],
+      facts: {
+        vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 3_000_000,
+        requestedAmount: 600_000, requestedProgram: "without_storage",
+        residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY",
+        documentsProvided: true, documents: { car_photo: "received" }, familyStatus: "single"
+      } as any,
+      settings: {}, text: "приеду примерно в 5", attachments: []
+    });
+
+    expect(output.result?.leadCardPatch.visitTime).toBe("17:00");
+    expect(output.reply).toContain("На какой день Вам удобно подъехать?");
+    expect(output.reply).not.toMatch(/в какое время вам удобно подъехать/iu);
+  });
+
   it("acknowledges an explicitly unknown visit time without storing one", async () => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ ...validResult, reply: "Поняла.", leadCardPatch: {} }) } }] }) } as any;
     const output = await new AgentTurnService(client).run({
