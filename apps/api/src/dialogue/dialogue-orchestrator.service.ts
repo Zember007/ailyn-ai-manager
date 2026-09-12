@@ -12,9 +12,10 @@ import { DeferredIntegrationsService } from "./deferred-integrations.service.js"
 import { detectMoneyMentions, formatMoney, formatSomMoney, resolveMoneyFacts, roundSomAmount, type ForeignMoneyCurrencyCode } from "./money-normalization.js";
 import { calculateLoanPricing } from "./loan-pricing.js";
 
-export interface DialogueResult { conversation: Stage1Conversation; application: Stage1Application; reply: string; validation: { passed: boolean; errors: string[] }; routerAiModel: string; promptVersion: string; needsKnowledgeLookup?: boolean; }
+export interface DialogueResult { conversation: Stage1Conversation; application: Stage1Application; reply: string; validation: { passed: boolean; errors: string[] }; routerAiModel: string; promptVersion: string; needsKnowledgeLookup?: boolean; summaryNeedsRefresh?: boolean; }
 export interface DialogueReceiveOptions { signal?: AbortSignal; deferReplyPersistence?: boolean; }
 const managerDeltaFactKeys = new Set(["requestedAmount", "requestedProgram", "visitDate", "visitTime", "vehicleValue", "vehicleMake", "vehicleModel", "vehicleYear", "fullName", "phone"]);
+const ANSWER_MAXIMUM_AFTER_PREREQUISITES = "answer_maximum_after_prerequisites";
 
 @Injectable()
 export class DialogueOrchestratorService {
@@ -113,14 +114,21 @@ export class DialogueOrchestratorService {
       attachments,
       signal: options.signal
     });
+    // This flag is set from the approved KB payload, not from wording the
+    // client or a model used to ask about a maximum.
+    let receivedMaximumLoanTemplate = false;
     const knowledgeRequest = turn.result?.leadCardPatch.knowledgeRequest;
-    const maximumLoanQuestion = isMaximumLoanKnowledgeQuestion(text);
-    if ((knowledgeRequest?.required ?? turn.result?.needsKnowledgeLookup) && turn.result) {
+    const currentMaximumLoanQuestion = isMaximumLoanKnowledgeQuestion(text);
+    const deferredMaximumLoanAnswer = initialApplication.agentState?.nextAction === ANSWER_MAXIMUM_AFTER_PREREQUISITES
+      && Boolean(turn.result)
+      && hasMaximumLoanPrerequisites(turn.result!.leadCardPatch);
+    const maximumLoanQuestion = currentMaximumLoanQuestion || deferredMaximumLoanAnswer;
+    if (((knowledgeRequest?.required ?? turn.result?.needsKnowledgeLookup) || deferredMaximumLoanAnswer) && turn.result) {
       const { knowledgeRequest: _knowledgeRequest, ...turnFacts } = turn.result.leadCardPatch;
       // The main model can omit the final canonical prompt while routing a
       // factual question to knowledge. Do not let the KB answer terminate the
       // application: derive the next required action from server-owned facts.
-      const workflowFollowUp = turn.result.dialogueState.status === "redirect_existing_contract"
+      const workflowFollowUp = deferredMaximumLoanAnswer || turn.result.dialogueState.status === "redirect_existing_contract"
         ? ""
         : extractWorkflowFollowUp(turn.reply)
         || nextRequiredStageQuestion(turnFacts, deriveStageCompletion(turnFacts, settings))
@@ -131,7 +139,7 @@ export class DialogueOrchestratorService {
       // active stage response. That extraction is useful for the stage, but
       // must never truncate a multi-question client message before knowledge
       // retrieval: the knowledge agent needs every question in this turn.
-      const clientQuestion = text;
+      const clientQuestion = deferredMaximumLoanAnswer ? "сколько максимум дадите" : text;
       const knowledge = await this.agent.answerWithKnowledge({
         conversationId: conversation.id,
         messages: modelMessages,
@@ -146,6 +154,7 @@ export class DialogueOrchestratorService {
         signal: options.signal
       });
       if (knowledge) {
+        receivedMaximumLoanTemplate = hasMaximumLoanPlaceholders(knowledge.reply);
         // The knowledge model is the only author of factual company answers.
         // Never prefix it with the workflow model's prose: that prose may be
         // plausible but unsupported and would reintroduce a hallucination.
@@ -158,7 +167,7 @@ export class DialogueOrchestratorService {
           : knowledge.reply;
         const reply = appendWorkflowFollowUp(
           responsePlan,
-          workflowFollowUpAfterKnowledge(responsePlan, workflowFollowUp, lastAssistantMessage, turnFacts)
+          workflowFollowUpAfterKnowledge(responsePlan, workflowFollowUp, lastAssistantMessage, turnFacts, maximumLoanQuestion)
         );
         const result = { ...turn.result, reply };
         turn = { ...turn, result, reply, model: knowledge.model, promptVersion: `${turn.promptVersion}+knowledge` };
@@ -232,6 +241,14 @@ export class DialogueOrchestratorService {
       changedFactKeys = await this.store.updateFacts(application, effectiveFacts);
       await this.store.saveAgentState(application, {
         ...turnResult.dialogueState,
+        // A maximum request may be temporarily blocked by vehicle/residence
+        // facts. This is server-owned conversational state, not a client-card
+        // preference: the next turn that completes those facts receives the
+        // deferred range automatically.
+        ...(receivedMaximumLoanTemplate && !hasMaximumLoanPrerequisites(reconciledFacts)
+          || initialApplication.agentState?.nextAction === ANSWER_MAXIMUM_AFTER_PREREQUISITES && !hasMaximumLoanPrerequisites(reconciledFacts)
+          ? { nextAction: ANSWER_MAXIMUM_AFTER_PREREQUISITES }
+          : {}),
         cardSummary: turnResult.cardSummary,
         intent: turnResult.intent,
         preliminaryLimit
@@ -262,7 +279,8 @@ export class DialogueOrchestratorService {
       const attachmentFallback = isCarPhotoStagePrompt(lastAssistantReply)
         ? { documents: { ...(application.facts.documents ?? {}), car_photo: "received" as const } }
         : { documentsProvided: true };
-      await this.store.updateFacts(application, attachmentFallback);
+      const fallbackChangedFactKeys = await this.store.updateFacts(application, attachmentFallback);
+      changedFactKeys = [...new Set([...changedFactKeys, ...fallbackChangedFactKeys])];
       application = (await this.store.getApplication(application.id)) ?? application;
     }
     const validation = { passed: Boolean(turn.result), errors: turn.error ? [turn.error] : [] };
@@ -289,28 +307,20 @@ export class DialogueOrchestratorService {
     // sequence. Facts and client messages must commit after every one, but
     // only the final combined reply may appear in the visible history.
     if (options.deferReplyPersistence) {
-      return { conversation, application, reply, validation, routerAiModel: turn.model, promptVersion: turn.promptVersion, needsKnowledgeLookup: turn.result?.needsKnowledgeLookup };
+      return { conversation, application, reply, validation, routerAiModel: turn.model, promptVersion: turn.promptVersion, needsKnowledgeLookup: turn.result?.needsKnowledgeLookup, summaryNeedsRefresh: changedFactKeys.length > 0 };
     }
     await this.store.addMessage(conversation, { author: "ai", body: reply, attachmentIds: [], attachments: [], metadata: { sourceMessageId: lastMessage.externalMessageId, routerAiModel: turn.model, promptVersion: turn.promptVersion, validation, trace: { singleModel: true, batchedClientMessages: messages.length, changedFactKeys, managerEvent, intent: turn.result?.intent, targetEvent: turn.result?.targetEvent } } });
-    // Generate the private lead summary immediately after the booking reply
-    // has been persisted and the visit facts have reached the lead card. A
-    // visit may be recorded before every optional workflow field is complete,
-    // so `deriveStageCompletion(...).visit` is intentionally not the gate.
-    // This summary lives on Application, never in facts, and is excluded from
-    // all regular dialogue-model prompts.
-    const summarizeBookedDialogue = (this.agent as Partial<Pick<AgentTurnService, "summarizeBookedDialogue">>).summarizeBookedDialogue;
-    const visitBooked = Boolean(application.facts.visitDate && application.facts.visitTime);
-    if (summarizeBookedDialogue && visitBooked && !application.dialogueSummary) {
-      const claimed = await this.store.claimDialogueSummaryGeneration(application.id);
-      if (claimed) {
-        const summary = await summarizeBookedDialogue.call(this.agent, {
-          conversationId: conversation.id,
-          facts: application.facts,
-          messages: [...turnMessages, { id: "pending-ai-summary", author: "ai", body: reply, attachmentIds: [], attachments: [], createdAt: new Date().toISOString() }]
-        });
-        if (summary) await this.store.saveDialogueSummary(application.id, summary);
-        else await this.store.releaseDialogueSummaryGeneration(application.id);
-      }
+    // This is a mutable private snapshot, not a one-time visit artifact.
+    // Refresh it after every persisted lead-card change so managers see the
+    // current application before documents or a visit are complete.
+    const summarizeDialogue = (this.agent as Partial<Pick<AgentTurnService, "summarizeDialogue">>).summarizeDialogue;
+    if (summarizeDialogue && changedFactKeys.length > 0) {
+      const summary = await summarizeDialogue.call(this.agent, {
+        conversationId: conversation.id,
+        facts: application.facts,
+        messages: [...turnMessages, { id: "pending-ai-summary", author: "ai", body: reply, attachmentIds: [], attachments: [], createdAt: new Date().toISOString() }]
+      });
+      if (summary) await this.store.saveDialogueSummary(application.id, summary);
     }
     const refreshedConversation = (await this.store.getConversation(conversation.id)) ?? conversation;
     const refreshedApplication = (await this.store.getApplication(application.id)) ?? refreshedConversation.application ?? application;
@@ -319,7 +329,7 @@ export class DialogueOrchestratorService {
   }
 
   /** Publishes the one visible reply after a sequentially processed batch. */
-  async publishDeferredBatchReply(result: DialogueResult, reply: string, sourceMessageId: string): Promise<DialogueResult> {
+  async publishDeferredBatchReply(result: DialogueResult, reply: string, sourceMessageId: string, options?: { refreshSummary: true }): Promise<DialogueResult> {
     const plannedReply = ensureNonEmptyClientReply(removeEarlierDuplicateSentences(reply), result.application.facts);
     const visibleReply = enforceFirstContactGreeting(plannedReply, {
       messages: result.conversation.messages,
@@ -334,6 +344,17 @@ export class DialogueOrchestratorService {
         trace: { singleModel: true, batchedClientMessages: true, deferredReply: true }
       }
     });
+    if (options?.refreshSummary) {
+      const summarizeDialogue = (this.agent as Partial<Pick<AgentTurnService, "summarizeDialogue">>).summarizeDialogue;
+      if (summarizeDialogue) {
+        const summary = await summarizeDialogue.call(this.agent, {
+          conversationId: result.conversation.id,
+          facts: result.application.facts,
+          messages: [{ id: "pending-ai-summary", author: "ai", body: visibleReply, attachmentIds: [], attachments: [], createdAt: new Date().toISOString() }]
+        });
+        if (summary) await this.store.saveDialogueSummary(result.application.id, summary);
+      }
+    }
     const conversation = (await this.store.getConversation(result.conversation.id)) ?? result.conversation;
     const application = (await this.store.getApplication(result.application.id)) ?? conversation.application ?? result.application;
     return { ...result, conversation, application, reply: visibleReply };
@@ -365,27 +386,27 @@ function appendWorkflowFollowUp(reply: string, followUp: string): string {
  * collected the requested amount; other FAQ answers keep their normal stage
  * follow-up.
  */
-export function workflowFollowUpAfterKnowledge(reply: string, followUp: string, lastAssistantMessage: string, facts?: ApplicationFacts): string {
-  if (!isRequestedAmountStageQuestion(lastAssistantMessage)) return followUp;
-  if (isMaximumLoanRangeAnswer(reply)) return "";
-  if (facts && isMaximumLoanCalculationPendingAnswer(reply)) return maximumLoanCalculationFollowUp(facts, followUp);
+export function workflowFollowUpAfterKnowledge(reply: string, followUp: string, lastAssistantMessage: string, facts?: ApplicationFacts, _maximumLoanQuestion = false): string {
+  // Only the approved FAQ's two placeholders identify a maximum-range
+  // response. No model wording or user-text pattern may change its workflow.
+  if (!hasMaximumLoanPlaceholders(reply)) return followUp;
+  if (facts && (!facts.residenceRegion || !facts.residenceCategory || facts.vehicleValue === undefined)) {
+    return maximumLoanCalculationFollowUp(facts, followUp);
+  }
+  // The maximum range replaces (rather than supplements) only the current
+  // requested-amount prompt. For every other stage, including vehicle,
+  // documents, family and visit, the client must receive the next canonical
+  // server-owned question after the FAQ answer.
+  if (facts && isRequestedAmountStagePrompt(lastAssistantMessage)) return "";
   return followUp;
 }
 
-function isRequestedAmountStageQuestion(text: string): boolean {
-  return /^\s*какая\s+сумма\s+займа\s+вам\s+необходима\?\s*$/iu.test(text);
+function isRequestedAmountStagePrompt(text: string): boolean {
+  return /(?:какая\s+)?сумм\p{L}*\s+займ/iu.test(text);
 }
 
-function isMaximumLoanRangeAnswer(text: string): boolean {
-  // A stored FAQ carries these placeholders until the final rendering
-  // boundary. `answerWithKnowledge` may render them early, so recognise both
-  // representations of the same approved maximum_loan_range answer.
-  if (/MAX_LIMIT_WITHOUT/iu.test(text) && /MAX_LIMIT_PARK/iu.test(text)) return true;
-  return /без\s+изъятия\s*:\s*от\s+50\s*000\s+сом\s+до\s+[\d\s]+\s+сом[\s\S]{0,160}со\s+стоянкой\s*:\s*от\s+50\s*000\s+сом\s+до\s+[\d\s]+\s+сом/iu.test(text);
-}
-
-function isMaximumLoanCalculationPendingAnswer(text: string): boolean {
-  return /максимальн(?:ую|ая)\s+сумм\p{L}*[^.!?]{0,120}(?:пропис|стоимост)/iu.test(text);
+function hasMaximumLoanPlaceholders(text: string): boolean {
+  return /MAX_LIMIT_WITHOUT/iu.test(text) && /MAX_LIMIT_PARK/iu.test(text);
 }
 
 function maximumLoanCalculationFollowUp(facts: ApplicationFacts, fallback: string): string {
@@ -394,6 +415,16 @@ function maximumLoanCalculationFollowUp(facts: ApplicationFacts, fallback: strin
     return "Подскажите, пожалуйста, Вашу прописку — Бишкек, Чуйская область или другой регион Кыргызстана.";
   }
   return fallback;
+}
+
+function hasMaximumLoanPrerequisites(facts: ApplicationFacts): boolean {
+  return Boolean(
+    facts.vehicleModel
+    && facts.vehicleYear !== undefined
+    && facts.vehicleValue !== undefined
+    && facts.residenceRegion
+    && facts.residenceCategory
+  );
 }
 
 /**
@@ -431,7 +462,10 @@ export function replaceMaximumLimitPlaceholders(reply: string, facts: Applicatio
   const clarification = "Максимальную сумму смогу рассчитать после того, как узнаю: "
     + (missing.length > 0 ? missing : ["ориентировочная стоимость автомобиля и Ваша прописка"]).join(" и ")
     + ".";
-  return [answerWithoutTemplate, clarification].filter(Boolean).join("\n\n");
+  // The knowledge answer comes first, then the next server-owned collection
+  // question. This makes the missing-data explanation readable and keeps the
+  // workflow prompt after it.
+  return [clarification, answerWithoutTemplate].filter(Boolean).join("\n\n");
 }
 
 function toPendingInboundMessage(message: InboundMessage): Stage1Message {

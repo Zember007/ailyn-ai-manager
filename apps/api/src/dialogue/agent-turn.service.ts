@@ -200,7 +200,14 @@ export class AgentTurnService {
       ? officeLocationReply(input.settings)
       : undefined;
     const maximumLoanQuestion = isMaximumLoanKnowledgeQuestion(input.text ?? "");
-    const maximumLoanAnswer = maximumLoanKnowledgeAnswer(input.facts, input.settings);
+    const maximumLoanChunk = prioritizedKnowledgeForQuestion({
+      facts: input.facts,
+      currentMessage: input.text,
+      messages: input.messages
+    }).find((chunk) => chunk.key === "faq_maximum_loan_range");
+    const maximumLoanTemplate = maximumLoanChunk && "approvedAnswer" in maximumLoanChunk
+      ? maximumLoanChunk.approvedAnswer
+      : undefined;
     const context = {
       currentMessage: input.text ?? "",
       currentTurnMessages: input.currentTurnMessages ?? (input.text === undefined ? [] : [{ index: 1, text: input.text }]),
@@ -211,9 +218,10 @@ export class AgentTurnService {
       // Server-owned settings, not model knowledge, are authoritative for
       // office location and map links.
       officeLocationResponse,
-      // The FAQ owns the wording and routing. These values are rendered by
-      // the server only: a model must never invent or retain a stale maximum.
-      maximumLoanAnswer: maximumLoanQuestion ? maximumLoanAnswer : undefined,
+      // The FAQ template is a server contract. The orchestrator recognises
+      // its two markers and either substitutes current limits or asks for the
+      // missing calculation facts after this answer.
+      maximumLoanTemplate: maximumLoanQuestion ? maximumLoanTemplate : undefined,
       // Keep the model focused on the approved answer most relevant to this
       // message. The packet always starts with FAQ, then section 3.18 rules,
       // instead of making it search a large, competing corpus by itself.
@@ -246,9 +254,13 @@ export class AgentTurnService {
       // The office location is server-owned configuration, including live map
       // links, and therefore remains verbatim. Every knowledge-base response
       // comes from the dedicated model and is adapted to the current message.
-      const reply = maximumLoanQuestion
-        ? maximumLoanKnowledgeReply(input.text, maximumLoanAnswer)
-        : removeInternalPricingInstruction(officeLocationResponse ?? ensureGeneralRateCoverage(parsed.data.reply, input.text));
+      const knowledgeReply = removeInternalPricingInstruction(officeLocationResponse ?? ensureGeneralRateCoverage(parsed.data.reply, input.text));
+      // The maximum range is server-owned, but it is only one answer in a
+      // multi-question turn. Keep the canonical range and retain all other
+      // independent KB answers (rate, office amenities, vehicle conditions).
+      const reply = maximumLoanQuestion && maximumLoanTemplate
+        ? mergeMaximumLoanTemplateWithOtherAnswers(maximumLoanTemplate, knowledgeReply)
+        : knowledgeReply;
       await this.logs?.log("dialogue.knowledge-model", "Knowledge model response received", {
         conversationId: input.conversationId,
         metadata: { model: response.model ?? model, answerFound }
@@ -326,8 +338,8 @@ export class AgentTurnService {
     }
   }
 
-  /** Generates a private lead-card summary after the visit is first booked. */
-  async summarizeBookedDialogue(input: {
+  /** Generates a private snapshot of the lead card after facts change. */
+  async summarizeDialogue(input: {
     messages: Stage1Message[];
     facts: ApplicationFacts;
     conversationId?: string;
@@ -475,7 +487,42 @@ export class AgentTurnService {
     const residenceNormalized = await this.normalizeResidenceLocality(familyNormalized, input);
     const divorceTimingResolved = await this.resolveDivorcePurchaseTiming(residenceNormalized, input);
     const officeResolved = await this.resolveOfficeConsent(await this.resolveGuarantorDecision(await this.resolveResidenceClarification(divorceTimingResolved, input), input), input);
-    return this.resolveFinalQuestionsDecision(officeResolved, input);
+    return this.resolveVisitTimeAvailability(await this.resolveFinalQuestionsDecision(officeResolved, input), input);
+  }
+
+  /** A visit-time deferral is a valid stage answer, not an invitation for the
+   * conversational model to repeat the same time question. The classifier is
+   * deliberately scoped to that one active prompt; regex below is an outage
+   * fallback for short, unambiguous phrases. */
+  private async resolveVisitTimeAvailability(parsed: AgentTurnResult, input: AgentTurnInput): Promise<AgentTurnResult> {
+    if (!deriveStageCompletion(input.facts).readyForVisit) return parsed;
+    const lastAssistant = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
+    if (!isVisitSchedulingQuestion(lastAssistant)) return parsed;
+    const clientReply = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "").trim();
+    if (!clientReply) return parsed;
+    // The conversational model does not own this transient decision. Only
+    // the scoped normalizer below (or its deterministic fallback) may set it.
+    const normalizedParsed = { ...parsed, visitTimeAvailability: undefined };
+    try {
+      const response = await this.client.createChatCompletion({
+        model: this.config.routerAiNormalizerModel ?? this.config.routerAiTextModel ?? "routerai-text-model-not-configured",
+        temperature: 0, max_tokens: 30, reasoning: { enabled: false }, response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: "Ты нормализуешь только ответ клиента на вопрос о времени визита. Верни JSON {\"visitTimeAvailability\":\"known\"|\"unknown\"|\"not_a_visit_answer\"}. known: клиент назвал время, включая приблизительное («примерно в 5»). unknown: явно говорит, что время пока неизвестно («по времени пока не знаю», «как только смогу — сообщу»). Не извлекай и не придумывай время." },
+          { role: "user", content: JSON.stringify({ lastAssistant, clientReply }) }
+        ]
+      }, { timeoutMs: this.config.routerAiTimeoutMs, signal: input.signal });
+      const decision = parseAgentJson(response.choices?.[0]?.message?.content).visitTimeAvailability;
+      if (decision === "known" || decision === "unknown" || decision === "not_a_visit_answer") {
+        return { ...normalizedParsed, visitTimeAvailability: decision };
+      }
+    } catch (error) {
+      if (input.signal?.aborted) throw error;
+      this.logger.warn(`Visit-time classifier unavailable: ${formatError(error)}`);
+    }
+    return visitTimeUnavailableFallback(clientReply)
+      ? { ...normalizedParsed, visitTimeAvailability: "unknown" }
+      : normalizedParsed;
   }
 
   /**
@@ -1180,7 +1227,13 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   // The model is the primary semantic classifier for money questions. Text
   // patterns below are deliberately only an outage/legacy fallback.
   const loanQuestionKind = resolveLoanQuestionKind(parsed.loanQuestionKind, semanticText);
-  const maximumLoanQuestion = isMaximumLoanKnowledgeQuestion(semanticText ?? "");
+  // The deterministic FAQ matcher catches common wording, while
+  // `loanQuestionKind` retains the model/normalizer's semantic recognition
+  // for typos and compact forms such as «1 млн дадите». Both denote the same
+  // server-owned maximum calculation path.
+  const maximumLoanQuestion = isMaximumLoanKnowledgeQuestion(semanticText ?? "")
+    || loanQuestionKind === "maximum_limit"
+    || loanQuestionKind === "maximum_limit_and_rate";
   const semanticInput = clientQuestion
     ? { ...input, text: clientQuestion, currentTurnMessages: [{ index: 1, text: clientQuestion }] }
     : input;
@@ -1223,7 +1276,10 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   const workflowStageClarification = modelCurrentStageClarification
     ? workflowStageExplanation(input) ?? "Уточняем эти данные для предварительного рассмотрения заявки."
     : workflowWhyQuestion;
-  const approvedKnowledgeTopic = hasApprovedKnowledgeMatch(semanticText ?? "");
+  // Identity is an approved FAQ topic as well. It must take the knowledge
+  // route even when it arrives while a workflow question is pending.
+  const identityQuestion = isIdentityQuestion(input);
+  const approvedKnowledgeTopic = identityQuestion || hasApprovedKnowledgeMatch(semanticText ?? "");
   const modelMarksCurrentStageUnrelated = parsed.currentStageResponse === "unrelated";
   const stageResponse = !approvedKnowledgeTopic && !modelMarksCurrentStageUnrelated && (Boolean(workflowStageClarification) || modelCurrentStageClarification || activeWorkflowClarification || inactiveGuarantorClarification || parkingAlternativeGuarantorAnswer || (isResponseToLastWorkflowQuestion(input) && modelKnowledgeRequest?.required !== true));
   // The main model semantically detects natural-language questions which do
@@ -1236,13 +1292,15 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     && !maximumLoanQuestion
     && loanQuestionKind === "none"
     && !asksProgrammeDetails(semanticText ?? "");
-  const mayNeedKnowledge = !programSelectionOnly && (
+  const relationshipEligibilityQuestion = isRelationshipEligibilityQuestion(semanticText ?? "");
+  const mayNeedKnowledge = !relationshipEligibilityQuestion && !programSelectionOnly && (
     approvedKnowledgeTopic
     ||
     modelKnowledgeRequest?.required === true
     || maximumLoanQuestion
     || requiresKnowledgeAnswer(semanticInput, leadCardFacts, loanQuestionKind)
     || isVehicleRegistrationOwnershipQuestion(semanticText ?? "")
+    || identityQuestion
   );
   const ownershipRegistrationQuestion = isVehicleRegistrationOwnershipQuestion(semanticText ?? "");
   const independentOfficeQuestion = hasSeveralClientQuestions(semanticText ?? "") && isOfficeLocationQuestion(semanticText);
@@ -1284,6 +1342,10 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     ...(isClearDocumentsRefusal(input) ? { declinedDocuments: true } : {}),
     ...(isClearCarPhotoRefusal(input) ? { declinedCarPhoto: true } : {})
   };
+  // Office-consent can only be inferred from a reply to its own question. A
+  // family-status reply such as «в браке» must not skip the separate consent
+  // stage merely because the model over-eagerly emitted this field.
+  if (!isOfficeConsentQuestion(lastAssistantReply)) delete rawModelPatch.spouseConsentAtOffice;
   const minimumLoan = input.pricing?.minimumLoan ?? 50_000;
   const currentRequestedAmount = typeof rawModelPatch.requestedAmount === "number"
     ? rawModelPatch.requestedAmount
@@ -1381,10 +1443,10 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     && hasRecognizedFactsForTurn(input.facts, effectiveFacts)
     ? ""
     : normalizedModelReply;
-  const guardedModelReply = removeUnpromptedLoanExplanation(stripClientFactRestatement(removeDuplicateCurrencyConversion(removeUnaskedCurrencyProse(removeUnaskedLimitProse(enforceOptionalStageRefusalMessage(enforceGuarantorQuestionRequirements(removeUnpromptedExistingContractRedirect(enforceIdentityAnswer(
+  const guardedModelReply = removeUnpromptedLoanExplanation(stripClientFactRestatement(removeDuplicateCurrencyConversion(removeUnaskedCurrencyProse(removeUnaskedLimitProse(enforceOptionalStageRefusalMessage(enforceGuarantorQuestionRequirements(removeUnpromptedExistingContractRedirect(
     guardWorkflowStageOrder(replacePrematureVisitQuestion(deduplicateRepeatedGuarantorBlock(internalReply), effectiveFacts, stageCompletion), effectiveFacts, stageCompletion),
     input
-  ), input), effectiveFacts), input), input), input), input), input), input);
+  ), effectiveFacts), input), input), input), input), input), input);
   // `input.pricing` was calculated before this turn. Recalculate it whenever
   // the client has just changed a fact that affects a limit; otherwise a
   // residence correction (for example Cholpon-Ata -> Tokmok) would still use
@@ -1404,8 +1466,12 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   const waitingForVehicleValueNotice = waitingForVehicleValueReply(input, effectiveFacts);
   const vehicleNeedClarification = ambiguousVehicleNeedReply(input, effectiveFacts);
   const familyNotice = familyTransitionNotice(input, input.facts, effectiveFacts);
+  const relationshipEligibilityAnswer = relationshipEligibilityQuestion
+    ? relationshipEligibilityAnswerForFacts(semanticText ?? "", effectiveFacts)
+    : undefined;
   const visitNotice = visitConfirmationNotice(input, input.facts, effectiveFacts);
   const visitProgress = visitProgressReply(input.facts, effectiveFacts);
+  const visitTimeUnavailable = visitTimeUnavailableReply(parsed.visitTimeAvailability, effectiveFacts);
   const visitTimeClarification = visitTimeClarificationReply(input, effectiveFacts);
   const visitNonWorkingDay = visitNonWorkingDayReply(input, effectiveFacts);
   const attachmentAcceptanceNotice = input.attachments.length > 0 ? "Фотографии получены." : undefined;
@@ -1436,7 +1502,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   // visit branch. The calculation itself is server-owned; after answering,
   // the normal workflow appender returns to the outstanding action.
   const optionalStageDeclineNotice = optionalStageDeclineNoticeForTurn(input.facts, effectiveFacts);
-  const directAnswerWithoutRepeatedStage = workflowStageClarification ?? accidentNotDrivableNotice ?? completionNotice ?? attachmentAcceptanceNotice ?? optionalStageDeclineNotice ?? visitNonWorkingDay ?? visitNotice ?? visitProgress ?? visitTimeClarification ?? residenceLimitNotice ?? programmeChangeGuarantorNotice ?? acceptedLimitNotice ?? (region10Answer ? [region10Answer, olderVehicleNotice].filter(Boolean).join("\n\n") : undefined) ?? olderVehicleNotice ?? spouseVisitAnswer(input) ?? familyNotice ?? unknownVehicleValueNotice ?? waitingForVehicleValueNotice;
+  const directAnswerWithoutRepeatedStage = workflowStageClarification ?? relationshipEligibilityAnswer ?? accidentNotDrivableNotice ?? completionNotice ?? attachmentAcceptanceNotice ?? optionalStageDeclineNotice ?? visitNonWorkingDay ?? visitNotice ?? visitProgress ?? visitTimeUnavailable ?? visitTimeClarification ?? residenceLimitNotice ?? programmeChangeGuarantorNotice ?? acceptedLimitNotice ?? (region10Answer ? [region10Answer, olderVehicleNotice].filter(Boolean).join("\n\n") : undefined) ?? olderVehicleNotice ?? spouseVisitAnswer(input) ?? familyNotice ?? unknownVehicleValueNotice ?? waitingForVehicleValueNotice;
   const directAnswer = directAnswerWithoutRepeatedStage ?? repeatedStageReply;
   // A direct approved FAQ outranks all free-form model prose. This prevents
   // plausible but unsupported claims such as a parking location or credit
@@ -1463,7 +1529,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     && loanQuestionKind === "none"
     ? parsed.contextualAcknowledgement
     : undefined;
-  const workflowFollowUp = accidentNotDrivableNotice || rejectedMoneyClarification || belowMinimumReply || visitProgress || visitTimeClarification || visitNonWorkingDay || hasPendingMoneyCurrencyClarification(internalReply)
+  const workflowFollowUp = accidentNotDrivableNotice || rejectedMoneyClarification || belowMinimumReply || visitProgress || visitTimeUnavailable || visitTimeClarification || visitNonWorkingDay || hasPendingMoneyCurrencyClarification(internalReply)
     ? undefined
     : serverWorkflowFollowUp(loanQuestionKind, effectiveFacts, stageCompletion, requestedAmountLimit, workflowSelectedLimitNotice);
   const answerBeforeWorkflow = isLoanRateQuestion(loanQuestionKind)
@@ -1489,7 +1555,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
         input,
         effectiveFacts
       ),
-      isIdentityQuestion(input) ? undefined : workflowFollowUp
+      identityQuestion ? undefined : workflowFollowUp
     );
   return {
     ...parsed,
@@ -1713,6 +1779,15 @@ function visitTimeClarificationReply(input: Pick<AgentTurnInput, "text" | "curre
   const hasExactTime = /(?:(?:^|[\s,])в\s+\d{1,2}(?::\d{2})?|(?:^|[\s,])\d{1,2}(?::\d{2})?\s*(?:час(?:а|ов)?|ч))(?!\p{L})/iu.test(text);
   if (hasExactTime) return undefined;
   return "Завтра подойдёт. Во сколько Вам удобно подъехать? Офис работает с понедельника по пятницу с 11:00 до 19:00, для оформления нужно приехать не позднее 18:00.";
+}
+
+function visitTimeUnavailableFallback(text: string): boolean {
+  return /(?:по\s+времени\s+)?пока\s+не\s+(?:знаю|известно)|(?:как\s+только|когда)\s+(?:смогу|будет\s+известно|получится).{0,50}(?:сообщ|напиш|скажу)|не\s+могу\s+(?:пока\s+)?сказать\s+(?:время|когда)/iu.test(text);
+}
+
+function visitTimeUnavailableReply(availability: AgentTurnResult["visitTimeAvailability"], facts: ApplicationFacts): string | undefined {
+  if (availability !== "unknown" || facts.visitTime) return undefined;
+  return "Хорошо, сообщите, пожалуйста, когда время будет известно — тогда согласуем визит.";
 }
 
 function visitNonWorkingDayReply(input: Pick<AgentTurnInput, "text" | "currentTurnMessages" | "messages" | "settings">, _facts: ApplicationFacts): string | undefined {
@@ -2047,10 +2122,10 @@ export function nextRequiredStageQuestion(facts: ApplicationFacts, completion = 
       return `${facts.reportedInvalidVehicleYear} год ещё не наступил. Уточните, пожалуйста, верный год выпуска автомобиля.`;
     }
     const missing = [
-      !facts.vehicleModel || !facts.vehicleYear ? "модель и год выпуска автомобиля" : undefined,
-      facts.vehicleValue === undefined ? "ориентировочную стоимость автомобиля" : undefined
+      facts.vehicleValue === undefined ? "ориентировочную стоимость автомобиля" : undefined,
+      !facts.vehicleModel || !facts.vehicleYear ? "модель и год выпуска автомобиля" : undefined
     ].filter((value): value is string => Boolean(value));
-    return `Подскажите, пожалуйста, ${missing.join(" и ")}.`;
+    return `Подскажите, пожалуйста, ${missing.join(" , ")}.`;
   }
   // An amount can be present but rejected by the selected programme limit.
   // In that case the server must render the canonical limit alternative,
@@ -2122,7 +2197,7 @@ function resolveLoanQuestionKind(modelKind: LoanQuestionKind, text: string | und
   const normalized = text?.toLocaleLowerCase("ru-RU") ?? "";
   const asksRate = /(?:ставк\p{L}*|процент\p{L}*|сколько\s*%)/iu.test(normalized);
   const asksLimit = /(?:дадите|(?:скольк|сколк)\p{L}*[^?!]{0,40}(?:денег|деньг|баб|лав[еэ]|сом|дад\p{L}*|получ\p{L}*)|(?:лимит|максимум|макс|потолок)\p{L}*|(?:денег|деньг|баб|лав[еэ])[^?!]{0,40}(?:(?:скольк|сколк)\p{L}*|дад\p{L}*|может\p{L}*\s+дат\p{L}*|можно|получ\p{L}*)|от\s+(?:скольк|сколк)\p{L}*|до\s+(?:скольк|сколк)\p{L}*(?:\s+дад\p{L}*)?)/iu.test(normalized);
-  if (asksLimit) return asksRate ? "loan_rate" : "none";
+  if (asksLimit) return asksRate ? "maximum_limit_and_rate" : "maximum_limit";
   if (asksRate) return "loan_rate";
   // A rate answer is unsafe unless the client explicitly asked about a
   // percentage in this turn. Never let stale dialogue context or a model
@@ -2150,6 +2225,27 @@ function ensureGeneralRateCoverage(reply: string, text: string | undefined): str
   return additions.length > 0 ? [reply.trim(), ...additions].filter(Boolean).join(" ") : reply;
 }
 
+/** Replaces only the maximum-range portion of a multi-topic KB reply. */
+function mergeMaximumLoanTemplateWithOtherAnswers(template: string, modelReply: string): string {
+  const canonical = template.trim();
+  // The knowledge prompt asks for this exact template as a paragraph. Strip
+  // it before putting the server-owned variant first. The line fallback also
+  // covers a model that copied the placeholders with different whitespace.
+  const remaining = modelReply
+    .trim()
+    .replace(canonical, "")
+    .replace(/(?:^|\n)\s*без\s+изъятия\s*:\s*от\s*50\s*000\s*сом\s*до\s*(?:MAX_LIMIT_WITHOUT|\d[\d\s]*)\s*сом\s*(?=\n|$)/giu, "\n")
+    .replace(/(?:^|\n)\s*со\s+стоянкой\s*:\s*от\s*50\s*000\s*сом\s*до\s*(?:MAX_LIMIT_PARK|\d[\d\s]*)\s*сом\s*(?=\n|$)/giu, "\n")
+    // A non-canonical maximum claim is never client-facing. It is removed
+    // instead of competing with the server-calculated template above.
+    .split(/\n{2,}|(?<=[.!?])\s+/u)
+    .filter((part) => !/(?:максимальн\p{L}*|максимум|предельн\p{L}*|\bлимит\p{L}*)/iu.test(part))
+    .join("\n\n")
+    .replace(/\n{3,}/gu, "\n\n")
+    .trim();
+  return [canonical, remaining].filter(Boolean).join("\n\n");
+}
+
 /** Knowledge chunks may describe server implementation, but that prose is never client-facing. */
 function removeInternalPricingInstruction(reply: string): string {
   return reply
@@ -2158,43 +2254,6 @@ function removeInternalPricingInstruction(reply: string): string {
     .join(" ")
     .replace(/[ \t]{2,}/gu, " ")
     .trim();
-}
-
-/** Replaces the two placeholders in the approved maximum-loan FAQ. */
-function maximumLoanKnowledgeAnswer(facts: ApplicationFacts, settings: object): string {
-  if (!hasMaximumLoanCalculationInputs(facts)) {
-    const missing = [
-      facts.vehicleValue === undefined ? "ориентировочную стоимость автомобиля" : undefined,
-      !facts.residenceRegion || !facts.residenceCategory ? "Вашу прописку" : undefined
-    ].filter((value): value is string => Boolean(value));
-    return `Максимальную сумму смогу рассчитать после того, как узнаю: ${missing.join(" и ")}.`;
-  }
-  const pricing = calculateLoanPricing(facts, settings as LoanPricingSettings);
-  const withoutStorage = pricing.withoutStorage;
-  const parking = pricing.parking;
-  if (!withoutStorage.available || typeof withoutStorage.publicMax !== "number" || !parking.available || typeof parking.publicMax !== "number") {
-    return "Максимальную сумму смогу рассчитать после уточнения стоимости автомобиля и прописки.";
-  }
-  return [
-    `Без изъятия: от 50 000 сом до ${formatSomMoney(withoutStorage.publicMax)} сом`,
-    `Со стоянкой: от 50 000 сом до ${formatSomMoney(parking.publicMax)} сом`
-  ].join("\n");
-}
-
-/** Rate wording stays in the approved knowledge path; maximum values are server substitutions. */
-function maximumLoanKnowledgeReply(text: string | undefined, maximumAnswer: string): string {
-  const asksRate = /(?:процент|ставк|сколько\s*%)/iu.test(text ?? "");
-  const rateAnswer = asksRate ? ensureGeneralRateCoverage("", text) : "";
-  return [rateAnswer, maximumAnswer].filter(Boolean).join("\n\n");
-}
-
-/** Limits need only the car's value and resolved registration, not its model, year, requested amount, or programme. */
-function hasMaximumLoanCalculationInputs(facts: ApplicationFacts): boolean {
-  return Boolean(
-    facts.vehicleValue !== undefined
-    && facts.residenceRegion
-    && facts.residenceCategory
-  );
 }
 
 /** A request to replace the amount without naming a replacement must reopen
@@ -2492,10 +2551,10 @@ function nextLeadCardQuestionAfterResidence(facts: ApplicationFacts): string | u
   }
   if (!facts.vehicleModel || !facts.vehicleYear || facts.vehicleValue === undefined) {
     const missing = [
-      !facts.vehicleModel || !facts.vehicleYear ? "модель и год выпуска автомобиля" : undefined,
-      facts.vehicleValue === undefined ? "ориентировочную стоимость автомобиля" : undefined
+      facts.vehicleValue === undefined ? "ориентировочную стоимость автомобиля" : undefined,
+      !facts.vehicleModel || !facts.vehicleYear ? "модель и год выпуска автомобиля" : undefined
     ].filter((item): item is string => Boolean(item));
-    return `Подскажите, пожалуйста, ${missing.join(" и ")}.`;
+    return `Подскажите, пожалуйста, ${missing.join(" , ")}.`;
   }
   if (facts.requestedAmount === undefined) return "Какая сумма займа Вам необходима?";
   return undefined;
@@ -2506,8 +2565,8 @@ export function enforceFirstContactGreeting(reply: string, input: Pick<AgentTurn
   const hasPriorAssistantMessage = input.hadPriorAssistantMessage || input.messages.some((message) => message.author === "ai");
   // First contact is a compliance requirement, so do not rely on the model
   // remembering it. On later turns, remove any greeting the model supplied.
-  // Identity questions retain their exact approved wording and are the only
-  // exception.
+  // An identity reply is authored by the knowledge route and must not be
+  // polluted by the first-contact greeting.
   if (isIdentityQuestion(input)) return reply;
   const rest = reply
     .replace(/^\s*здравствуйте[!,.]?\s*(?:(?:меня\s+зовут|я)\s+Айлин[^.!?]*[.!?]\s*)?(?:я\s+менеджер\s+по\s+оформлению\s+новых\s+займов\s+автоломбарда\s+«Молодой»[.!?]\s*)?(?:информируем\s+Вас,?\s+что\s+мы\s+не\s+выдаем[^.!?]*[.!?]\s*)*/iu, "")
@@ -2544,8 +2603,43 @@ function ambiguousVehicleNeedReply(input: Pick<AgentTurnInput, "text" | "current
     : undefined;
 }
 
-const IDENTITY_REPLY = "Я Айлин — виртуальный помощник по вопросам оформления новых займов. Если у Вас уже оформлен займ, пожалуйста, позвоните по телефону +996 502 108 108 или напишите в WhatsApp +996 776 108 108. Наши специалисты проверят информацию по Вашему договору и помогут решить Ваш вопрос.";
 const SPOUSE_VISIT_ANSWER = "Возьмите с собой супругу (супруга) для нотариального оформления согласия. Если согласие у Вас будет на руках, присутствие супруги (супруга) необязательно.";
+
+function isRelationshipEligibilityQuestion(text: string): boolean {
+  return /(?:^|[^\p{L}])(?:жен(?:а|у|ы|е|ой|ою)?|муж(?:а|у|ем|ья)?|супруг\p{L}*|поручител\p{L}*)(?=$|[^\p{L}])/iu.test(text)
+    && /(?:нуж\p{L}*|надо|брать|привез|приех|нужен|нужна|есть\s+ли)/iu.test(text);
+}
+
+/** These two conditions belong to the current application facts, not to KB.
+ * Keep a useful conditional answer when the card is incomplete and state the
+ * exact obligation only once programme/residence or family status is known. */
+function relationshipEligibilityAnswerForFacts(text: string, facts: ApplicationFacts): string {
+  const asksSpouse = /(?:^|[^\p{L}])(?:жен(?:а|у|ы|е|ой|ою)?|муж(?:а|у|ем|ья)?|супруг\p{L}*)(?=$|[^\p{L}])/iu.test(text);
+  const asksGuarantor = /поручител\p{L}*/iu.test(text);
+  const answers: string[] = [];
+  if (asksSpouse) {
+    if (!facts.familyStatus || facts.familyStatus === "unknown") {
+      answers.push("Если Вы состоите в браке, потребуется нотариальное согласие супруги или супруга. Его можно оформить при визите у нотариуса в нашем здании; для этого нужно приехать вместе с супругой или супругом.");
+    } else if (facts.familyStatus === "married") {
+      answers.push(facts.spouseConsentReady === true
+        ? "Если нотариальное согласие уже будет у Вас на руках, супругу или супруга брать не нужно."
+        : "Да, если нотариального согласия ещё нет, возьмите с собой супругу или супруга для его оформления при визите. Его можно оформить у нотариуса в нашем здании.");
+    } else {
+      answers.push("Нет, при Вашем семейном положении согласие супруга или супруги не требуется, поэтому брать его или её не нужно.");
+    }
+  }
+  if (asksGuarantor) {
+    const programmeAndResidenceKnown = Boolean(facts.requestedProgram && facts.residenceCategory);
+    if (!programmeAndResidenceKnown) {
+      answers.push("Поручитель нужен только для программы без изъятия автомобиля при прописке за пределами Бишкека и Чуйской области.");
+    } else if (requiresGuarantorForFacts(facts)) {
+      answers.push("Да, в Вашем случае нужен поручитель.");
+    } else {
+      answers.push("Нет, в Вашем случае поручитель не требуется.");
+    }
+  }
+  return answers.join("\n\n");
+}
 
 function spouseVisitAnswer(input: Pick<AgentTurnInput, "text" | "currentTurnMessages">): string | undefined {
   const text = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "").toLocaleLowerCase("ru-RU");
@@ -2559,19 +2653,6 @@ function spouseVisitAnswer(input: Pick<AgentTurnInput, "text" | "currentTurnMess
 function isIdentityQuestion(input: Pick<AgentTurnInput, "text" | "currentTurnMessages">): boolean {
   const text = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "").toLocaleLowerCase("ru-RU");
   return /(?:кто\s+(?:ты|вы)(?:\s+(?:такой|такая))?|чем\s+(?:(?:ты|вы)\s+)?занима(?:ешься|етесь)|зачем\s+(?:ты|вы)|(?:ты|вы)\s+(?:бот|робот|ии)|(?:это|ты|вы)\s+(?:ai|ии)|жив(?:ой|ая)|настоящ(?:ий|ая))/iu.test(text);
-}
-
-function enforceIdentityAnswer(reply: string, input: Pick<AgentTurnInput, "text" | "currentTurnMessages">): string {
-  if (isIdentityQuestion(input)) return IDENTITY_REPLY;
-  // This text is an approved answer only to an explicit identity question.
-  // A model can otherwise emit it as a generic fallback for an unfamiliar
-  // spelling (for example a misspelled locality), which hijacks the active
-  // application stage and falsely redirects a new-loan client.
-  return reply
-    .replace(IDENTITY_REPLY, "")
-    .replace(/я\s+Айлин\s*[—-]\s*виртуальн\p{L}*\s+помощник[\s\S]{0,500}?(?:whatsapp|ватсап)[\s\S]{0,80}\+?\d[\d\s-]{8,}/iu, "")
-    .replace(/[ \t]{2,}/gu, " ")
-    .trim();
 }
 
 /** Existing-loan support text is valid only for an explicit current-turn servicing request. */
@@ -3083,7 +3164,8 @@ function requiresKnowledgeAnswer(input: Pick<AgentTurnInput, "text" | "currentTu
   // knowledge and must never be repeated from a hard-coded server string.
   if (loanQuestionKind === "maximum_limit" && !hasSeveralClientQuestions(text)) return false;
   if (loanQuestionKind === "loan_rate" || loanQuestionKind === "maximum_limit_and_rate") return true;
-  return isLikelyKnowledgeQuestion(text)
+  return isIdentityQuestion(input)
+    || isLikelyKnowledgeQuestion(text)
     || isOfficeLocationQuestion(text)
     || /(?:датчик|gps|гпс|трекер|стоянк|парковк|вещ|багаж|в\s+кредит|в\s+залоге|арест|ограничени)/iu.test(text)
     || patch.vehicleInCredit === true

@@ -37,6 +37,15 @@ describe("selectRelevantDocumentation", () => {
     expect(result.mandatoryAnswer).toBe("Я Айлин — виртуальный помощник по вопросам оформления новых займов. Если у Вас уже оформлен займ, пожалуйста, позвоните по телефону +996 502 108 108 или напишите в WhatsApp +996 776 108 108. Наши специалисты проверят информацию по Вашему договору и помогут решить Ваш вопрос.");
   });
 
+  it.each(["Кто ты?", "Ты робот что ли?", "Ты бот?"])("prioritizes existing-contract knowledge for identity question: %s", (currentMessage) => {
+    const result = selectRelevantDocumentation({ facts: {}, currentMessage, messages: [] });
+    const packet = prioritizedKnowledgeForQuestion({ facts: {}, currentMessage, messages: [] });
+
+    expect(hasApprovedKnowledgeMatch(currentMessage)).toBe(true);
+    expect(result.mandatoryAnswer).toBe("Я Айлин — виртуальный помощник по вопросам оформления новых займов. Если у Вас уже оформлен займ, пожалуйста, позвоните по телефону +996 502 108 108 или напишите в WhatsApp +996 776 108 108. Наши специалисты проверят информацию по Вашему договору и помогут решить Ваш вопрос.");
+    expect(packet[0]).toMatchObject({ key: "faq_existing_contract_redirect" });
+  });
+
   it("supplies the approved programme-specific interest-rate answer only for a direct rate question", () => {
     const result = selectRelevantDocumentation({ facts: {}, currentMessage: "какая процентная ставка", messages: [] });
 

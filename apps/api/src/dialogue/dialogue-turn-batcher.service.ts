@@ -72,11 +72,11 @@ export class DialogueTurnBatcherService {
       let result = finalResult;
       if (!result) throw new Error("dialogue_batch_empty_result");
       if (deferReplyPersistence) {
-        result = await this.orchestrator.publishDeferredBatchReply(
-          result,
-          combineSequentialReplies(messages, results),
-          messages.at(-1)!.externalMessageId
-        );
+        const reply = combineSequentialReplies(messages, results);
+        const sourceMessageId = messages.at(-1)!.externalMessageId;
+        result = results.some((item) => item.summaryNeedsRefresh)
+          ? await this.orchestrator.publishDeferredBatchReply(result, reply, sourceMessageId, { refreshSummary: true })
+          : await this.orchestrator.publishDeferredBatchReply(result, reply, sourceMessageId);
       }
       if (controller.signal.aborted) return;
       this.pending.delete(key);

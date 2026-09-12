@@ -36,7 +36,7 @@ export interface Stage1Application {
   factHistory: { key: string; previousValue: unknown; newValue: unknown; changedAt: string }[];
   decision?: DecisionResult;
   agentState?: { nextAction: string; cardSummary: string; intent: string; preliminaryLimit?: number | null };
-  /** Private post-booking summary. It is intentionally not part of facts. */
+  /** Latest private lead-card summary. It is intentionally not part of facts. */
   dialogueSummary?: string;
   createdAt: string;
   updatedAt: string;
@@ -384,7 +384,7 @@ export class Stage1StoreService {
     await this.recordAudit("agent.state.updated", "Application", application.id, { status: state.status, stage: state.stage, nextAction: state.nextAction, intent: state.intent });
   }
 
-  /** Atomically reserves the one allowed post-booking summary generation. */
+  /** @deprecated Summary generation is now refreshed after every fact update. */
   async claimDialogueSummaryGeneration(applicationId: string): Promise<boolean> {
     const updated = await this.prisma.application.updateMany({
       where: { id: applicationId, dialogueSummaryRequestedAt: null },
@@ -401,7 +401,7 @@ export class Stage1StoreService {
     await this.recordAudit("application.dialogue_summary.generated", "Application", applicationId);
   }
 
-  /** Allow a later turn to retry if the one-time summary model call failed. */
+  /** @deprecated Summary generation is no longer a one-time claimed operation. */
   async releaseDialogueSummaryGeneration(applicationId: string): Promise<void> {
     await this.prisma.application.updateMany({
       where: { id: applicationId, dialogueSummary: null },

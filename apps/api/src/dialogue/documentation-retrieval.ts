@@ -89,12 +89,18 @@ export function prioritizedKnowledgeForQuestion(input: {
   const availableFaq = spouseProxyContext || existingContractServiceRequest
     ? approvedFaqChunks.filter((chunk) => chunk.key !== "faq_power_of_attorney" && (!existingContractServiceRequest || chunk.key !== "faq_gps_requirement"))
     : approvedFaqChunks;
+  // An exact client alias is stronger than a shared stopword in another FAQ
+  // (for example «ты робот что ли?» and the word «что» in a documents alias).
+  // Keep it first so the knowledge agent receives the approved article that
+  // actually owns the question.
+  const exactMatchedFaq = availableFaq.filter((chunk) => hasExactApprovedFaqAlias(chunk, current));
   const matchedFaq = availableFaq.filter((chunk) =>
     (hasExactApprovedFaqAlias(chunk, current) || matchesApprovedQuestion(chunk, tokens))
   );
   const contractRules = generatedDocumentationChunks.filter((chunk) => chunk.section === "3.18");
   return uniqueKnowledge([
     ...(existingContractServiceRequest ? contractRules : []),
+    ...exactMatchedFaq,
     ...matchedFaq,
     ...(spouseOwnershipRule ? [spouseOwnershipRule] : []),
     ...(ownershipRegistrationRule ? [ownershipRegistrationRule] : []),

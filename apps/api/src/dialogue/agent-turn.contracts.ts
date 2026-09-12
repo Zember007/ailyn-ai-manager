@@ -42,6 +42,8 @@ export const agentTurnResultSchema = z.object({
   loanQuestionKind: z.enum(["none", "maximum_limit", "maximum_preference", "loan_rate", "maximum_limit_and_rate"]),
   /** Semantic choice from an amount-limit alternative; never persisted directly. */
   limitChoice: z.enum(["keep_car", "parking", "undecided"]).optional(),
+  /** A scoped interpretation of an answer to the active visit-time prompt; never persisted. */
+  visitTimeAvailability: z.enum(["known", "unknown", "not_a_visit_answer"]).optional(),
   leadCardPatch: applicationFactsPatchSchema,
   cardSummary: z.string().max(2000),
   preliminaryLimit: z.number().nonnegative().max(10_000_000).nullable().optional(),
