@@ -1752,7 +1752,7 @@ function visitPatchFromClearReply(input: Pick<AgentTurnInput, "text" | "currentT
   if (!deriveStageCompletion(facts).readyForVisit) return {};
   const lastAssistant = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
   const text = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "").trim().toLocaleLowerCase("ru-RU");
-  const correctingBookedVisit = Boolean(facts.visitDate && facts.visitTime && isExplicitVisitTimeCorrection(text));
+  const correctingBookedVisit = Boolean(facts.visitDate && facts.visitTime && isExplicitVisitSlotChange(text));
   if (!isVisitSchedulingQuestion(lastAssistant) && !correctingBookedVisit) return {};
   const settings = input.settings as Record<string, unknown>;
   const timezone = typeof settings.timezone === "string" ? settings.timezone : "Asia/Bishkek";
@@ -1766,7 +1766,15 @@ function visitPatchFromClearReply(input: Pick<AgentTurnInput, "text" | "currentT
   // In a correction such as «в 3 неудобно, давайте в 6» the final time is
   // the replacement; never keep the now explicitly rejected first time.
   const timeMatch = timeMatches.at(-1);
-  if (!timeMatch) return visitDate ? { visitRequested: true, visitDate } : {};
+  if (!timeMatch) {
+    return visitDate
+      ? {
+        visitRequested: true,
+        visitDate,
+        ...(correctingBookedVisit ? { visitTime: facts.visitTime } : {})
+      }
+      : {};
+  }
   let hour = Number(timeMatch[1] ?? timeMatch[3]);
   const minute = Number(timeMatch[2] ?? timeMatch[4] ?? "0");
   const dayPart = timeMatch[5] ?? "";
@@ -1781,8 +1789,8 @@ function visitPatchFromClearReply(input: Pick<AgentTurnInput, "text" | "currentT
   };
 }
 
-function isExplicitVisitTimeCorrection(text: string): boolean {
-  return /(?:неудобн|не\s+подходит|давайте|лучше|перенес)[^.!?]{0,80}(?:в\s*)?\d{1,2}(?::\d{2})?|(?:в\s*)?\d{1,2}(?::\d{2})?[^.!?]{0,80}(?:неудобн|не\s+подходит|давайте|лучше|перенес)/iu.test(text);
+function isExplicitVisitSlotChange(text: string): boolean {
+  return /(?:неудобн|не\s+подходит|давайте|лучше|перенес|вс[её]-?таки|изменил(?:ись|ся)?\s+план|планы\s+измен|приед(?:у|ем|ет))/iu.test(text);
 }
 
 function isVisitSchedulingQuestion(text: string): boolean {

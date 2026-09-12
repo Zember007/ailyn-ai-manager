@@ -29,3 +29,14 @@
 - [x] Add a regression for a complete existing slot and «в 3 неудобно, давайте в 6»; assert the date is retained, `visitTime` becomes `18:00`, and the reply confirms 18:00.
 - [x] Permit deterministic parsing of an explicit time correction after a completed booking, even if the last message is the final-questions prompt.
 - [x] Run focused visit tests, then `pnpm typecheck`.
+
+### Task 3: Preserve the other half of an explicitly changed slot
+
+**Files:**
+- Modify: `apps/api/src/ai/prompts/agent.system.md`
+- Modify: `apps/api/src/dialogue/agent-turn.service.ts`
+- Test: `apps/api/src/dialogue/dialogue-orchestrator.service.spec.ts`
+
+- [x] Explain that an already booked visit may be changed through a new date or time; the model must not invent or overwrite the other half of the slot.
+- [x] For an explicit visit change after booking, retain the saved date when only time is supplied, and retain the saved time when only date is supplied.
+- [x] Add regressions for «приеду всё-таки в 6» and «Изменились планы, приеду во вторник» and run focused tests plus typecheck.

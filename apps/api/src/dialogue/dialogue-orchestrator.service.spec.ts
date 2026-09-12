@@ -5585,6 +5585,52 @@ describe("single-agent dialogue", () => {
     expect(output.reply).toContain("Запись предварительная");
   });
 
+  it("keeps the booked date when the client changes only the visit time", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult, reply: "Поняла.", leadCardPatch: {}
+    }) } }] }) } as any;
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "Записываю Вас на понедельник, 14.09, в 15:00. Запись предварительная, её подтвердит менеджер. Есть ли у Вас ещё вопросы?", createdAt: "now" } as any],
+      facts: {
+        vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 3_000_000,
+        requestedAmount: 600_000, requestedProgram: "without_storage",
+        residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY",
+        documentsProvided: true, documents: { car_photo: "received" }, familyStatus: "single",
+        visitRequested: true, visitDate: "2026-09-14", visitTime: "15:00"
+      } as any,
+      settings: {}, text: "приеду все-таки в 6", attachments: []
+    });
+
+    expect(output.result?.leadCardPatch).toEqual(expect.objectContaining({ visitDate: "2026-09-14", visitTime: "18:00" }));
+    expect(output.reply).toContain("понедельник, 14.09, в 18:00");
+  });
+
+  it("keeps the booked time when the client changes only the visit date", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-11T10:00:00.000Z"));
+    try {
+      const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+        ...validResult, reply: "Поняла.", leadCardPatch: {}
+      }) } }] }) } as any;
+      const output = await new AgentTurnService(client).run({
+        messages: [{ author: "ai", body: "Записываю Вас на понедельник, 14.09, в 15:00. Запись предварительная, её подтвердит менеджер. Есть ли у Вас ещё вопросы?", createdAt: "now" } as any],
+        facts: {
+          vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 3_000_000,
+          requestedAmount: 600_000, requestedProgram: "without_storage",
+          residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY",
+          documentsProvided: true, documents: { car_photo: "received" }, familyStatus: "single",
+          visitRequested: true, visitDate: "2026-09-14", visitTime: "15:00"
+        } as any,
+        settings: {}, text: "Изменились планы, приеду во вторник", attachments: []
+      });
+
+      expect(output.result?.leadCardPatch).toEqual(expect.objectContaining({ visitDate: "2026-09-15", visitTime: "15:00" }));
+      expect(output.reply).toContain("вторник, 15.09, в 15:00");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("confirms a colloquial visit time once instead of asking for it again", async () => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ ...validResult, reply: "Поняла.", leadCardPatch: {} }) } }] }) } as any;
     const output = await new AgentTurnService(client).run({
@@ -5897,8 +5943,7 @@ describe("single-agent dialogue", () => {
     expect(output.result?.leadCardPatch.requestedProgram).toBe(requestedProgram);
   });
 
-  it.each(["потом напишу", "вернусь позже", "давайте продолжим потом", "сейчас не могу"])
-  ("pauses the application without a follow-up question for %s", async (text) => {
+  it.each(["потом напишу", "вернусь позже", "давайте продолжим потом", "сейчас не могу"])("pauses the application without a follow-up question for %s", async (text) => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
       ...validResult,
       reply: "Распознано.",
