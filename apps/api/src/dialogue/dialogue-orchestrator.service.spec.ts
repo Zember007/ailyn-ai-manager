@@ -1338,7 +1338,7 @@ describe("single-agent dialogue", () => {
         reply: "Поняла.", model: "workflow-model", promptVersion: "v1"
       }),
       answerWithKnowledge: vi.fn().mockResolvedValue({
-        reply: "Без изъятия: от 50 000 сом до MAX_LIMIT_WITHOUT сом\nСо стоянкой: от 50 000 сом до MAX_LIMIT_PARK сом",
+        reply: "Без изъятия: от 50 000 сом до MAX_LIMIT_WITHOUT сом\nСо стоянкой: от 50 000 сом до MAX_LIMIT_PARK сом\n\nЧтобы подсказать точнее, нужна сумма займа, которая Вам необходима.",
         answerFound: true,
         model: "knowledge-model"
       })
@@ -2755,13 +2755,14 @@ describe("single-agent dialogue", () => {
     const output = await new AgentTurnService(client).run({
       messages: [{ author: "ai", body: "Поручитель обязателен для программы без изъятия в Вашем регионе. Можем рассмотреть программу с постановкой автомобиля на охраняемую стоянку?", createdAt: "now" } as any],
       facts: { vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 1_740_000, requestedAmount: 200_000, requestedProgram: "without_storage", residenceRegion: "Другой регион Кыргызстана", residenceCategory: "OTHER_KG", guarantorAvailable: false, guarantorAlternativeDeclined: false } as any,
-      settings: {}, text: "есть поручитель", attachments: []
+      settings: {}, text: "нет, найду поручителя", attachments: []
     });
 
     expect(output.result?.leadCardPatch).toMatchObject({ requestedProgram: "without_storage", guarantorAvailable: true, guarantorAlternativeDeclined: false });
     expect(output.result?.needsKnowledgeLookup).toBe(false);
     expect(output.reply).toContain("Пожалуйста, отправьте фото ID");
     expect(output.reply).not.toMatch(/можем рассмотреть программу.*стоянк|есть ли у вас.*поручител/iu);
+    expect(client.createChatCompletion.mock.calls[1][0].messages[0].content).toContain("«нет, найду поручителя» означает has_guarantor");
   });
 
   it("answers a colloquial maximum-loan question in the same reply that accepts parking", async () => {
@@ -3041,6 +3042,19 @@ describe("single-agent dialogue", () => {
     expect(reply?.reply).toContain("Без изъятия: от 50 000 сом до MAX_LIMIT_WITHOUT сом");
     expect(reply?.reply).toContain("Со стоянкой: от 50 000 сом до MAX_LIMIT_PARK сом");
     expect(reply?.reply).not.toContain("Точный максимум после осмотра");
+  });
+
+  it("does not retain a model-invented requested-amount prompt with a maximum answer", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      reply: "Без изъятия: от 50 000 сом до MAX_LIMIT_WITHOUT сом\nСо стоянкой: от 50 000 сом до MAX_LIMIT_PARK сом\n\nЧтобы подсказать точнее по Вашей Corolla, нужна сумма займа, которая Вам необходима.",
+      answerFound: true
+    }) } }] }) } as any;
+    const reply = await new AgentTurnService(client).answerWithKnowledge({
+      messages: [], facts: { vehicleValue: 5_000_000 } as any, settings: {}, text: "королла 2022 года стоит 5 млн сколько дадите по максимуму", workflowFollowUp: ""
+    });
+
+    expect(reply?.reply).toBe("Без изъятия: от 50 000 сом до MAX_LIMIT_WITHOUT сом\nСо стоянкой: от 50 000 сом до MAX_LIMIT_PARK сом");
+    expect(reply?.reply).not.toMatch(/сумм\p{L}*\s+займ/iu);
   });
 
   it("routes a combined rate and maximum question to knowledge without selecting a programme", async () => {
