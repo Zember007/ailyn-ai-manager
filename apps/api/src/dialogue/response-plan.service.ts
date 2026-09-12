@@ -100,7 +100,7 @@ export class ResponsePlanService {
     if (facts.visitDate && facts.visitTime) {
       answers.push({ key: "visit_confirmation", text: visitConfirmationText(facts), exact: true });
     }
-    if (facts.clientPaused) answers.push({ key: "pause", text: "Хорошо, данные и история сохранятся. Когда будете готовы, можно продолжить с этого места.", exact: true });
+    if (facts.clientPaused) answers.push({ key: "pause", text: "Хорошо! Когда будете готовы, можно продолжить с этого места.", exact: true });
     return answers;
   }
 

@@ -5914,7 +5914,7 @@ describe("single-agent dialogue", () => {
 
     expect(output.result?.leadCardPatch.clientPaused).toBe(true);
     expect(output.result?.dialogueState).toEqual({ stage: "PAUSED", status: "target_reached", nextAction: "pause" });
-    expect(output.reply).toBe("Хорошо, данные и история сохранятся. Когда будете готовы, можно продолжить с этого места.");
+    expect(output.reply).toBe("Хорошо! Когда будете готовы, можно продолжить с этого места.");
     expect(output.reply).not.toContain("отправьте");
   });
 

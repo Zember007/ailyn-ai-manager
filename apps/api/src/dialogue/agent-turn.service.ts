@@ -1515,7 +1515,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   // step. Its acknowledgement and lack of a follow-up are server-owned so a
   // model cannot append the question it was waiting for before the pause.
   const pauseNotice = effectiveFacts.clientPaused
-    ? "Хорошо, данные и история сохранятся. Когда будете готовы, можно продолжить с этого места."
+    ? "Хорошо! Когда будете готовы, можно продолжить с этого места."
     : undefined;
   // A direct question about the loan amount outranks a pending family or
   // visit branch. The calculation itself is server-owned; after answering,
