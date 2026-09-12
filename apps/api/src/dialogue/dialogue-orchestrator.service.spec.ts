@@ -5314,6 +5314,25 @@ describe("single-agent dialogue", () => {
     expect(output.reply).toContain("У Вас есть такой поручитель?");
   });
 
+  it.each(["А поручителя", "Поручителя надо брать"])('answers the follow-up guarantor question %s before a pending visit', async (text) => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult, reply: "Распознано.", currentStageClarification: true, leadCardPatch: {}
+    }) } }] }) } as any;
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "Офис работает с понедельника по пятницу с 11:00 до 19:00. Для оформления нужно приехать не позднее 18:00. На какой день и время Вам удобно подъехать?", createdAt: "now" } as any],
+      facts: {
+        vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 3_000_000,
+        requestedAmount: 600_000, requestedProgram: "parking",
+        residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY",
+        documentsProvided: true, documents: { car_photo: "received" }, familyStatus: "single"
+      } as any,
+      settings: {}, text, attachments: []
+    });
+
+    expect(output.reply).toContain("поручитель не требуется");
+    expect(output.reply).not.toContain("Дата и время нужны, чтобы менеджер мог предварительно подтвердить");
+  });
+
   it("gives conditional spouse and guarantor guidance when facts are unknown", async () => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
       ...validResult, reply: "Распознано.", leadCardPatch: {}

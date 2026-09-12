@@ -1502,7 +1502,10 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   // visit branch. The calculation itself is server-owned; after answering,
   // the normal workflow appender returns to the outstanding action.
   const optionalStageDeclineNotice = optionalStageDeclineNoticeForTurn(input.facts, effectiveFacts);
-  const directAnswerWithoutRepeatedStage = workflowStageClarification ?? relationshipEligibilityAnswer ?? accidentNotDrivableNotice ?? completionNotice ?? attachmentAcceptanceNotice ?? optionalStageDeclineNotice ?? visitNonWorkingDay ?? visitNotice ?? visitProgress ?? visitTimeUnavailable ?? visitTimeClarification ?? residenceLimitNotice ?? programmeChangeGuarantorNotice ?? acceptedLimitNotice ?? (region10Answer ? [region10Answer, olderVehicleNotice].filter(Boolean).join("\n\n") : undefined) ?? olderVehicleNotice ?? spouseVisitAnswer(input) ?? familyNotice ?? unknownVehicleValueNotice ?? waitingForVehicleValueNotice;
+  // A direct question about spouse/guarantor requirements is answered from
+  // the card before a fallible model label such as current-stage
+  // clarification can return the client to the pending visit prompt.
+  const directAnswerWithoutRepeatedStage = relationshipEligibilityAnswer ?? workflowStageClarification ?? accidentNotDrivableNotice ?? completionNotice ?? attachmentAcceptanceNotice ?? optionalStageDeclineNotice ?? visitNonWorkingDay ?? visitNotice ?? visitProgress ?? visitTimeUnavailable ?? visitTimeClarification ?? residenceLimitNotice ?? programmeChangeGuarantorNotice ?? acceptedLimitNotice ?? (region10Answer ? [region10Answer, olderVehicleNotice].filter(Boolean).join("\n\n") : undefined) ?? olderVehicleNotice ?? spouseVisitAnswer(input) ?? familyNotice ?? unknownVehicleValueNotice ?? waitingForVehicleValueNotice;
   const directAnswer = directAnswerWithoutRepeatedStage ?? repeatedStageReply;
   // A direct approved FAQ outranks all free-form model prose. This prevents
   // plausible but unsupported claims such as a parking location or credit
@@ -1534,7 +1537,10 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     : serverWorkflowFollowUp(loanQuestionKind, effectiveFacts, stageCompletion, requestedAmountLimit, workflowSelectedLimitNotice);
   const answerBeforeWorkflow = isLoanRateQuestion(loanQuestionKind)
     ? ""
-    : workflowStageClarification ?? workflowClarificationAnswer ?? mandatoryKnowledgeAnswer ?? contextualAcknowledgement?.text ?? directAnswer ?? removeIncorrectResidenceClarificationProse(
+    // The server can answer spouse/guarantor eligibility from known facts.
+    // That direct question must not be hidden by a model's mistaken label of
+    // the same turn as a clarification of the pending visit stage.
+    : relationshipEligibilityAnswer ?? workflowStageClarification ?? workflowClarificationAnswer ?? mandatoryKnowledgeAnswer ?? contextualAcknowledgement?.text ?? directAnswer ?? removeIncorrectResidenceClarificationProse(
     removeForbiddenMetaPhrases(dropUnsupportedFallbackForNonQuestion(replaceUnsupportedFallbackWithApprovedAnswer(guardedModelReply, mandatoryKnowledgeAnswer, input), semanticText)),
     input,
     effectiveFacts
@@ -1547,7 +1553,9 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   // A contextual "why" must survive all later stage-specific normalizers
   // (notably the Chuy and guarantor resolvers). Otherwise they can replace
   // the explanation with the same question the client just queried.
-  const responsePlan = workflowStageClarification
+  const responsePlan = relationshipEligibilityAnswer
+    ? appendRequiredWorkflowFollowUp(relationshipEligibilityAnswer, workflowFollowUp)
+    : workflowStageClarification
     ? appendRequiredWorkflowFollowUp(workflowStageClarification, workflowFollowUp)
     : appendRequiredWorkflowFollowUp(
       (contextualAcknowledgement ? undefined : repeatedStageReply) ?? appendContinuationAfterRegion10PolicyQuestion(
@@ -2611,8 +2619,12 @@ function ambiguousVehicleNeedReply(input: Pick<AgentTurnInput, "text" | "current
 const SPOUSE_VISIT_ANSWER = "Возьмите с собой супругу (супруга) для нотариального оформления согласия. Если согласие у Вас будет на руках, присутствие супруги (супруга) необязательно.";
 
 function isRelationshipEligibilityQuestion(text: string): boolean {
-  return /(?:^|[^\p{L}])(?:жен(?:а|у|ы|е|ой|ою)?|муж(?:а|у|ем|ья)?|супруг\p{L}*|поручител\p{L}*)(?=$|[^\p{L}])/iu.test(text)
-    && /(?:нуж\p{L}*|надо|брать|привез|приех|нужен|нужна|есть\s+ли)/iu.test(text);
+  const mentionsRelationship = /(?:^|[^\p{L}])(?:жен(?:а|у|ы|е|ой|ою)?|муж(?:а|у|ем|ья)?|супруг\p{L}*|поручител\p{L}*)(?=$|[^\p{L}])/iu.test(text);
+  if (!mentionsRelationship) return false;
+  if (/(?:нуж\p{L}*|надо|брать|привез|приех|нужен|нужна|есть\s+ли)/iu.test(text)) return true;
+  // «А поручителя?» is a natural short continuation of an attendance
+  // question. Treat it as a question even though its verb was omitted.
+  return /^\s*(?:а\s+)?поручител\p{L}*\s*[?!.…]*\s*$/iu.test(text);
 }
 
 /** These two conditions belong to the current application facts, not to KB.
