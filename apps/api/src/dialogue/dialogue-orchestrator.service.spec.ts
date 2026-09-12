@@ -664,6 +664,44 @@ describe("single-agent dialogue", () => {
     expect(agent.run.mock.calls[0][0].facts.requestedProgram).toBeUndefined();
   });
 
+  it.each([
+    ["мне надо 300", "KGS"],
+    ["мне надо 300 долларов", "USD"],
+    ["мне надо 300 евро", "EUR"]
+  ] as const)("treats a short requested amount as thousands in %s", async (text, currency) => {
+    const application = {
+      id: "app",
+      facts: { vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 1_000_000, residenceRegion: "Другой регион Кыргызстана", residenceCategory: "OTHER_KG" },
+      contactId: "contact"
+    } as any;
+    const conversation = {
+      id: "conversation", application, channel: "web-test",
+      messages: [{ author: "ai", body: "Какая сумма займа Вам необходима?", createdAt: "before" }]
+    } as any;
+    const store = {
+      getOrCreateConversation: vi.fn().mockResolvedValue({ conversation, application }),
+      addMessage: vi.fn().mockResolvedValue({ id: "m", author: "client", body: text, createdAt: "now" }),
+      updateFacts: vi.fn().mockResolvedValue([]), saveAgentState: vi.fn(), getApplication: vi.fn().mockResolvedValue(application),
+      getConversation: vi.fn().mockResolvedValue(conversation), addAttachment: vi.fn(), createManagerNotification: vi.fn()
+    } as any;
+    const agent = {
+      // The semantic normalizer may incorrectly echo the earlier maximum; the
+      // current client number must win before it reaches the dialogue model.
+      normalizeMoney: vi.fn().mockResolvedValue([{ field: "requestedAmount", amount: 200_000, currency: "KGS", confidence: 0.99 }]),
+      run: vi.fn().mockResolvedValue({ result: validResult, reply: validResult.reply, model: "workflow", promptVersion: "v1" })
+    } as any;
+    const integrations = currency === "KGS" ? undefined : {
+      convertToSom: vi.fn().mockResolvedValue({ available: true, value: 30_000_000, currency, rate: 100, nominal: 1, source: "NBKR", effectiveDate: "2026-09-12" })
+    } as any;
+
+    await new DialogueOrchestratorService(agent, store, { getValues: vi.fn().mockResolvedValue({}) } as any, { log: vi.fn() } as any, integrations)
+      .receive({ externalMessageId: "m", channel: "web-test", externalContactId: "contact", text, attachments: [], timestamp: new Date() });
+
+    const facts = agent.run.mock.calls[0][0].facts;
+    expect(facts.requestedAmount).toBe(currency === "KGS" ? 300_000 : 30_000_000);
+    if (currency !== "KGS") expect(facts.requestedAmountSourceCurrency).toBe(currency);
+  });
+
   it("refreshes the private summary after every turn that updates lead facts", async () => {
     const facts = {} as any;
     const application = { id: "app", facts, contactId: "contact", stage: "COLLECTING_VEHICLE", status: "need_more_data" } as any;
@@ -1360,6 +1398,34 @@ describe("single-agent dialogue", () => {
     expect(output.reply).not.toContain(amountStageQuestion);
   });
 
+  it("routes a maximum-loan question to knowledge when the workflow model omits the lookup flag", async () => {
+    const application = { id: "app", facts: {}, contactId: "contact", stage: "NEW", status: "need_more_data" } as any;
+    const conversation = { id: "conversation", messages: [], application, channel: "web-test" } as any;
+    const store = {
+      getOrCreateConversation: vi.fn().mockResolvedValue({ conversation, application }),
+      addMessage: vi.fn().mockResolvedValue({ id: "inbound", author: "client", body: "А сколько можете дать", createdAt: "now" }),
+      updateFacts: vi.fn().mockResolvedValue([]), saveAgentState: vi.fn(), getApplication: vi.fn().mockResolvedValue(application), getConversation: vi.fn().mockResolvedValue(conversation), addAttachment: vi.fn(), createManagerNotification: vi.fn()
+    } as any;
+    const agent = {
+      run: vi.fn().mockResolvedValue({
+        result: { ...validResult, leadCardPatch: {}, needsKnowledgeLookup: false },
+        reply: vehicleStageQuestion, model: "workflow-model", promptVersion: "v1"
+      }),
+      answerWithKnowledge: vi.fn().mockResolvedValue({
+        reply: "Без изъятия: от 50 000 сом до MAX_LIMIT_WITHOUT сом\nСо стоянкой: от 50 000 сом до MAX_LIMIT_PARK сом",
+        answerFound: true,
+        model: "knowledge-model"
+      })
+    } as any;
+
+    const output = await new DialogueOrchestratorService(agent, store, { getValues: vi.fn().mockResolvedValue({}) } as any, { log: vi.fn() } as any)
+      .receive({ externalMessageId: "m", channel: "web-test", externalContactId: "c", text: "А сколько можете дать", attachments: [], timestamp: new Date() });
+
+    expect(agent.answerWithKnowledge).toHaveBeenCalledWith(expect.objectContaining({ text: "А сколько можете дать" }));
+    expect(output.reply).toContain("Максимальную сумму смогу рассчитать после того, как узнаю: ориентировочную стоимость автомобиля и Вашу прописку.");
+    expect(output.reply).toContain("Подскажите, пожалуйста, ориентировочную стоимость автомобиля");
+  });
+
   it("moves from a maximum request at the amount stage to residence when residence is missing", async () => {
     const facts = { vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 3_000_000 } as any;
     const application = { id: "app", facts, contactId: "contact", stage: "COLLECTING_AMOUNT", status: "need_more_data" } as any;
@@ -1392,6 +1458,37 @@ describe("single-agent dialogue", () => {
     expect(output.reply).toBe("Максимальную сумму смогу рассчитать после того, как узнаю: Ваша прописка.\n\nПодскажите, пожалуйста, Вашу прописку — Бишкек, Чуйская область или другой регион Кыргызстана.");
     expect(output.reply).not.toContain(amountStageQuestion);
     expect(store.saveAgentState).toHaveBeenCalledWith(application, expect.objectContaining({ nextAction: "answer_maximum_after_prerequisites" }));
+  });
+
+  it("keeps only the residence stage after a maximum answer when the workflow model echoed vehicle collection", async () => {
+    const facts = { vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 3_000_000 } as any;
+    const application = { id: "app", facts, contactId: "contact", stage: "COLLECTING_RESIDENCE", status: "need_more_data" } as any;
+    const conversation = { id: "conversation", messages: [], application, channel: "web-test" } as any;
+    const store = {
+      getOrCreateConversation: vi.fn().mockResolvedValue({ conversation, application }),
+      addMessage: vi.fn().mockResolvedValue({ id: "inbound", author: "client", body: "А сколько можете дать", createdAt: "now" }),
+      updateFacts: vi.fn().mockResolvedValue([]), saveAgentState: vi.fn(), getApplication: vi.fn().mockResolvedValue(application),
+      getConversation: vi.fn().mockResolvedValue(conversation), addAttachment: vi.fn(), createManagerNotification: vi.fn()
+    } as any;
+    const agent = {
+      run: vi.fn().mockResolvedValue({
+        result: { ...validResult, leadCardPatch: { ...facts, knowledgeRequest: { required: true, reason: "missing_approved_answer" } } },
+        reply: vehicleStageQuestion, model: "workflow-model", promptVersion: "v1"
+      }),
+      answerWithKnowledge: vi.fn().mockResolvedValue({
+        reply: "Без изъятия: от 50 000 сом до MAX_LIMIT_WITHOUT сом\nСо стоянкой: от 50 000 сом до MAX_LIMIT_PARK сом\n\n" + vehicleStageQuestion,
+        answerFound: true,
+        model: "knowledge-model"
+      })
+    } as any;
+
+    const output = await new DialogueOrchestratorService(agent, store, { getValues: vi.fn().mockResolvedValue({}) } as any, { log: vi.fn() } as any)
+      .receive({ externalMessageId: "m", channel: "web-test", externalContactId: "c", text: "А сколько можете дать", attachments: [], timestamp: new Date() });
+
+    const residenceQuestion = "Подскажите, пожалуйста, Вашу прописку — Бишкек, Чуйская область или другой регион Кыргызстана.";
+    expect(agent.answerWithKnowledge).toHaveBeenCalledWith(expect.objectContaining({ workflowFollowUp: residenceQuestion }));
+    expect(output.reply).toContain(residenceQuestion);
+    expect(output.reply).not.toContain("модель и год выпуска");
   });
 
   it("answers the deferred maximum request immediately after the missing residence is supplied", async () => {
@@ -5902,6 +5999,7 @@ describe("single-agent dialogue", () => {
     ["Мне надо ездить на машине", "without_storage"],
     ["Чтобы авто у меня осталось", "without_storage"],
     ["Пускай у вас авто останется", "parking"],
+    ["Пускай у вас будет машина", "parking"],
     ["Могу без машины обойтись", "parking"]
   ] as const)("normalizes the semantic programme choice %s as %s", async (text, requestedProgram) => {
     const client = {
@@ -5921,12 +6019,12 @@ describe("single-agent dialogue", () => {
       .map(([request]: [{ messages?: Array<{ content?: string }> }]) => request.messages?.[0]?.content)
       .find((prompt: string | undefined) => prompt?.includes("Определи, изменяет ли клиент программу займа"));
     expect(classifierRequest).toContain("мне нужно авто у себя");
-    expect(classifierRequest).toContain("пускай у вас авто останется");
+    expect(classifierRequest).toContain("пускай у вас будет машина");
   });
 
   it.each([
     ["Мне надо ездить на машине", "without_storage"],
-    ["Пускай у вас авто останется", "parking"]
+    ["Пускай у вас будет машина", "parking"]
   ] as const)("uses the regex fallback for %s when programme classification is undecided", async (text, requestedProgram) => {
     const client = {
       isConfigured: vi.fn().mockReturnValue(true),
@@ -6152,11 +6250,19 @@ describe("single-agent dialogue", () => {
     );
   });
 
-  it("removes the earlier sentence when a three-word fragment is repeated", () => {
+  it("removes the earlier sentence when its opening three-word fragment is repeated", () => {
     expect(removeEarlierDuplicateSentences(
       "Для оформления нужно подъехать не позднее 18:00. Офис работает с понедельника по пятницу. Для оформления нужно приехать не позднее 18:00."
     )).toBe(
       "Офис работает с понедельника по пятницу. Для оформления нужно приехать не позднее 18:00."
+    );
+  });
+
+  it("keeps a knowledge answer when its required fact is repeated by the next stage question", () => {
+    expect(removeEarlierDuplicateSentences(
+      "Максимальную сумму смогу рассчитать после того, как узнаю ориентировочную стоимость автомобиля. Подскажите, пожалуйста, ориентировочную стоимость автомобиля."
+    )).toBe(
+      "Максимальную сумму смогу рассчитать после того, как узнаю ориентировочную стоимость автомобиля. Подскажите, пожалуйста, ориентировочную стоимость автомобиля."
     );
   });
 

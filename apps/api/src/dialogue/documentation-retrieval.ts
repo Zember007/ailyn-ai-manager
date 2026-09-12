@@ -17,7 +17,7 @@ const stageInstructionsByStage: Partial<Record<DocumentationStage, string>> = ag
  */
 export function isMaximumLoanKnowledgeQuestion(text: string): boolean {
   const normalized = text.toLocaleLowerCase("ru-RU");
-  const explicitLimitQuestion = /(?:максим\p{L}*|макс\b|лимит\p{L}*|потолок\p{L}*|до\s+какой\s+сумм\p{L}*|скольк\p{L}*[^?!\n]{0,45}(?:денег|деньг|дад\p{L}*|получ\p{L}*|можно\s+взять)|(?:денег|деньг)[^?!\n]{0,45}(?:скольк\p{L}*|дад\p{L}*|получ\p{L}*|можно\s+взять)|какую\s+сумм\p{L}*[^?!\n]{0,30}(?:дад\p{L}*|можно\s+получ\p{L}*))/iu.test(normalized);
+  const explicitLimitQuestion = /(?:максим\p{L}*|макс\b|лимит\p{L}*|потолок\p{L}*|до\s+какой\s+сумм\p{L}*|скольк\p{L}*[^?!\n]{0,45}(?:денег|деньг|дад\p{L}*|может\p{L}*\s+дат\p{L}*|получ\p{L}*|можно\s+взять)|(?:денег|деньг)[^?!\n]{0,45}(?:скольк\p{L}*|дад\p{L}*|получ\p{L}*|можно\s+взять)|какую\s+сумм\p{L}*[^?!\n]{0,30}(?:дад\p{L}*|можно\s+получ\p{L}*))/iu.test(normalized);
   // These short forms occur specifically as answers to «Какая сумма займа
   // Вам необходима?». Treat them as a maximum request rather than asking
   // for an amount again. Keeping this narrow avoids interpreting an ordinary

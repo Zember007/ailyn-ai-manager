@@ -123,15 +123,26 @@ export class DialogueOrchestratorService {
       && Boolean(turn.result)
       && hasMaximumLoanPrerequisites(turn.result!.leadCardPatch);
     const maximumLoanQuestion = currentMaximumLoanQuestion || deferredMaximumLoanAnswer;
-    if (((knowledgeRequest?.required ?? turn.result?.needsKnowledgeLookup) || deferredMaximumLoanAnswer) && turn.result) {
+    // A maximum-limit question has an approved KB answer and a server-owned
+    // calculation template. It must reach that path even when the workflow
+    // model failed to set `needsKnowledgeLookup`; otherwise the stage prompt
+    // below replaces the answer the client actually asked for.
+    if (((knowledgeRequest?.required ?? turn.result?.needsKnowledgeLookup) || maximumLoanQuestion) && turn.result) {
       const { knowledgeRequest: _knowledgeRequest, ...turnFacts } = turn.result.leadCardPatch;
+      const factsForWorkflow = { ...normalizedFacts, ...turnFacts };
+      const canonicalWorkflowFollowUp = nextRequiredStageQuestion(
+        factsForWorkflow,
+        deriveStageCompletion(factsForWorkflow, settings)
+      ) || "";
       // The main model can omit the final canonical prompt while routing a
       // factual question to knowledge. Do not let the KB answer terminate the
       // application: derive the next required action from server-owned facts.
-      const workflowFollowUp = deferredMaximumLoanAnswer || turn.result.dialogueState.status === "redirect_existing_contract"
+      const workflowFollowUp = maximumLoanQuestion
+        ? maximumLoanCalculationFollowUp(factsForWorkflow, canonicalWorkflowFollowUp)
+        : deferredMaximumLoanAnswer || turn.result.dialogueState.status === "redirect_existing_contract"
         ? ""
         : extractWorkflowFollowUp(turn.reply)
-        || nextRequiredStageQuestion(turnFacts, deriveStageCompletion(turnFacts, settings))
+        || canonicalWorkflowFollowUp
         // A completed application has no further collection action. The
         // knowledge contract still receives a string in that terminal case.
         || "";
@@ -146,7 +157,7 @@ export class DialogueOrchestratorService {
         // The KB must see facts reconciled from this very client message:
         // maximum-loan placeholders depend on the just-provided vehicle
         // value and residence, not only on the persisted pre-turn card.
-        facts: turnFacts,
+        facts: factsForWorkflow,
         settings,
         text: clientQuestion,
         currentTurnMessages,
@@ -163,11 +174,11 @@ export class DialogueOrchestratorService {
         // KB answer (office address, FAQ, etc.); only a direct rate question
         // may add interest-rate wording.
         const responsePlan = maximumLoanQuestion
-          ? knowledge.reply
+          ? stripWorkflowQuestionsFromMaximumAnswer(knowledge.reply)
           : knowledge.reply;
         const reply = appendWorkflowFollowUp(
           responsePlan,
-          workflowFollowUpAfterKnowledge(responsePlan, workflowFollowUp, lastAssistantMessage, turnFacts, maximumLoanQuestion)
+          workflowFollowUpAfterKnowledge(responsePlan, workflowFollowUp, lastAssistantMessage, factsForWorkflow, maximumLoanQuestion)
         );
         const result = { ...turn.result, reply };
         turn = { ...turn, result, reply, model: knowledge.model, promptVersion: `${turn.promptVersion}+knowledge` };
@@ -379,6 +390,19 @@ function appendWorkflowFollowUp(reply: string, followUp: string): string {
   return [reply.trim(), followUp].filter(Boolean).join("\n\n");
 }
 
+/** A maximum-limit answer may be followed by one server-owned prerequisite,
+ * never by a KB/model echo of another application stage. */
+function stripWorkflowQuestionsFromMaximumAnswer(reply: string): string {
+  return reply
+    .replace(
+      /(?:^|\n|\s{2,})(?:(?:подскажите|уточните),?\s+(?:пожалуйста,?\s*)?(?:модель|марку|год|стоимост\p{L}*|сумм\p{L}*|пропис|ваш\p{L}*\s+пропис)[^?!\n]*(?:[?!]|[.!](?=\s|$))|какая\s+сумм\p{L}*\s+займ[^?!\n]*(?:[?!]|[.!](?=\s|$))|вас\s+интересует[^?!\n]*(?:[?!]|[.!](?=\s|$))|пожалуйста,?\s+(?:отправьте|пришлите)[^?!\n]*(?:[?!]|[.!](?=\s|$)))/giu,
+      "\n"
+    )
+    .replace(/[ \t]+\n/gu, "\n")
+    .replace(/\n{3,}/gu, "\n\n")
+    .trim();
+}
+
 /**
  * A maximum-range FAQ is itself the answer to the amount-stage question.
  * Repeating that question immediately after the two ranges traps the client
@@ -410,7 +434,7 @@ function hasMaximumLoanPlaceholders(text: string): boolean {
 }
 
 function maximumLoanCalculationFollowUp(facts: ApplicationFacts, fallback: string): string {
-  if (facts.vehicleValue === undefined) return nextRequiredStageQuestion(facts, deriveStageCompletion(facts)) ?? fallback;
+  if (!deriveStageCompletion(facts).vehicle) return nextRequiredStageQuestion(facts, deriveStageCompletion(facts)) ?? fallback;
   if (!facts.residenceRegion || !facts.residenceCategory) {
     return "Подскажите, пожалуйста, Вашу прописку — Бишкек, Чуйская область или другой регион Кыргызстана.";
   }
@@ -457,10 +481,10 @@ export function replaceMaximumLimitPlaceholders(reply: string, facts: Applicatio
     .trim();
   const missing = [
     facts.vehicleValue === undefined ? "ориентировочную стоимость автомобиля" : undefined,
-    !facts.residenceRegion || !facts.residenceCategory ? "Вашу прописка" : undefined
+    !facts.residenceRegion || !facts.residenceCategory ? "Вашу прописку" : undefined
   ].filter((value): value is string => Boolean(value));
   const clarification = "Максимальную сумму смогу рассчитать после того, как узнаю: "
-    + (missing.length > 0 ? missing : ["ориентировочную стоимость автомобиля и Вашу прописка"]).join(" и ")
+    + (missing.length > 0 ? missing : ["ориентировочную стоимость автомобиля и Вашу прописку"]).join(" и ")
     + ".";
   // The knowledge answer comes first, then the next server-owned collection
   // question. This makes the missing-data explanation readable and keeps the
@@ -491,6 +515,11 @@ function supplementNormalizedMoney(values: NormalizedMoneyValue[], text: string,
   const classifiedValue = moneyValueFromClarificationDecision(text, messages, moneyClarification);
   const mentions = detectMoneyMentions(text);
   const singleMention = mentions.length === 1 ? mentions[0] : undefined;
+  // In an amount-collection context, clients routinely omit «тысяч»: «мне
+  // надо 300» means 300 000 сом, not 300 som. This must be resolved from the
+  // current turn before the semantic normalizer can echo a previously shown
+  // programme maximum as the requested amount.
+  const shortRequestedAmount = shortRequestedAmountFromActiveQuestion(text, expectedField, singleMention);
   // One client-written amount is one fact, never evidence for both the loan
   // and the vehicle. A direct loan cue («нужно», «требуется», «потребуется»)
   // is authoritative over an erroneous normalizer response that emits both
@@ -500,7 +529,9 @@ function supplementNormalizedMoney(values: NormalizedMoneyValue[], text: string,
     : undefined;
   const result = classifiedValue
     ? [classifiedValue]
-    : singleExplicitRole
+    : shortRequestedAmount
+      ? [shortRequestedAmount]
+      : singleExplicitRole
       ? [{ field: singleExplicitRole, amount: singleMention!.normalizedAmount, currency: singleMention!.currency ?? "KGS" as const, confidence: singleMention!.confidence }]
       : values.filter((value) => value.amount > 0 && (!expectedField || value.field === expectedField));
   // The model can be uncertain about an unqualified standalone amount, but it
@@ -578,6 +609,22 @@ function supplementNormalizedMoney(values: NormalizedMoneyValue[], text: string,
   return mayReplaceVehicleValue
     ? result
     : result.filter((value) => value.field !== "vehicleValue");
+}
+
+/** A 2–3 digit shorthand is unambiguous only while the server awaits the loan amount. */
+function shortRequestedAmountFromActiveQuestion(text: string, expectedField: "vehicleValue" | "requestedAmount" | undefined, mention: ReturnType<typeof detectMoneyMentions>[number] | undefined): NormalizedMoneyValue | undefined {
+  if (expectedField !== "requestedAmount") return undefined;
+  const shorthandMention = mention
+    && mention.roleCandidate === "requestedAmount"
+    && mention.normalizedAmount >= 50
+    && mention.normalizedAmount < 1_000
+    && !/(?:тыс|тыщ|млн|миллион|лям|\d\s*[кk](?=\s|$))/iu.test(mention.sourceText)
+    ? mention
+    : undefined;
+  const match = text.trim().match(/^(?:(?:мне\s+)?(?:надо|нужно|хочу|требуется)\s+)?(\d{2,3})(?:\s+(?:сом\p{L}*|доллар\p{L}*|евро|тенге|руб\p{L}*|USD|EUR|KZT|RUB))?[.!\s]*$/iu);
+  const thousands = shorthandMention?.normalizedAmount ?? Number(match?.[1]);
+  if (!Number.isInteger(thousands) || thousands < 50) return undefined;
+  return { field: "requestedAmount", amount: thousands * 1_000, currency: shorthandMention?.currency ?? "KGS", confidence: 0.99 };
 }
 
 /** Final persistence boundary for the main dialogue model's lead-card patch.
@@ -735,10 +782,11 @@ function ensureNonEmptyClientReply(reply: string, facts: ApplicationFacts): stri
 }
 
 /**
- * If a later sentence repeats any consecutive fragment of at least three
- * words from an earlier sentence, keep the later (usually canonical server)
- * wording and remove the first. Comparison is exact after case, whitespace,
- * and punctuation normalization.
+ * If a later sentence repeats the opening three words of an earlier sentence,
+ * keep the later (usually canonical server) wording and remove the first.
+ * Matching arbitrary fragments is unsafe: a knowledge answer and its
+ * follow-up often both mention a required fact such as «ориентировочную
+ * стоимость автомобиля».
  */
 export function removeEarlierDuplicateSentences(reply: string): string {
   const sentences = reply.match(/[^.!?]+[.!?]+|[^.!?]+$/gu) ?? [];
@@ -751,15 +799,13 @@ export function removeEarlierDuplicateSentences(reply: string): string {
     if (/(?:стоимость\s+автомобиля|необходимая\s+сумма\s+займа)\s*:/iu.test(sentence)) continue;
     const words = sentence.toLocaleLowerCase("ru-RU").match(/[\p{L}\p{N}]+/gu) ?? [];
     if (words.length < 3) continue;
-    for (let start = 0; start <= words.length - 3; start += 1) {
-      const key = words.slice(start, start + 3).join(" ");
-      const first = firstByFragment.get(key);
-      // A calculation may repeat a shared floor such as «50 000 сом» in
-      // two programme ranges. That is repetition inside one response
-      // sentence, not a duplicate earlier sentence to discard.
-      if (first !== undefined && first !== index) remove.add(first);
-      firstByFragment.set(key, index);
-    }
+    const key = words.slice(0, 3).join(" ");
+    const first = firstByFragment.get(key);
+    // A calculation may repeat a shared floor such as «50 000 сом» in two
+    // programme ranges. It is not an opening phrase and therefore does not
+    // make either sentence a duplicate.
+    if (first !== undefined && first !== index) remove.add(first);
+    firstByFragment.set(key, index);
   }
   return sentences
     .filter((_, index) => !remove.has(index))
