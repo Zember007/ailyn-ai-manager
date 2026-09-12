@@ -634,7 +634,7 @@ function shortRequestedAmountFromActiveQuestion(text: string, expectedField: "ve
     && !/(?:тыс|тыщ|млн|миллион|лям|\d\s*[кk](?=\s|$))/iu.test(mention.sourceText)
     ? mention
     : undefined;
-  const match = text.trim().match(/^(?:(?:мне\s+)?(?:надо|нужно|хочу|требуется)\s+)?(\d{2,3})(?:\s+(?:сом\p{L}*|доллар\p{L}*|евро|тенге|руб\p{L}*|USD|EUR|KZT|RUB))?[.!\s]*$/iu);
+  const match = text.trim().match(/^(?:(?:мне\s+)?(?:надо|нужно|хочу|требуется|давай(?:те)?|беру)\s+)?(\d{2,3})(?:\s+(?:сом\p{L}*|доллар\p{L}*|евро|тенге|руб\p{L}*|USD|EUR|KZT|RUB))?[.!\s]*$/iu);
   const thousands = shorthandMention?.normalizedAmount ?? Number(match?.[1]);
   if (!Number.isInteger(thousands) || thousands < 50) return undefined;
   return { field: "requestedAmount", amount: thousands * 1_000, currency: shorthandMention?.currency ?? "KGS", confidence: 0.99 };
@@ -658,7 +658,7 @@ function isRequestedAmountCorrectionText(text: string): boolean {
   const normalized = text.toLocaleLowerCase("ru-RU");
   const amount = String.raw`\d[\d\s.,]*(?:к|кк|тыс\.?|тысяч\p{L}*|млн|миллион\p{L}*)?`;
   return new RegExp(
-    String.raw`(?:(?:не|вместо)\s+${amount}\s+(?:а|а\s+не)\s+${amount}|(?:я\s+)?(?:всё\s*[- ]?таки\s+)?(?:хочу|мне\s+(?:нужно|надо)|нужно|надо|требуется)\s+(?:сумм\p{L}*\s+)?${amount}|мне\s+(?:всё\s*[- ]?таки\s+)?(?:нужно|надо)\s+(?:сумм\p{L}*\s+)?${amount}|(?:мне\s+)?(?:кстати\s+)?(?:всё\s*[- ]?таки\s+)?${amount}\s+(?:нужно|надо))`,
+    String.raw`(?:(?:не|вместо)\s+${amount}\s+(?:а|а\s+не)\s+${amount}|(?:я\s+)?(?:всё\s*[- ]?таки\s+)?(?:хочу|мне\s+(?:нужно|надо)|нужно|надо|требуется|давай(?:те)?|беру)\s+(?:сумм\p{L}*\s+)?${amount}|мне\s+(?:всё\s*[- ]?таки\s+)?(?:нужно|надо)\s+(?:сумм\p{L}*\s+)?${amount}|(?:мне\s+)?(?:кстати\s+)?(?:всё\s*[- ]?таки\s+)?${amount}\s+(?:нужно|надо))`,
     "iu"
   ).test(normalized);
 }

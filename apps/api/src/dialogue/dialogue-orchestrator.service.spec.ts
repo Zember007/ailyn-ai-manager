@@ -665,10 +665,12 @@ describe("single-agent dialogue", () => {
   });
 
   it.each([
-    ["мне надо 300", "KGS"],
-    ["мне надо 300 долларов", "USD"],
-    ["мне надо 300 евро", "EUR"]
-  ] as const)("treats a short requested amount as thousands in %s", async (text, currency) => {
+    ["мне надо 300", "KGS", 300_000],
+    ["мне надо 300 долларов", "USD", 30_000_000],
+    ["мне надо 300 евро", "EUR", 30_000_000],
+    ["давай 500", "KGS", 500_000],
+    ["беру 500", "KGS", 500_000]
+  ] as const)("treats a short requested amount as thousands in %s", async (text, currency, expectedAmount) => {
     const application = {
       id: "app",
       facts: { vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 1_000_000, residenceRegion: "Другой регион Кыргызстана", residenceCategory: "OTHER_KG" },
@@ -698,7 +700,7 @@ describe("single-agent dialogue", () => {
       .receive({ externalMessageId: "m", channel: "web-test", externalContactId: "contact", text, attachments: [], timestamp: new Date() });
 
     const facts = agent.run.mock.calls[0][0].facts;
-    expect(facts.requestedAmount).toBe(currency === "KGS" ? 300_000 : 30_000_000);
+    expect(facts.requestedAmount).toBe(expectedAmount);
     if (currency !== "KGS") expect(facts.requestedAmountSourceCurrency).toBe(currency);
   });
 
