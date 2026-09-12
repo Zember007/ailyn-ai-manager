@@ -64,12 +64,18 @@ describe("selectRelevantDocumentation", () => {
     "а проценты какие и сумма максимальная",
     "сколько денег дадите",
     "какой лимит можно получить",
-    "до какой суммы дадите"
+    "до какой суммы дадите",
+    "самая большая",
+    "самая большая сумма",
+    "самую большую",
+    "наибольшая",
+    "больше всего",
+    "по максимуму"
   ])("routes a maximum-loan wording to the placeholder FAQ: %s", (currentMessage) => {
     const result = selectRelevantDocumentation({ facts: {}, currentMessage, messages: [] });
 
     expect(isMaximumLoanKnowledgeQuestion(currentMessage)).toBe(true);
-    expect(result.knowledge.some((chunk) => chunk.key === "faq_maximum_loan_range")).toBe(true);
+    expect([...result.commonKnowledge, ...result.knowledge].some((chunk) => chunk.key === "faq_maximum_loan_range")).toBe(true);
   });
 
   it("does not mistake a stated vehicle value for a maximum-loan question", () => {

@@ -769,7 +769,7 @@ export class AgentTurnService {
         model: this.config.routerAiTextModel ?? "routerai-text-model-not-configured",
         temperature: 0, max_tokens: 40, reasoning: { enabled: false }, response_format: { type: "json_object" },
         messages: [
-          { role: "system", content: "Определи, изменяет ли клиент программу займа в текущей реплике, независимо от текущего этапа. Верни строго JSON {\"program\":\"without_storage\"|\"parking\"|null,\"hasOtherStageAnswer\":boolean,\"question\":string|null}. «давай стоянку тогда», «на стоянку», «со стоянкой», «оставить на парковке» означают parking; «без изъятия», «оставить машину у себя» означают without_storage. Короткие «без» и «со» интерпретируй только после прямого вопроса о программе. Если в реплике есть вопрос или явный ответ на другой этап, поставь hasOtherStageAnswer=true и верни question, если он есть. Не придумывай выбор." },
+          { role: "system", content: "Определи, изменяет ли клиент программу займа в текущей реплике, независимо от текущего этапа. Верни строго JSON {\"program\":\"without_storage\"|\"parking\"|null,\"hasOtherStageAnswer\":boolean,\"question\":string|null}. Выбор определяется по смыслу, не только по точному названию: «давай стоянку тогда», «на стоянку», «со стоянкой», «оставить на парковке», «пускай у вас авто останется», «могу без машины обойтись», «машину могу оставить у вас», «авто может остаться у вас» означают parking. «без изъятия», «оставить машину у себя», «мне нужно авто у себя», «мне надо ездить на машине», «чтобы авто у меня осталось», «машина должна быть у меня», «не могу без машины» означают without_storage. Считай это выбором только когда клиент утверждает, где ему нужен автомобиль, а не задаёт отвлечённый или условный вопрос. Короткие «без» и «со» интерпретируй только после прямого вопроса о программе. Если в реплике есть вопрос или явный ответ на другой этап, поставь hasOtherStageAnswer=true и верни question, если он есть. Не придумывай выбор." },
           { role: "user", content: JSON.stringify({ currentStageQuestion: lastAssistant, clientReply }) }
         ]
       }, { timeoutMs: this.config.routerAiTimeoutMs, signal: input.signal });
@@ -2219,7 +2219,7 @@ function resolveLoanQuestionKind(modelKind: LoanQuestionKind, text: string | und
   // «А максимум сколько денег дадите?» can receive a FAQ about interest.
   const normalized = text?.toLocaleLowerCase("ru-RU") ?? "";
   const asksRate = /(?:ставк\p{L}*|процент\p{L}*|сколько\s*%)/iu.test(normalized);
-  const asksLimit = /(?:дадите|(?:скольк|сколк)\p{L}*[^?!]{0,40}(?:денег|деньг|баб|лав[еэ]|сом|дад\p{L}*|получ\p{L}*)|(?:лимит|максимум|макс|потолок)\p{L}*|(?:денег|деньг|баб|лав[еэ])[^?!]{0,40}(?:(?:скольк|сколк)\p{L}*|дад\p{L}*|может\p{L}*\s+дат\p{L}*|можно|получ\p{L}*)|от\s+(?:скольк|сколк)\p{L}*|до\s+(?:скольк|сколк)\p{L}*(?:\s+дад\p{L}*)?)/iu.test(normalized);
+  const asksLimit = isMaximumLoanKnowledgeQuestion(normalized) || /(?:дадите|(?:скольк|сколк)\p{L}*[^?!]{0,40}(?:денег|деньг|баб|лав[еэ]|сом|дад\p{L}*|получ\p{L}*)|(?:лимит|максимум|макс|потолок)\p{L}*|(?:денег|деньг|баб|лав[еэ])[^?!]{0,40}(?:(?:скольк|сколк)\p{L}*|дад\p{L}*|может\p{L}*\s+дат\p{L}*|можно|получ\p{L}*)|от\s+(?:скольк|сколк)\p{L}*|до\s+(?:скольк|сколк)\p{L}*(?:\s+дад\p{L}*)?)/iu.test(normalized);
   if (asksLimit) return asksRate ? "maximum_limit_and_rate" : "maximum_limit";
   if (asksRate) return "loan_rate";
   // A rate answer is unsafe unless the client explicitly asked about a
@@ -3534,6 +3534,7 @@ function hasExplicitProgramSelection(input: Pick<AgentTurnInput, "text" | "curre
 }
 
 function hasExplicitProgramSelectionSignal(text: string): boolean {
+  if (programFromVehiclePossessionPreference(text)) return true;
   return /(?:без\s+изъяти|со\s+стоянк|на\s+стоянк|остав(?:ить|лю|ляем)[^.!?\n]{0,40}(?:у\s+себя|на\s+(?:стоянк|парковк))|(?:давай(?:те)?|хочу|выбира(?:ю|ем)|тогда|будет|нуж(?:на|ен|но)|надо)[^.!?\n]{0,40}(?:стоянк|парковк|без\s+изъяти))/iu.test(text);
 }
 
@@ -3542,6 +3543,8 @@ function isProgramSelectionQuestion(text: string): boolean {
 }
 
 function programFromShortReply(text: string): "without_storage" | "parking" | undefined {
+  const preference = programFromVehiclePossessionPreference(text);
+  if (preference) return preference;
   const normalized = text.trim().toLocaleLowerCase("ru-RU");
   if (/^(?:без|без\s+из|без\s+изъят\p{L}*|остав(?:ить|лю)\s+(?:у\s+себя|машин\p{L}*\s+себе))[.!\s]*$/iu.test(normalized)) return "without_storage";
   if (/^(?:со|со\s+стоянк\p{L}*|на\s+стоянк\p{L}*|парковк\p{L}*)[.!\s]*$/iu.test(normalized)) return "parking";
@@ -3551,8 +3554,17 @@ function programFromShortReply(text: string): "without_storage" | "parking" | un
 /** Outage fallback after the model has had the first chance to normalize a
  * programme change expressed during any unrelated stage. */
 function programFromExplicitReply(text: string): "without_storage" | "parking" | undefined {
+  const preference = programFromVehiclePossessionPreference(text);
+  if (preference) return preference;
   if (/(?:давай(?:те)?|хочу|выбира(?:ю|ем)|тогда|будет|остав(?:ить|лю|ляем))[^.!?\n]{0,40}(?:стоянк|парковк)|(?:на|со)\s+(?:стоянк|парковк)/iu.test(text)) return "parking";
   if (/(?:давай(?:те)?|хочу|выбира(?:ю|ем)|тогда|будет|остав(?:ить|лю|ляем))[^.!?\n]{0,40}без\s+изъяти|без\s+изъят/iu.test(text)) return "without_storage";
+  return undefined;
+}
+
+/** Conservative fallback when the semantic classifier is unavailable or returns no decision. */
+function programFromVehiclePossessionPreference(text: string): "without_storage" | "parking" | undefined {
+  if (/(?:пускай|пусть)[^.!?\n]{0,35}(?:авто|автомобил\p{L}*|машин\p{L}*)[^.!?\n]{0,35}(?:у\s+вас|остан|оста[её]т)|могу\s+без\s+(?:авто|автомобил\p{L}*|машин\p{L}*)\s+обойтись|(?:авто|автомобил\p{L}*|машин\p{L}*)[^.!?\n]{0,35}(?:могу|можно)[^.!?\n]{0,25}остав(?:ить|аться)[^.!?\n]{0,25}(?:у\s+вас|на\s+(?:стоянк|парковк))/iu.test(text)) return "parking";
+  if (/(?:мне\s+(?:нужно|надо)[^.!?\n]{0,35}(?:ездить\s+на\s+машин\p{L}*|авто\s+у\s+себя|машин\p{L}*\s+у\s+себя)|чтобы\s+(?:авто|автомобил\p{L}*|машин\p{L}*)[^.!?\n]{0,25}(?:у\s+меня\s+)?остал|(?:авто|автомобил\p{L}*|машин\p{L}*)[^.!?\n]{0,25}(?:долж(?:ен|на|но)|нуж(?:ен|на|но))[^.!?\n]{0,25}у\s+меня|не\s+могу\s+без\s+(?:авто|автомобил\p{L}*|машин\p{L}*))/iu.test(text)) return "without_storage";
   return undefined;
 }
 

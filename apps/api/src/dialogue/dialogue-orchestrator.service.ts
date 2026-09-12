@@ -291,7 +291,7 @@ export class DialogueOrchestratorService {
     // same instruction. Deduplicate at the final delivery boundary so the
     // persisted and returned message are identical.
     const plannedReply = ensureNonEmptyClientReply(
-      removeEarlierDuplicateSentences(renderClientReply ? turn.reply : composeReply(turn.reply, currency.clientText)),
+      stripUnrequestedAssistanceOffers(removeEarlierDuplicateSentences(renderClientReply ? turn.reply : composeReply(turn.reply, currency.clientText))),
       application.facts
     );
     // Knowledge lookup replaces the main-turn response with its own approved
@@ -456,11 +456,11 @@ export function replaceMaximumLimitPlaceholders(reply: string, facts: Applicatio
     .replace(/[ \t]{2,}/gu, " ")
     .trim();
   const missing = [
-    facts.vehicleValue === undefined ? "ориентировочная стоимость автомобиля" : undefined,
-    !facts.residenceRegion || !facts.residenceCategory ? "Ваша прописка" : undefined
+    facts.vehicleValue === undefined ? "ориентировочную стоимость автомобиля" : undefined,
+    !facts.residenceRegion || !facts.residenceCategory ? "Вашу прописка" : undefined
   ].filter((value): value is string => Boolean(value));
   const clarification = "Максимальную сумму смогу рассчитать после того, как узнаю: "
-    + (missing.length > 0 ? missing : ["ориентировочная стоимость автомобиля и Ваша прописка"]).join(" и ")
+    + (missing.length > 0 ? missing : ["ориентировочную стоимость автомобиля и Вашу прописка"]).join(" и ")
     + ".";
   // The knowledge answer comes first, then the next server-owned collection
   // question. This makes the missing-data explanation readable and keeps the
@@ -693,6 +693,19 @@ function isPendingMoneyCurrencyClarificationQuestion(text: string): boolean {
   const amount = "\\d[\\d\\s.,]*(?:тыс\\p{L}*|млн\\p{L}*)?\\s*(?:сом\\p{L}*|доллар\\p{L}*|евро|тенге|руб\\p{L}*)";
   const confirmation = "(?:верно|правильно|имели\\s+в\\s+виду|это\\s+сумм\\p{L}*)";
   return new RegExp(`(?:${amount}[^?]{0,80}${confirmation}|${confirmation}[^?]{0,80}${amount})\\s*\\?`, "iu").test(text);
+}
+
+/** Knowledge answers must finish after answering the customer's question.
+ * A workflow prompt is appended separately by the server, so model-authored
+ * offers such as «Если хотите, я могу подсказать…» only add noise. */
+export function stripUnrequestedAssistanceOffers(reply: string): string {
+  return reply
+    .replace(/\s*если\s+хотите,?[^.!?\n]*(?:помогу|подскажу|сориентирую|расскажу|объясню)[^.!?\n]*[.!?]?/giu, "")
+    .replace(/\s*(?:если\s+хотите,?\s*)?(?:я\s+)?(?<!\p{L})могу(?!\p{L})\s+(?:подсказать|помочь|сориентировать|рассказать|объяснить)[^.!?\n]*[.!?]?/giu, "")
+    .replace(/[ \t]{2,}/gu, " ")
+    .replace(/\s+([,.!?])/gu, "$1")
+    .replace(/\n{3,}/gu, "\n\n")
+    .trim();
 }
 
 /** Keep the conversational order: greeting/introduction first, then the

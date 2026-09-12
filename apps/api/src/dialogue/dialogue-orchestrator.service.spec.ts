@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { AgentTurnService, nextRequiredStageQuestion, OLDER_VEHICLE_PROGRAM_NOTICE } from "./agent-turn.service.js";
 import { agentStageInstructions } from "./agent-stage-instructions.js";
-import { DialogueOrchestratorService, composeReply, removeEarlierDuplicateSentences, replaceMaximumLimitPlaceholders, resolveForeignCurrencyFacts, resolveNormalizedMoneyFacts, workflowFollowUpAfterKnowledge } from "./dialogue-orchestrator.service.js";
+import { DialogueOrchestratorService, composeReply, removeEarlierDuplicateSentences, replaceMaximumLimitPlaceholders, resolveForeignCurrencyFacts, resolveNormalizedMoneyFacts, stripUnrequestedAssistanceOffers, workflowFollowUpAfterKnowledge } from "./dialogue-orchestrator.service.js";
 import { generatedDocumentationChunks } from "./documentation-chunks.generated.js";
 
 process.env.DATABASE_URL ??= "postgresql://test:test@localhost:5432/ailyn";
@@ -43,6 +43,11 @@ async function runMockedBatchedAgentTurn(input: { facts: Record<string, unknown>
 }
 
 describe("single-agent dialogue", () => {
+  it("removes unrequested assistance offers from a knowledge answer", () => {
+    expect(stripUnrequestedAssistanceOffers("Если не успеете закрыть долг вовремя, займ можно продлевать. Если хотите, я могу подсказать, как лучше подготовиться к продлению займа.")).toBe("Если не успеете закрыть долг вовремя, займ можно продлевать.");
+    expect(stripUnrequestedAssistanceOffers("Максимальную сумму рассчитаем после оценки. Если хотите, я помогу сориентироваться по сумме точнее после осмотра.")).toBe("Максимальную сумму рассчитаем после оценки.");
+  });
+
   it("answers a short why-question from the active vehicle stage instead of unrelated knowledge", async () => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
       ...validResult,
@@ -5780,6 +5785,52 @@ describe("single-agent dialogue", () => {
     expect(output.reply).toBe(withFirstContactGreeting("Вы хотите получить займ под залог своего автомобиля?"));
     expect(output.reply).not.toContain("стоянк");
     expect(output.reply).not.toContain("1 000 000");
+  });
+
+  it.each([
+    ["Мне нужно авто у себя", "without_storage"],
+    ["Мне надо ездить на машине", "without_storage"],
+    ["Чтобы авто у меня осталось", "without_storage"],
+    ["Пускай у вас авто останется", "parking"],
+    ["Могу без машины обойтись", "parking"]
+  ] as const)("normalizes the semantic programme choice %s as %s", async (text, requestedProgram) => {
+    const client = {
+      isConfigured: vi.fn().mockReturnValue(true),
+      createChatCompletion: vi.fn()
+        .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ ...validResult, reply: "Поняла.", leadCardPatch: {} }) } }] })
+        .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ program: requestedProgram, hasOtherStageAnswer: false, question: null }) } }] })
+    } as any;
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "Вас интересует займ без изъятия автомобиля или с постановкой автомобиля на охраняемую стоянку?", createdAt: "now" } as any],
+      facts: { vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 1_000_000, requestedAmount: 300_000, residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY" } as any,
+      settings: {}, text, attachments: []
+    });
+
+    expect(output.result?.leadCardPatch.requestedProgram).toBe(requestedProgram);
+    const classifierRequest = client.createChatCompletion.mock.calls
+      .map(([request]: [{ messages?: Array<{ content?: string }> }]) => request.messages?.[0]?.content)
+      .find((prompt: string | undefined) => prompt?.includes("Определи, изменяет ли клиент программу займа"));
+    expect(classifierRequest).toContain("мне нужно авто у себя");
+    expect(classifierRequest).toContain("пускай у вас авто останется");
+  });
+
+  it.each([
+    ["Мне надо ездить на машине", "without_storage"],
+    ["Пускай у вас авто останется", "parking"]
+  ] as const)("uses the regex fallback for %s when programme classification is undecided", async (text, requestedProgram) => {
+    const client = {
+      isConfigured: vi.fn().mockReturnValue(true),
+      createChatCompletion: vi.fn()
+        .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ ...validResult, reply: "Поняла.", leadCardPatch: {} }) } }] })
+        .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ program: null, hasOtherStageAnswer: false, question: null }) } }] })
+    } as any;
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "Вас интересует займ без изъятия автомобиля или с постановкой автомобиля на охраняемую стоянку?", createdAt: "now" } as any],
+      facts: { vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 1_000_000, requestedAmount: 300_000, residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY" } as any,
+      settings: {}, text, attachments: []
+    });
+
+    expect(output.result?.leadCardPatch.requestedProgram).toBe(requestedProgram);
   });
 
   it("replaces a model no-information fallback with an exact approved FAQ answer", async () => {
