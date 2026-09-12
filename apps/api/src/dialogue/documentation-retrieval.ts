@@ -316,7 +316,8 @@ function isOwnershipRegistrationQuestion(text: string): boolean {
   return /(?:оформлен|зарегистрирован)\p{L}*.{0,60}\s+не\s*на\s*(?:меня|мне|я)(?:\s|$)|(?:автомобил|машин|мошин|авто)\p{L}*.{0,80}(?:не\s*мо[яйеи]|чуж\p{L}*|друг(?:ого|ая|ой)\s+(?:человек|лиц))/iu.test(text);
 }
 
-/** A malfunction/replacement request for GPS belongs to servicing an existing loan, not a pre-loan GPS FAQ. */
+/** Current-loan servicing belongs to the approved existing-contract redirect,
+ * rather than pre-loan FAQ material. */
 function isExistingContractServiceRequest(text: string): boolean {
-  return /(?:датчик|gps|гпс)[^.!?]{0,40}(?:не\s+работа|сломал|перестал\p{L}*\s+работа|замен)/iu.test(text);
+  return /(?:действующ\p{L}*|текущ\p{L}*)\s+(?:займ|договор)|(?:сколько|какая)\s+(?:я\s+)?(?:сейчас\s+)?долж(?:ен|на)[^.!?]{0,80}(?:по\s+(?:моему\s+)?(?:текущ\p{L}*\s+)?(?:займу|договор)|у\s+меня)|(?:остат(?:ок|лось)|задолженн\p{L}*|долг\p{L}*)[^.!?]{0,60}(?:по\s+(?:моему\s+)?(?:займу|договор)|у\s+меня)|(?:датчик|gps|гпс)[^.!?]{0,40}(?:не\s+работа|сломал|перестал\p{L}*\s+работа|замен)/iu.test(text);
 }

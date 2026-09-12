@@ -1250,9 +1250,12 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   // answer such as «нету» cannot be upgraded into a question by any model
   // field or by a generic fallback.
   const bareNonQuestion = !/[?？]/u.test(semanticText ?? "") && wordCount(semanticText ?? "") < 2;
-  const knowledgeRequest = (!approvedKnowledgeTopic && (bareNonQuestion || (!maximumLoanQuestion && stageResponse))) || !mayNeedKnowledge
+  // A terse «максимальная» is a valid answer to the amount-stage prompt,
+  // but semantically it is also a request for the approved maximum-range
+  // FAQ.  Do not let the generic one-word guard discard it before retrieval.
+  const knowledgeRequest = (!approvedKnowledgeTopic && ((bareNonQuestion && !maximumLoanQuestion) || (!maximumLoanQuestion && stageResponse))) || !mayNeedKnowledge
     ? undefined
-    : modelKnowledgeRequest ?? (approvedKnowledgeTopic || ownershipRegistrationQuestion || independentOfficeQuestion || isExplicitQuestionText(semanticText ?? "")
+    : modelKnowledgeRequest ?? (maximumLoanQuestion || approvedKnowledgeTopic || ownershipRegistrationQuestion || independentOfficeQuestion || isExplicitQuestionText(semanticText ?? "")
       ? { required: true as const, reason: "missing_approved_answer" as const }
       : isLikelyKnowledgeQuestion(semanticText ?? "")
         ? { required: true as const, reason: "missing_approved_answer" as const }
@@ -1584,7 +1587,7 @@ function normalizeVehicleRegistrationTerminology(reply: string): string {
 /** Convert the interpreter's two allowed markers into a server-owned plan fragment. */
 function normalizeTechnicalReply(reply: string): string {
   if (/^распознано[.!\s]*$/iu.test(reply)) return "";
-  if (/^нужно\s+уточнение[.!\s]*$/iu.test(reply)) return "Не смогла понять. Напишите, пожалуйста, подробнее.";
+  if (/^нужно\s+уточнение[.!\s]*$/iu.test(reply)) return "Напишите, пожалуйста, подробнее.";
   return reply;
 }
 
@@ -1939,7 +1942,28 @@ function visitConfirmationNotice(input: Pick<AgentTurnInput, "settings">, previo
   const twoGis = approvedOfficeUrl(settings.twoGisUrl, DEFAULT_TWO_GIS_URL);
   const googleMaps = approvedOfficeUrl(settings.googleMapsUrl, DEFAULT_GOOGLE_MAPS_URL);
   void timezone;
-  return `Записываю Вас на ${weekday}, ${displayDate}, в ${current.visitTime}.\nЗапись предварительная, её подтвердит менеджер.\nАдрес: ${address}\n2ГИС: ${twoGis}\nGoogle Maps: ${googleMaps}`;
+  return [
+    `Записываю Вас на ${weekday}, ${displayDate}, в ${current.visitTime}.`,
+    "Запись предварительная, её подтвердит менеджер.",
+    `Адрес: ${address}`,
+    `2ГИС: ${twoGis}`,
+    `Google Maps: ${googleMaps}`,
+    visitRequirementsReminder(current)
+  ].filter(Boolean).join("\n");
+}
+
+/** Mandatory visit conditions are derived from the final lead facts, never
+ * delegated to the prose model. Keeping them in one sentence makes the
+ * confirmation readable when both conditions apply. */
+function visitRequirementsReminder(facts: ApplicationFacts): string | undefined {
+  const requirements: string[] = [];
+  if (facts.familyStatus === "married") {
+    requirements.push("нужно согласие супруга(и)");
+  }
+  if (requiresGuarantorForFacts(facts)) requirements.push("требуется поручитель при визите");
+  return requirements.length > 0
+    ? `Напоминаем Вам, что для оформления займа ${requirements.join(" и ")}.`
+    : undefined;
 }
 
 /** Once a client has supplied exactly one half of a visit slot, the server
@@ -2140,8 +2164,8 @@ function removeInternalPricingInstruction(reply: string): string {
 function maximumLoanKnowledgeAnswer(facts: ApplicationFacts, settings: object): string {
   if (!hasMaximumLoanCalculationInputs(facts)) {
     const missing = [
-      facts.vehicleValue === undefined ? "ориентировочная стоимость автомобиля" : undefined,
-      !facts.residenceRegion || !facts.residenceCategory ? "Ваша прописка" : undefined
+      facts.vehicleValue === undefined ? "ориентировочную стоимость автомобиля" : undefined,
+      !facts.residenceRegion || !facts.residenceCategory ? "Вашу прописку" : undefined
     ].filter((value): value is string => Boolean(value));
     return `Максимальную сумму смогу рассчитать после того, как узнаю: ${missing.join(" и ")}.`;
   }
@@ -2561,7 +2585,7 @@ function removeUnpromptedExistingContractRedirect(reply: string, input: Pick<Age
 }
 
 function isExplicitExistingContractRequest(text: string): boolean {
-  return /(?:действующ(?:ий|ему)\s+(?:займ|договор)|(?:остат(?:ок|лось)|задолженн\p{L}*|долг\p{L}*)[^.!?]{0,60}(?:по\s+(?:моему\s+)?(?:займу|договор)|у\s+меня)|(?:проверьте|проверить)[^.!?]{0,60}оплат|(?:я\s+)?оплатил(?:а)?\b|реквизит\p{L}*[^.!?]{0,60}(?:оплат|договор)|(?:вернуть|забрать)[^.!?]{0,60}документ|(?:не\s+работает|перестал\p{L}*\s+работать)[^.!?]{0,60}(?:gps|гпс|датчик)|(?:gps|гпс|датчик)[^.!?]{0,40}(?:не\s+работа|сломал|перестал\p{L}*\s+работа|замен))/iu.test(text);
+  return /(?:действующ(?:ий|ему)\s+(?:займ|договор)|текущ\p{L}*\s+(?:займ|договор)|(?:сколько|какая)\s+(?:я\s+)?(?:сейчас\s+)?долж(?:ен|на)[^.!?]{0,80}(?:по\s+(?:моему\s+)?(?:текущ\p{L}*\s+)?(?:займу|договор)|у\s+меня)|(?:остат(?:ок|лось)|задолженн\p{L}*|долг\p{L}*)[^.!?]{0,60}(?:по\s+(?:моему\s+)?(?:займу|договор)|у\s+меня)|(?:проверьте|проверить)[^.!?]{0,60}оплат|(?:я\s+)?оплатил(?:а)?\b|реквизит\p{L}*[^.!?]{0,60}(?:оплат|договор)|(?:вернуть|забрать)[^.!?]{0,60}документ|(?:не\s+работает|перестал\p{L}*\s+работать)[^.!?]{0,60}(?:gps|гпс|датчик)|(?:gps|гпс|датчик)[^.!?]{0,40}(?:не\s+работа|сломал|перестал\p{L}*\s+работа|замен))/iu.test(text);
 }
 
 function residencePatchFromExplicitClientText(input: Pick<AgentTurnInput, "text" | "currentTurnMessages" | "messages">, patch: Partial<ApplicationFacts>, previousFacts: ApplicationFacts, modelAssertedResidence: boolean): Partial<ApplicationFacts> {

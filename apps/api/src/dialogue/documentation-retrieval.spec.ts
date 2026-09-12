@@ -31,9 +31,10 @@ describe("selectRelevantDocumentation", () => {
     expect(result.mandatoryAnswer).toBe("Обычно оформление занимает 1 час. Присланные Вами документы помогут нам сократить время выдачи денег.");
   });
 
-  it("includes the exact approved redirect for an existing contract", () => {
-    const result = selectRelevantDocumentation({ facts: { existingContractQuestion: true }, currentMessage: "сколько я должен по текущему займу", messages: [] });
+  it("classifies a current-contract balance question to the exact approved redirect", () => {
+    const result = selectRelevantDocumentation({ facts: {}, currentMessage: "а вы можете посмотреть сколько я сейчас должен по текущему договору", messages: [] });
     expect(result.commonKnowledge.some((chunk) => chunk.text.includes("Я Айлин — виртуальный помощник"))).toBe(true);
+    expect(result.mandatoryAnswer).toBe("Я Айлин — виртуальный помощник по вопросам оформления новых займов. Если у Вас уже оформлен займ, пожалуйста, позвоните по телефону +996 502 108 108 или напишите в WhatsApp +996 776 108 108. Наши специалисты проверят информацию по Вашему договору и помогут решить Ваш вопрос.");
   });
 
   it("supplies the approved programme-specific interest-rate answer only for a direct rate question", () => {
@@ -137,6 +138,7 @@ describe("selectRelevantDocumentation", () => {
     ["авто в кредите", "К сожалению, мы не сможем оформить займ, если автомобиль в кредите."],
     ["А вещи надо забрать из авто?", "Вещи в автомобиле можно оставить или забрать — на Ваше усмотрение."],
     ["А по доверенности можно займ оформить?", "Нет, оформить займ по доверенности нельзя: собственник автомобиля должен лично присутствовать при осмотре и выдаче займа."],
+    ["а доверенность нужно делать", "Да, оформление нотариальной доверенности может быть одним из условий выдачи займа. Более подробно порядок оформления и условия Вы сможете уточнить во время визита в офис у менеджера."],
     ["Можно оформить нотариальную доверенность на сотрудника?", "Да, оформление нотариальной доверенности может быть одним из условий выдачи займа. Более подробно порядок оформления и условия Вы сможете уточнить во время визита в офис у менеджера."],
     ["а куда ехать", "Наш офис находится на бульваре Молодой Гвардии, 22, в Бишкеке. Мы работаем с понедельника по пятницу с 11:00 до 19:00. Вы можете приехать в любое удобное время в рамках рабочего графика.\nhttps://go.2gis.com/Y34m4\nhttps://maps.app.goo.gl/9xiWLVvdyRgn3Sx4A"]
   ])("makes the approved answer mandatory for %s", (question, answer) => {

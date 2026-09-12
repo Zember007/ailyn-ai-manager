@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { AgentTurnService, nextRequiredStageQuestion, OLDER_VEHICLE_PROGRAM_NOTICE } from "./agent-turn.service.js";
 import { agentStageInstructions } from "./agent-stage-instructions.js";
-import { DialogueOrchestratorService, composeReply, removeEarlierDuplicateSentences, replaceMaximumLimitPlaceholders, resolveForeignCurrencyFacts, resolveNormalizedMoneyFacts } from "./dialogue-orchestrator.service.js";
+import { DialogueOrchestratorService, composeReply, removeEarlierDuplicateSentences, replaceMaximumLimitPlaceholders, resolveForeignCurrencyFacts, resolveNormalizedMoneyFacts, workflowFollowUpAfterKnowledge } from "./dialogue-orchestrator.service.js";
 import { generatedDocumentationChunks } from "./documentation-chunks.generated.js";
 
 process.env.DATABASE_URL ??= "postgresql://test:test@localhost:5432/ailyn";
@@ -1278,6 +1278,79 @@ describe("single-agent dialogue", () => {
     expect(output.reply).toBe(`Да, на автомобиль устанавливаем GPS/трекер (датчик).\n\n${vehicleStageQuestion}`);
   });
 
+  it("answers a one-word maximum request at the amount stage without repeating that stage", async () => {
+    const facts = {
+      vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 3_000_000,
+      residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY"
+    } as any;
+    const application = { id: "app", facts, contactId: "contact", stage: "COLLECTING_AMOUNT", status: "need_more_data" } as any;
+    const conversation = {
+      id: "conversation",
+      messages: [{ id: "previous", author: "ai", body: amountStageQuestion, createdAt: "now" }],
+      application,
+      channel: "web-test"
+    } as any;
+    const store = {
+      getOrCreateConversation: vi.fn().mockResolvedValue({ conversation, application }),
+      addMessage: vi.fn().mockResolvedValue({ id: "inbound", author: "client", body: "максимальная", createdAt: "now" }),
+      updateFacts: vi.fn().mockResolvedValue([]), saveAgentState: vi.fn(), getApplication: vi.fn().mockResolvedValue(application), getConversation: vi.fn().mockResolvedValue(conversation), addAttachment: vi.fn(), createManagerNotification: vi.fn()
+    } as any;
+    const agent = {
+      run: vi.fn().mockResolvedValue({
+        result: { ...validResult, leadCardPatch: { ...facts, knowledgeRequest: { required: true, reason: "missing_approved_answer" } } },
+        reply: "Поняла.", model: "workflow-model", promptVersion: "v1"
+      }),
+      answerWithKnowledge: vi.fn().mockResolvedValue({
+        reply: "Без изъятия: от 50 000 сом до MAX_LIMIT_WITHOUT сом\nСо стоянкой: от 50 000 сом до MAX_LIMIT_PARK сом",
+        answerFound: true,
+        model: "knowledge-model"
+      })
+    } as any;
+
+    const output = await new DialogueOrchestratorService(agent, store, { getValues: vi.fn().mockResolvedValue({}) } as any, { log: vi.fn() } as any)
+      .receive({ externalMessageId: "m", channel: "web-test", externalContactId: "c", text: "максимальная", attachments: [], timestamp: new Date() });
+
+    expect(agent.answerWithKnowledge).toHaveBeenCalledWith(expect.objectContaining({
+      text: "максимальная",
+      workflowFollowUp: amountStageQuestion
+    }));
+    expect(output.reply).toBe("Без изъятия: от 50 000 сом до 600 000 сом\nСо стоянкой: от 50 000 сом до 1 500 000 сом");
+    expect(output.reply).not.toContain(amountStageQuestion);
+  });
+
+  it("moves from a maximum request at the amount stage to residence when residence is missing", async () => {
+    const facts = { vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 3_000_000 } as any;
+    const application = { id: "app", facts, contactId: "contact", stage: "COLLECTING_AMOUNT", status: "need_more_data" } as any;
+    const conversation = {
+      id: "conversation",
+      messages: [{ id: "previous", author: "ai", body: amountStageQuestion, createdAt: "now" }],
+      application,
+      channel: "web-test"
+    } as any;
+    const store = {
+      getOrCreateConversation: vi.fn().mockResolvedValue({ conversation, application }),
+      addMessage: vi.fn().mockResolvedValue({ id: "inbound", author: "client", body: "мне нужна максимальная сумма", createdAt: "now" }),
+      updateFacts: vi.fn().mockResolvedValue([]), saveAgentState: vi.fn(), getApplication: vi.fn().mockResolvedValue(application), getConversation: vi.fn().mockResolvedValue(conversation), addAttachment: vi.fn(), createManagerNotification: vi.fn()
+    } as any;
+    const agent = {
+      run: vi.fn().mockResolvedValue({
+        result: { ...validResult, leadCardPatch: { ...facts, knowledgeRequest: { required: true, reason: "missing_approved_answer" } } },
+        reply: "Поняла.", model: "workflow-model", promptVersion: "v1"
+      }),
+      answerWithKnowledge: vi.fn().mockResolvedValue({
+        reply: "Максимальную сумму смогу рассчитать после того, как узнаю: Ваша прописка.",
+        answerFound: true,
+        model: "knowledge-model"
+      })
+    } as any;
+
+    const output = await new DialogueOrchestratorService(agent, store, { getValues: vi.fn().mockResolvedValue({}) } as any, { log: vi.fn() } as any)
+      .receive({ externalMessageId: "m", channel: "web-test", externalContactId: "c", text: "мне нужна максимальная сумма", attachments: [], timestamp: new Date() });
+
+    expect(output.reply).toBe("Максимальную сумму смогу рассчитать после того, как узнаю: Ваша прописка.\n\nПодскажите, пожалуйста, Вашу прописку — Бишкек, Чуйская область или другой регион Кыргызстана.");
+    expect(output.reply).not.toContain(amountStageQuestion);
+  });
+
   it("preserves a server visit question after the knowledge-model answer", async () => {
     const application = { id: "app", facts: {}, contactId: "contact", stage: "SCHEDULING_VISIT", status: "need_more_data" } as any;
     const conversation = { id: "conversation", messages: [], application, channel: "web-test" } as any;
@@ -1822,7 +1895,7 @@ describe("single-agent dialogue", () => {
     expect(output.reply).toBe("Без изъятия: от 50 000 сом до 200 000 сом\nСо стоянкой: от 50 000 сом до 1 310 000 сом");
   });
 
-  it.each(["максимальная", "по максимуму"])('answers the maximum-choice reply "%s" with the selected programme limit', async (text) => {
+  it.each(["максимальная", "по максимуму"])('routes the maximum-choice reply "%s" to the maximum-range knowledge answer', async (text) => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ ...validResult, reply: "Хорошо.", leadCardPatch: {} }) } }] }) } as any;
     const output = await new AgentTurnService(client).run({
       messages: [{ author: "ai", body: amountStageQuestion, createdAt: "now" } as any],
@@ -1830,8 +1903,23 @@ describe("single-agent dialogue", () => {
       settings: {}, text, attachments: []
     });
 
-    expect(output.reply).toContain("По программе без изъятия доступно до 600 000 сом.");
-    expect(output.reply).not.toContain(amountStageQuestion);
+    expect(output.result?.leadCardPatch.knowledgeRequest).toMatchObject({ required: true });
+    expect(output.result?.leadCardPatch.requestedAmount).toBeUndefined();
+    expect(output.result?.leadCardPatch.requestedProgram).toBe("without_storage");
+  });
+
+  it("does not repeat the amount-stage question after the maximum-range knowledge answer", () => {
+    const maximumRange = "Без изъятия: от 50 000 сом до MAX_LIMIT_WITHOUT сом\nСо стоянкой: от 50 000 сом до MAX_LIMIT_PARK сом";
+
+    expect(workflowFollowUpAfterKnowledge(maximumRange, amountStageQuestion, amountStageQuestion)).toBe("");
+    expect(workflowFollowUpAfterKnowledge("Да, GPS устанавливаем.", amountStageQuestion, amountStageQuestion)).toBe(amountStageQuestion);
+    expect(workflowFollowUpAfterKnowledge(maximumRange, vehicleStageQuestion, vehicleStageQuestion)).toBe(vehicleStageQuestion);
+    expect(workflowFollowUpAfterKnowledge(
+      "Максимальную сумму смогу рассчитать после того, как узнаю: Ваша прописка.",
+      amountStageQuestion,
+      amountStageQuestion,
+      { vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 3_000_000 }
+    )).toBe("Подскажите, пожалуйста, Вашу прописку — Бишкек, Чуйская область или другой регион Кыргызстана.");
   });
 
   it("accepts the minimum-choice reply as the minimum loan amount", async () => {
@@ -2357,7 +2445,7 @@ describe("single-agent dialogue", () => {
         .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ decision: "reject", locality: null }) } }] })
     } as any;
     const output = await new AgentTurnService(client).run({
-      messages: [{ author: "ai", body: `Не смогла понять. Напишите, пожалуйста, подробнее.\n\n${clarification}`, createdAt: "now" } as any],
+      messages: [{ author: "ai", body: `Напишите, пожалуйста, подробнее.\n\n${clarification}`, createdAt: "now" } as any],
       facts: {
         vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 800_000,
         requestedAmount: 100_000, requestedProgram: "without_storage",
@@ -5375,6 +5463,44 @@ describe("single-agent dialogue", () => {
     expect(output.result?.leadCardPatch.visitDate).toMatch(/^\d{4}-\d{2}-\d{2}$/u);
     expect(output.reply).toContain("Записываю Вас на понедельник");
     expect(output.reply).toContain("в 15:00");
+  });
+
+  it("combines visit requirements after the maps when spouse consent and a guarantor are required", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ ...validResult, reply: "Распознано.", leadCardPatch: {} }) } }] }) } as any;
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "Офис работает с понедельника по пятницу с 11:00 до 19:00. Для оформления нужно приехать не позднее 18:00. На какой день и время Вам удобно подъехать?", createdAt: "now" } as any],
+      facts: {
+        vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 3_000_000,
+        requestedAmount: 200_000, requestedProgram: "without_storage",
+        residenceRegion: "Ош", residenceCategory: "OTHER_KG", guarantorAvailable: true,
+        documentsProvided: true, documents: { car_photo: "received" }, familyStatus: "married", spouseConsentReady: true
+      } as any,
+      settings: {}, text: "в понедельник в 3", attachments: []
+    });
+
+    expect(output.reply).toContain("Google Maps: https://maps.app.goo.gl/9xiWLVvdyRgn3Sx4A");
+    expect(output.reply).toContain("Напоминаем Вам, что для оформления займа нужно согласие супруга(и) и требуется поручитель при визите.");
+    expect(output.reply).toContain("Есть ли у Вас ещё вопросы?");
+    expect(output.reply.indexOf("Google Maps:")).toBeLessThan(output.reply.indexOf("Напоминаем Вам"));
+    expect(output.reply.indexOf("Напоминаем Вам")).toBeLessThan(output.reply.indexOf("Есть ли у Вас ещё вопросы?"));
+  });
+
+  it("does not add visit requirements for a divorced client", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ ...validResult, reply: "Распознано.", leadCardPatch: {} }) } }] }) } as any;
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "Офис работает с понедельника по пятницу с 11:00 до 19:00. Для оформления нужно приехать не позднее 18:00. На какой день и время Вам удобно подъехать?", createdAt: "now" } as any],
+      facts: {
+        vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 3_000_000,
+        requestedAmount: 600_000, requestedProgram: "parking",
+        residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY",
+        documentsProvided: true, documents: { car_photo: "received" },
+        familyStatus: "divorced", vehicleBoughtDuringMarriage: true
+      } as any,
+      settings: {}, text: "в понедельник в 3", attachments: []
+    });
+
+    expect(output.reply).not.toContain("Напоминаем Вам, что для оформления займа");
+    expect(output.reply).not.toContain("требуется поручитель при визите");
   });
 
   it("does not let an unsolicited identity fallback hijack the visit stage", async () => {

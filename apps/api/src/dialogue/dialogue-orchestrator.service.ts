@@ -156,7 +156,10 @@ export class DialogueOrchestratorService {
         const responsePlan = maximumLoanQuestion
           ? knowledge.reply
           : knowledge.reply;
-        const reply = appendWorkflowFollowUp(responsePlan, workflowFollowUp);
+        const reply = appendWorkflowFollowUp(
+          responsePlan,
+          workflowFollowUpAfterKnowledge(responsePlan, workflowFollowUp, lastAssistantMessage, turnFacts)
+        );
         const result = { ...turn.result, reply };
         turn = { ...turn, result, reply, model: knowledge.model, promptVersion: `${turn.promptVersion}+knowledge` };
       }
@@ -353,6 +356,44 @@ function appendWorkflowFollowUp(reply: string, followUp: string): string {
   const normalizedFollowUp = followUp.replace(/[?!.]/gu, "").replace(/\s+/gu, " ").trim().toLocaleLowerCase("ru-RU");
   if (!normalizedFollowUp || normalizedReply.includes(normalizedFollowUp)) return reply;
   return [reply.trim(), followUp].filter(Boolean).join("\n\n");
+}
+
+/**
+ * A maximum-range FAQ is itself the answer to the amount-stage question.
+ * Repeating that question immediately after the two ranges traps the client
+ * in the same stage. This narrowly applies only when the prior server prompt
+ * collected the requested amount; other FAQ answers keep their normal stage
+ * follow-up.
+ */
+export function workflowFollowUpAfterKnowledge(reply: string, followUp: string, lastAssistantMessage: string, facts?: ApplicationFacts): string {
+  if (!isRequestedAmountStageQuestion(lastAssistantMessage)) return followUp;
+  if (isMaximumLoanRangeAnswer(reply)) return "";
+  if (facts && isMaximumLoanCalculationPendingAnswer(reply)) return maximumLoanCalculationFollowUp(facts, followUp);
+  return followUp;
+}
+
+function isRequestedAmountStageQuestion(text: string): boolean {
+  return /^\s*какая\s+сумма\s+займа\s+вам\s+необходима\?\s*$/iu.test(text);
+}
+
+function isMaximumLoanRangeAnswer(text: string): boolean {
+  // A stored FAQ carries these placeholders until the final rendering
+  // boundary. `answerWithKnowledge` may render them early, so recognise both
+  // representations of the same approved maximum_loan_range answer.
+  if (/MAX_LIMIT_WITHOUT/iu.test(text) && /MAX_LIMIT_PARK/iu.test(text)) return true;
+  return /без\s+изъятия\s*:\s*от\s+50\s*000\s+сом\s+до\s+[\d\s]+\s+сом[\s\S]{0,160}со\s+стоянкой\s*:\s*от\s+50\s*000\s+сом\s+до\s+[\d\s]+\s+сом/iu.test(text);
+}
+
+function isMaximumLoanCalculationPendingAnswer(text: string): boolean {
+  return /максимальн(?:ую|ая)\s+сумм\p{L}*[^.!?]{0,120}(?:пропис|стоимост)/iu.test(text);
+}
+
+function maximumLoanCalculationFollowUp(facts: ApplicationFacts, fallback: string): string {
+  if (facts.vehicleValue === undefined) return nextRequiredStageQuestion(facts, deriveStageCompletion(facts)) ?? fallback;
+  if (!facts.residenceRegion || !facts.residenceCategory) {
+    return "Подскажите, пожалуйста, Вашу прописку — Бишкек, Чуйская область или другой регион Кыргызстана.";
+  }
+  return fallback;
 }
 
 /**
