@@ -496,7 +496,7 @@ export class AgentTurnService {
    * fallback for short, unambiguous phrases. */
   private async resolveVisitTimeAvailability(parsed: AgentTurnResult, input: AgentTurnInput): Promise<AgentTurnResult> {
     if (!deriveStageCompletion(input.facts).readyForVisit) return parsed;
-    const lastAssistant = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
+    const lastAssistant = lastActiveAssistantMessage(input.messages);
     if (!isVisitSchedulingQuestion(lastAssistant)) return parsed;
     const clientReply = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "").trim();
     if (!clientReply) return parsed;
@@ -514,14 +514,26 @@ export class AgentTurnService {
       }, { timeoutMs: this.config.routerAiTimeoutMs, signal: input.signal });
       const decision = parseAgentJson(response.choices?.[0]?.message?.content).visitTimeAvailability;
       if (decision === "known" || decision === "unknown" || decision === "not_a_visit_answer") {
-        return { ...normalizedParsed, visitTimeAvailability: decision };
+        return decision === "unknown"
+          ? {
+              ...normalizedParsed,
+              visitTimeAvailability: decision,
+              leadCardPatch: { ...normalizedParsed.leadCardPatch, clientPaused: false },
+              dialogueState: { stage: "SCHEDULING_VISIT", status: "need_more_data", nextAction: "schedule_visit" }
+            }
+          : { ...normalizedParsed, visitTimeAvailability: decision };
       }
     } catch (error) {
       if (input.signal?.aborted) throw error;
       this.logger.warn(`Visit-time classifier unavailable: ${formatError(error)}`);
     }
     return visitTimeUnavailableFallback(clientReply)
-      ? { ...normalizedParsed, visitTimeAvailability: "unknown" }
+      ? {
+          ...normalizedParsed,
+          visitTimeAvailability: "unknown",
+          leadCardPatch: { ...normalizedParsed.leadCardPatch, clientPaused: false },
+          dialogueState: { stage: "SCHEDULING_VISIT", status: "need_more_data", nextAction: "schedule_visit" }
+        }
       : normalizedParsed;
   }
 
@@ -1750,7 +1762,7 @@ function omitVisitFacts(patch: Partial<ApplicationFacts>): Partial<ApplicationFa
 
 function visitPatchFromClearReply(input: Pick<AgentTurnInput, "text" | "currentTurnMessages" | "messages" | "settings">, facts: ApplicationFacts): Partial<ApplicationFacts> {
   if (!deriveStageCompletion(facts).readyForVisit) return {};
-  const lastAssistant = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
+  const lastAssistant = lastActiveAssistantMessage(input.messages);
   const text = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "").trim().toLocaleLowerCase("ru-RU");
   const correctingBookedVisit = Boolean(facts.visitDate && facts.visitTime && isExplicitVisitSlotChange(text));
   if (!isVisitSchedulingQuestion(lastAssistant) && !correctingBookedVisit) return {};
@@ -1797,9 +1809,16 @@ function isVisitSchedulingQuestion(text: string): boolean {
   return /(?:на\s+какой(?:\s+(?:другой|рабочий)){0,2}\s+день|день\s+и\s+время|когда\s+вам\s+удобно|в\s+какое\s+время).{0,100}(?:подъехать|приехать)/iu.test(text);
 }
 
+/** A pause acknowledgement is operational metadata, not the latest workflow
+ * question. When the client resumes, retain the question it interrupted. */
+function lastActiveAssistantMessage(messages: Stage1Message[]): string {
+  return [...messages].reverse().find((message) => message.author === "ai"
+    && !/когда\s+будете\s+готовы,?\s+можно\s+продолжить\s+с\s+этого\s+места/iu.test(message.body))?.body ?? "";
+}
+
 function isVisitSchedulingReply(input: Pick<AgentTurnInput, "text" | "currentTurnMessages" | "messages">, facts: ApplicationFacts): boolean {
   if (!deriveStageCompletion(facts).readyForVisit) return false;
-  const lastAssistant = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
+  const lastAssistant = lastActiveAssistantMessage(input.messages);
   if (!isVisitSchedulingQuestion(lastAssistant)) return false;
   const text = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "").trim();
   return /(?:сегодня|послезавтра|завтра|(?:^|[^\p{L}\d])\d{1,2}\s+(?:январ\p{L}*|феврал\p{L}*|март\p{L}*|апрел\p{L}*|мая|июн\p{L}*|июл\p{L}*|август\p{L}*|сентябр\p{L}*|(?:октябр|котябр)\p{L}*|ноябр\p{L}*|декабр\p{L}*)(?!\p{L}))/iu.test(text);
@@ -1810,7 +1829,7 @@ function isVisitSchedulingReply(input: Pick<AgentTurnInput, "text" | "currentTur
  * plus the generic visit follow-up to produce two copies of office hours. */
 function visitTimeClarificationReply(input: Pick<AgentTurnInput, "text" | "currentTurnMessages" | "messages" | "settings">, facts: ApplicationFacts): string | undefined {
   if (!deriveStageCompletion(facts).readyForVisit) return undefined;
-  const lastAssistant = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
+  const lastAssistant = lastActiveAssistantMessage(input.messages);
   if (!isVisitSchedulingQuestion(lastAssistant)) return undefined;
   const text = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "").trim().toLocaleLowerCase("ru-RU");
   const timezone = typeof (input.settings as Record<string, unknown>).timezone === "string"
@@ -1836,7 +1855,7 @@ function visitTimeUnavailableReply(availability: AgentTurnResult["visitTimeAvail
 }
 
 function visitNonWorkingDayReply(input: Pick<AgentTurnInput, "text" | "currentTurnMessages" | "messages" | "settings">, _facts: ApplicationFacts): string | undefined {
-  const lastAssistant = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
+  const lastAssistant = lastActiveAssistantMessage(input.messages);
   const text = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "").trim().toLocaleLowerCase("ru-RU");
   // A direct availability question such as «завтра можно?» must be checked
   // against the real calendar even before the application is ready to book.
@@ -2105,7 +2124,7 @@ function visitTimeRecordedReply(
   current: ApplicationFacts
 ): string | undefined {
   if (previous.visitTime === current.visitTime || !current.visitTime) return undefined;
-  const lastAssistant = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
+  const lastAssistant = lastActiveAssistantMessage(input.messages);
   if (!isVisitSchedulingQuestion(lastAssistant)) return undefined;
   if (current.visitDate) return undefined; // visitConfirmationNotice owns a complete slot.
   return `Время ${current.visitTime} отмечено. Офис работает с понедельника по пятницу. На какой день Вам удобно подъехать?`;

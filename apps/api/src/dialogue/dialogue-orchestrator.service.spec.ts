@@ -5767,7 +5767,13 @@ describe("single-agent dialogue", () => {
   });
 
   it("acknowledges an explicitly unknown visit time without storing one", async () => {
-    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ ...validResult, reply: "Поняла.", leadCardPatch: {} }) } }] }) } as any;
+    const client = {
+      isConfigured: vi.fn().mockReturnValue(true),
+      createChatCompletion: vi.fn()
+        // A mistaken main-agent pause must not override the active visit-time answer.
+        .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ ...validResult, reply: "Поняла.", leadCardPatch: { clientPaused: true }, dialogueState: { stage: "PAUSED", status: "target_reached", nextAction: "pause" } }) } }] })
+        .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ visitTimeAvailability: "unknown" }) } }] })
+    } as any;
     const output = await new AgentTurnService(client).run({
       messages: [{ author: "ai", body: "Офис работает с понедельника по пятницу с 11:00 до 19:00. Для оформления нужно приехать не позднее 18:00. В какое время Вам удобно подъехать?", createdAt: "2026-09-09" } as any],
       facts: {
@@ -5781,7 +5787,38 @@ describe("single-agent dialogue", () => {
     });
 
     expect(output.result?.leadCardPatch.visitTime).toBeUndefined();
+    expect(output.result?.leadCardPatch.clientPaused).toBe(false);
+    expect(output.result?.dialogueState.stage).toBe("SCHEDULING_VISIT");
     expect(output.reply).toContain("сообщите, пожалуйста, когда время будет известно");
+  });
+
+  it("records a visit time on the first reply after a pause acknowledgement", async () => {
+    const client = {
+      isConfigured: vi.fn().mockReturnValue(true),
+      createChatCompletion: vi.fn()
+        .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ ...validResult, reply: "Распознано.", leadCardPatch: {} }) } }] })
+        .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ visitTimeAvailability: "known" }) } }] })
+    } as any;
+    const visitQuestion = "Офис работает с понедельника по пятницу с 11:00 до 19:00. Для оформления нужно приехать не позднее 18:00. В какое время Вам удобно подъехать?";
+    const output = await new AgentTurnService(client).run({
+      messages: [
+        { author: "ai", body: visitQuestion, createdAt: "1" } as any,
+        { author: "ai", body: "Хорошо! Когда будете готовы, можно продолжить с этого места.", createdAt: "2" } as any
+      ],
+      facts: {
+        vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 3_000_000,
+        requestedAmount: 600_000, requestedProgram: "without_storage",
+        residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY",
+        documentsProvided: true, documents: { car_photo: "received" }, familyStatus: "single",
+        visitDate: "2026-09-14", clientPaused: false
+      } as any,
+      settings: {}, text: "запиши меня на 3 часа", attachments: []
+    });
+
+    expect(output.result?.leadCardPatch.visitTime).toBe("15:00");
+    expect(output.result?.leadCardPatch.visitDate).toBe("2026-09-14");
+    expect(output.reply).toContain("в 15:00");
+    expect(output.reply).not.toContain("В какое время Вам удобно");
   });
 
   it("explicitly declines a weekend visit and does not persist its slot", async () => {
@@ -6077,6 +6114,33 @@ describe("single-agent dialogue", () => {
     expect(output.result?.leadCardPatch.clientPaused).toBe(false);
     expect(output.result?.dialogueState.stage).not.toBe("PAUSED");
     expect(output.reply).toContain("отправьте фото ID");
+  });
+
+  it("server-resumes a paused conversation even if the model echoes the stale pause", async () => {
+    const facts = {
+      clientPaused: true, vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 1_000_000,
+      requestedAmount: 300_000, requestedProgram: "parking", residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY"
+    } as any;
+    const application = { id: "app", facts, contactId: "contact" } as any;
+    const conversation = { id: "conversation", application, messages: [], channel: "web-test" } as any;
+    const store = {
+      getOrCreateConversation: vi.fn().mockResolvedValue({ conversation, application }),
+      addMessage: vi.fn().mockResolvedValue({ id: "m", author: "client", body: "запиши меня на 3 часа", createdAt: "now" }),
+      updateFacts: vi.fn().mockResolvedValue([]), saveAgentState: vi.fn(), getApplication: vi.fn().mockResolvedValue(application),
+      getConversation: vi.fn().mockResolvedValue(conversation), addAttachment: vi.fn(), createManagerNotification: vi.fn()
+    } as any;
+    const agent = {
+      run: vi.fn().mockResolvedValue({
+        result: { ...validResult, leadCardPatch: { clientPaused: true }, dialogueState: { stage: "PAUSED", status: "target_reached", nextAction: "pause" } },
+        reply: "Хорошо! Когда будете готовы, можно продолжить с этого места.", model: "workflow", promptVersion: "v1"
+      })
+    } as any;
+
+    await new DialogueOrchestratorService(agent, store, { getValues: vi.fn().mockResolvedValue({}) } as any, { log: vi.fn() } as any)
+      .receive({ externalMessageId: "m", channel: "web-test", externalContactId: "contact", text: "запиши меня на 3 часа", attachments: [], timestamp: new Date() });
+
+    expect(agent.run).toHaveBeenCalledWith(expect.objectContaining({ facts: expect.objectContaining({ clientPaused: false }) }));
+    expect(store.updateFacts).toHaveBeenCalledWith(application, expect.objectContaining({ clientPaused: false }));
   });
 
   it("replaces a model no-information fallback with an exact approved FAQ answer", async () => {

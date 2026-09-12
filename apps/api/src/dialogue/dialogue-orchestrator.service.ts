@@ -40,6 +40,10 @@ export class DialogueOrchestratorService {
     // model context after the customer has already selected parking.
     const modelMessages = suppressInactiveGuarantorPrompts(turnMessages, initialApplication.facts);
     const text = messages.map((message) => message.text?.trim()).filter((value): value is string => Boolean(value)).join("\n");
+    const resumingPausedConversation = Boolean(initialApplication.facts.clientPaused && isPausedConversationContinuation(text));
+    const factsBeforeTurn: ApplicationFacts = resumingPausedConversation
+      ? { ...initialApplication.facts, clientPaused: false }
+      : initialApplication.facts;
     const currentTurnMessages = messages.map((message, index) => ({ index: index + 1, text: message.text?.trim() ?? "" }));
     const attachments = messages.flatMap((message) => message.attachments);
     const settings = await this.settings.getValues();
@@ -65,14 +69,14 @@ export class DialogueOrchestratorService {
     // normalizer instead of silently leaving the old requested amount.
     const moneyMentioned = detectMoneyMentions(text).length > 0 || isRequestedAmountCorrectionText(text) || currencyOnlyForeignMoneyFromHistory(text, modelMessages).length > 0 || moneyClarification?.decision === "accept";
     const modelNormalizedMoney = moneyMentioned && this.agent.normalizeMoney
-      ? await this.agent.normalizeMoney({ text, facts: initialApplication.facts, messages: modelMessages, conversationId: conversation.id, signal: options.signal })
+      ? await this.agent.normalizeMoney({ text, facts: factsBeforeTurn, messages: modelMessages, conversationId: conversation.id, signal: options.signal })
       : [];
     throwIfAborted(options.signal);
     // The semantic normalizer owns flexible role interpretation. The
     // deterministic parser is deliberately a narrow supplemental path for an
     // empty/partial normalizer response and explicit confirmation in context.
-    const normalizedMoney = supplementNormalizedMoney(modelNormalizedMoney, text, initialApplication.facts, modelMessages, moneyClarification);
-    const currency = await resolveNormalizedMoneyFacts(normalizedMoney, this.integrations, initialApplication.facts);
+    const normalizedMoney = supplementNormalizedMoney(modelNormalizedMoney, text, factsBeforeTurn, modelMessages, moneyClarification);
+    const currency = await resolveNormalizedMoneyFacts(normalizedMoney, this.integrations, factsBeforeTurn);
     throwIfAborted(options.signal);
     const belowMinimumRequestedAmount = typeof currency.facts.requestedAmount === "number" && currency.facts.requestedAmount < 50_000
       ? currency.facts.requestedAmount
@@ -83,7 +87,7 @@ export class DialogueOrchestratorService {
       ? discardConflictingSingleMoneyRole(currency.facts, text)
       : {};
     const normalizedFacts = effectiveFactsForTurn({
-      previous: initialApplication.facts,
+      previous: factsBeforeTurn,
       modelPatch: {},
       explicitFacts: {},
       currencyFacts: currencyFactsForTurn,
@@ -237,6 +241,7 @@ export class DialogueOrchestratorService {
       const guardedLeadCardPatch = discardConflictingSingleMoneyRole(leadCardPatch, text);
       const modelPatch: Partial<ApplicationFacts> = {
         ...guardedLeadCardPatch,
+        ...(resumingPausedConversation ? { clientPaused: false } : {}),
         ...(turnResult.language === "unknown" ? {} : { language: turnResult.language })
       };
       const lastAssistantReply = [...modelMessages].reverse().find((message) => message.author === "ai")?.body ?? "";
@@ -508,6 +513,14 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
   if (signal?.aborted) {
     throw new DOMException("Dialogue turn superseded by a newer client message", "AbortError");
   }
+}
+
+/** Any new application action resumes a saved conversation. Keep it narrow so
+ * an explicit second postponement continues to be treated as a pause. */
+function isPausedConversationContinuation(text: string): boolean {
+  const normalized = text.trim().toLocaleLowerCase("ru-RU");
+  if (!normalized) return false;
+  return !/^(?:потом\s+(?:напиш|отвеч|продолж)|вернусь\s+позже|давайте\s+(?:продолжим\s+)?потом|сейчас\s+не\s+могу|подумаю(?:\s+и\s+напишу)?|пока\s+не\s+решил(?:а)?)[.!\s]*$/iu.test(normalized);
 }
 
 function supplementNormalizedMoney(values: NormalizedMoneyValue[], text: string, currentFacts: ApplicationFacts, messages: Stage1Message[] = [], moneyClarification?: PendingMoneyClarificationDecision): NormalizedMoneyValue[] {
