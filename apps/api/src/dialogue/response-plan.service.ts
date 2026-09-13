@@ -126,14 +126,16 @@ export class ResponsePlanService {
     const documentFollowUp = buildPartialDocumentFollowUp(facts);
     if (documentFollowUp.length > 0) return documentFollowUp;
     if (isFirstMessage && !shouldSuppressFirstContactIntroduction(decision, facts)) {
-      if (facts.vehicleMake && !facts.vehicleModel) return ["Подскажите, пожалуйста, модель автомобиля."];
-      if ((facts.vehicleMake || facts.vehicleModel) && !facts.vehicleYear) return ["Подскажите, пожалуйста, год выпуска автомобиля."];
+      const vehicleQuestion = (facts.vehicleMake || facts.vehicleModel || facts.vehicleYear)
+        ? missingVehicleQuestion(facts)
+        : undefined;
+      if (vehicleQuestion) return [vehicleQuestion];
       const missing = this.firstContactMissingFacts(facts);
       if (missing.length === 3) return [formatFirstContactRequest(missing)];
       if (missing.length > 0) return [formatFirstContactRequest(missing)];
     }
-    const questionByFact: Record<string, string> = {
-      vehicleMake: "Подскажите, пожалуйста, модель и год выпуска автомобиля.", vehicleModel: "Подскажите, пожалуйста, модель автомобиля.", vehicleYear: "Подскажите, пожалуйста, год выпуска автомобиля.", vehicleValue: "Какая ориентировочная стоимость автомобиля?", requestedAmount: "Какая сумма займа Вам необходима?", requestedProgram: "Подскажите, пожалуйста, Вас интересует займ без изъятия автомобиля или с постановкой автомобиля на охраняемую стоянку?", residenceRegion: "Где прописан собственник автомобиля?", ownerFullName: "Подскажите, пожалуйста, ФИО собственника автомобиля.", ownerResidenceRegion: "Где прописан собственник автомобиля?", ownerCanVisit: "Сможет ли собственник лично приехать на осмотр автомобиля и выдачу займа?", ownerFamilyStatus: "Подскажите, пожалуйста, собственник автомобиля состоит в браке, никогда не состоял в браке или в разводе?", id_front: "Пришлите, пожалуйста, фото лицевой стороны ID.", id_back: "Пришлите, пожалуйста, фото обратной стороны ID.", vehicle_registration_front: "Пришлите, пожалуйста, лицевую сторону свидетельства о регистрации ТС.", vehicle_registration_back: "Пришлите, пожалуйста, обратную сторону свидетельства о регистрации ТС.", familyStatus: "Подскажите, пожалуйста, собственник автомобиля состоит в браке, никогда не состоял в браке или в разводе?", vehicleBoughtDuringMarriage: "Автомобиль был приобретён до брака, во время брака или после развода?", spouseConsentReady: facts.spouseConsentReady === false ? "Сообщите, пожалуйста, когда нотариальное согласие будет готово. Его можно оформить у любого нотариуса или у нотариуса в нашем здании." : "Нотариальное согласие супруга или супруги уже оформлено?", divorceCertificateReady: "Свидетельство о разводе уже есть?", guarantorAvailable: "Подскажите, пожалуйста, есть ли у Вас поручитель?", visitDate: "На какую дату Вам удобно приехать?", visitTime: "Уточните, пожалуйста, конкретное время визита. Для оформления нужно приехать не позднее 18:00."
+    const questionByFact: Record<string, string | undefined> = {
+      vehicleMake: missingVehicleQuestion(facts), vehicleModel: "Подскажите, пожалуйста, модель автомобиля.", vehicleYear: "Подскажите, пожалуйста, год выпуска автомобиля.", vehicleValue: "Какая ориентировочная стоимость автомобиля?", requestedAmount: "Какая сумма займа Вам необходима?", requestedProgram: "Подскажите, пожалуйста, Вас интересует займ без изъятия автомобиля или с постановкой автомобиля на охраняемую стоянку?", residenceRegion: "Где прописан собственник автомобиля?", ownerFullName: "Подскажите, пожалуйста, ФИО собственника автомобиля.", ownerResidenceRegion: "Где прописан собственник автомобиля?", ownerCanVisit: "Сможет ли собственник лично приехать на осмотр автомобиля и выдачу займа?", ownerFamilyStatus: "Подскажите, пожалуйста, собственник автомобиля состоит в браке, никогда не состоял в браке или в разводе?", id_front: "Пришлите, пожалуйста, фото лицевой стороны ID.", id_back: "Пришлите, пожалуйста, фото обратной стороны ID.", vehicle_registration_front: "Пришлите, пожалуйста, лицевую сторону свидетельства о регистрации ТС.", vehicle_registration_back: "Пришлите, пожалуйста, обратную сторону свидетельства о регистрации ТС.", familyStatus: "Подскажите, пожалуйста, собственник автомобиля состоит в браке, никогда не состоял в браке или в разводе?", vehicleBoughtDuringMarriage: "Автомобиль был приобретён до брака, во время брака или после развода?", spouseConsentReady: facts.spouseConsentReady === false ? "Сообщите, пожалуйста, когда нотариальное согласие будет готово. Его можно оформить у любого нотариуса или у нотариуса в нашем здании." : "Нотариальное согласие супруга или супруги уже оформлено?", divorceCertificateReady: "Свидетельство о разводе уже есть?", guarantorAvailable: "Подскажите, пожалуйста, есть ли у Вас поручитель?", visitDate: "На какую дату Вам удобно приехать?", visitTime: "Уточните, пожалуйста, конкретное время визита. Для оформления нужно приехать не позднее 18:00."
     };
     if (facts.residenceNeedsClarification) {
       questionByFact.residenceRegion = "Уточните, пожалуйста, в каком городе или области прописан собственник автомобиля?";
@@ -358,6 +360,17 @@ function formatFirstContactRequest(missing: ("vehicle" | "vehicleValue" | "reque
     requestedAmount: "какая сумма займа Вам необходима?"
   };
   return `Подскажите, пожалуйста:\n${missing.map((fact) => `- ${labels[fact]}`).join("\n")}`;
+}
+
+/** The vehicle decision can still report the legacy `vehicleMake` fact as
+ * missing. Render from the complete card so known model/year values are never
+ * asked again. */
+function missingVehicleQuestion(facts: ApplicationFacts): string | undefined {
+  if (facts.vehicleMake && !facts.vehicleModel) return "Подскажите, пожалуйста, модель автомобиля.";
+  if (!facts.vehicleModel && !facts.vehicleYear) return "Подскажите, пожалуйста, модель и год выпуска автомобиля.";
+  if (!facts.vehicleModel) return "Подскажите, пожалуйста, модель автомобиля.";
+  if (!facts.vehicleYear) return "Подскажите, пожалуйста, год выпуска автомобиля.";
+  return undefined;
 }
 
 function documentsRequest(requiredFacts: string[]): string {

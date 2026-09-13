@@ -296,6 +296,25 @@ describe("single-agent dialogue", () => {
     expect(output.reply).not.toContain("Не смогла понять");
   });
 
+  it("uses a valid year from a terse reply to replace the prior future-year correction", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult,
+      reply: "Приняла.",
+      // Simulate an incomplete model extraction: the server fallback must
+      // still read the factual reply to the active correction prompt.
+      leadCardPatch: {}
+    }) } }] }) } as any;
+
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "2029 год ещё не наступил. Уточните, пожалуйста, верный год выпуска автомобиля.", createdAt: "now" } as any],
+      facts: { vehicleModel: "Camry", vehicleValue: 3_000_000, reportedInvalidVehicleYear: 2029 } as any,
+      settings: {}, text: "Ладно, 2020", attachments: []
+    });
+
+    expect(output.reply).not.toContain("год ещё не наступил");
+    expect(output.result.leadCardPatch).toMatchObject({ vehicleYear: 2020, reportedInvalidVehicleYear: null });
+  });
+
   it("asks only for visit time when the visit date is already saved", () => {
     expect(nextRequiredStageQuestion({
       vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 3_000_000,

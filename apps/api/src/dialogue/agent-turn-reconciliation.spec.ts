@@ -16,6 +16,19 @@ describe("agent turn reconciliation pricing", () => {
     expect(deriveStageCompletion(facts).vehicle).toBe(false);
   });
 
+  it("replaces a previously rejected future year with a later valid correction", () => {
+    const facts = effectiveFactsForTurn({
+      previous: { vehicleModel: "Camry", reportedInvalidVehicleYear: 2029 },
+      modelPatch: { vehicleYear: 2020 },
+      explicitFacts: {},
+      currencyFacts: {},
+      attachmentFacts: {}
+    });
+
+    expect(facts.vehicleYear).toBe(2020);
+    expect(facts.reportedInvalidVehicleYear).toBeNull();
+  });
+
   it("keeps the exact parking maximum for selected-program state", () => {
     const facts = {
       vehicleValue: 1_748_982,

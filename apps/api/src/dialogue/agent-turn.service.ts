@@ -1358,6 +1358,11 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     ...familyPatchFromClearReply(input, input.facts, leadCardFacts),
     ...finalQuestionsPatchFromClearReply(input, input.facts, leadCardFacts),
     ...visitPatchFromClearReply(input, input.facts),
+    // A year supplied in response to the exact future-year correction is a
+    // factual correction, not an interpretation left to the general model.
+    // In particular, do not retain the previously rejected year when the
+    // model omits a terse reply such as «2020» from its patch.
+    ...vehicleYearCorrectionPatch(lastAssistantReply, semanticText),
     // A client may resume a completed conversation to correct data or ask a
     // new question. The closing acknowledgement is one-shot; every later
     // inbound reopens the final-question state before workflow recalculation.
@@ -2201,7 +2206,7 @@ export function nextRequiredStageQuestion(facts: ApplicationFacts, completion = 
     }
     const missing = [
       facts.vehicleValue === undefined ? "ориентировочную стоимость автомобиля" : undefined,
-      !facts.vehicleModel || !facts.vehicleYear ? "модель и год выпуска автомобиля" : undefined
+      missingVehicleDetails(facts)
     ].filter((value): value is string => Boolean(value));
     return `Подскажите, пожалуйста, ${missing.join(" , ")}.`;
   }
@@ -2235,6 +2240,13 @@ export function nextRequiredStageQuestion(facts: ApplicationFacts, completion = 
     }
     return "Офис работает с понедельника по пятницу с 11:00 до 19:00. Для оформления нужно приехать не позднее 18:00. На какой день и время Вам удобно подъехать?";
   }
+  return undefined;
+}
+
+function missingVehicleDetails(facts: ApplicationFacts): string | undefined {
+  if (!facts.vehicleModel && !facts.vehicleYear) return "модель и год выпуска автомобиля";
+  if (!facts.vehicleModel) return "модель автомобиля";
+  if (!facts.vehicleYear) return "год выпуска автомобиля";
   return undefined;
 }
 
@@ -2639,7 +2651,7 @@ function nextLeadCardQuestionAfterResidence(facts: ApplicationFacts): string | u
   if (!facts.vehicleModel || !facts.vehicleYear || facts.vehicleValue === undefined) {
     const missing = [
       facts.vehicleValue === undefined ? "ориентировочную стоимость автомобиля" : undefined,
-      !facts.vehicleModel || !facts.vehicleYear ? "модель и год выпуска автомобиля" : undefined
+      missingVehicleDetails(facts)
     ].filter((item): item is string => Boolean(item));
     return `Подскажите, пожалуйста, ${missing.join(" , ")}.`;
   }
@@ -3102,6 +3114,15 @@ function clearAffirmation(text: string): boolean {
 
 function clearNegation(text: string): boolean {
   return /^(?:нет|неа|нету|не\s+будет|не\s+имеется|no|жок)$/iu.test(text);
+}
+
+function vehicleYearCorrectionPatch(lastAssistantReply: string, text: string | undefined): Partial<ApplicationFacts> {
+  if (!/\d{4}\s+год\s+ещ[её]\s+не\s+наступил[\s\S]{0,120}верн(?:ый|ого)\s+год\s+выпуска/iu.test(lastAssistantReply)) return {};
+  const reply = text?.trim() ?? "";
+  const fullYear = reply.match(/(?<!\d)((?:19|20)\d{2})(?!\d)/u)?.[1];
+  const shortYear = reply.match(/(?<!\d)(\d{2})\s*(?:г(?:од(?:а)?)?\.?)(?!\p{L})/iu)?.[1];
+  const vehicleYear = fullYear ? Number(fullYear) : shortYear ? 2000 + Number(shortYear) : undefined;
+  return vehicleYear === undefined ? {} : { vehicleYear, reportedInvalidVehicleYear: null };
 }
 
 /** A deterministic safety net for the named alternative after its semantic

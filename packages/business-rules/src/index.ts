@@ -299,7 +299,9 @@ export function evaluateApplication(
   const calculatedLimits = calculateLoanLimits(facts, settings);
   const eligiblePrograms = determineAvailablePrograms(facts, settings, blockedRules);
 
-  const invalidVehicleYear = typeof facts.reportedInvalidVehicleYear === "number"
+  // A valid year supplied after a correction supersedes any stale audit hint
+  // that may still be present in a persisted lead card.
+  const invalidVehicleYear = facts.vehicleYear === undefined && typeof facts.reportedInvalidVehicleYear === "number"
     ? facts.reportedInvalidVehicleYear
     : facts.vehicleYear !== undefined && facts.vehicleYear > settings.currentYear
       ? facts.vehicleYear

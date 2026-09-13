@@ -26,6 +26,22 @@ describe("ResponsePlanService first contact", () => {
     expect(plan.nextQuestions.join(" ")).not.toContain("ориентировочную стоимость");
   });
 
+  it("asks only for the model when the year is already known", () => {
+    const service = new ResponsePlanService();
+    const facts = { vehicleYear: 2022 } as const;
+    const plan = service.build({ facts, decision: evaluateApplication(facts), isFirstMessage: true, questions: [] });
+
+    expect(plan.nextQuestions).toEqual(["Подскажите, пожалуйста, модель автомобиля."]);
+  });
+
+  it("asks only for the model when the legacy vehicle fact is requested after the first turn", () => {
+    const service = new ResponsePlanService();
+    const facts = { vehicleYear: 2022 } as const;
+    const plan = service.build({ facts, decision: evaluateApplication(facts), isFirstMessage: false, questions: [] });
+
+    expect(plan.nextQuestions).toEqual(["Подскажите, пожалуйста, модель автомобиля."]);
+  });
+
   it("prioritizes the exact correction for a future vehicle year over the next collection question", () => {
     const service = new ResponsePlanService();
     const facts = { vehicleMake: "Toyota", vehicleModel: "Camry", reportedInvalidVehicleYear: 2032 } as const;
