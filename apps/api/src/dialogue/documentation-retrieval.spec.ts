@@ -192,6 +192,21 @@ describe("selectRelevantDocumentation", () => {
     expect(packet[0]).toMatchObject({ key: "docx_0105" });
   });
 
+  it("prioritizes the foreign-registration refusal over the UNA ownership FAQ", () => {
+    const currentMessage = "У меня авто в РФ зареган";
+    const result = selectRelevantDocumentation({ facts: {}, currentMessage, messages: [] });
+    const packet = prioritizedKnowledgeForQuestion({ facts: {}, currentMessage, messages: [] });
+
+    expect(result.mandatoryAnswer).toBe("К сожалению, нет. Мы принимаем в залог только автомобили, зарегистрированные в Кыргызской Республике.");
+    expect(packet[0]).toMatchObject({ key: "faq_foreign_vehicle_registration" });
+  });
+
+  it("provides the approved refusal for an unsupported vehicle type", () => {
+    const result = selectRelevantDocumentation({ facts: {}, currentMessage: "У меня мотоцикл", messages: [] });
+
+    expect(result.mandatoryAnswer).toBe("К сожалению, мы принимаем в залог только легковые автомобили. Если у Вас есть легковой автомобиль или минивэн, мы готовы продолжить рассмотрение заявки.");
+  });
+
   it("retrieves the free-evaluation answer instead of an unrelated application chunk", () => {
     const result = selectRelevantDocumentation({ facts: {}, currentMessage: "Нужно платить за оценку автомобиля?", messages: [] });
     expect(result.mandatoryAnswer).toBe("Нет, оценка автомобиля бесплатна.");

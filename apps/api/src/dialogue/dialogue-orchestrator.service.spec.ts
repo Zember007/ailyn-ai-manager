@@ -202,6 +202,38 @@ describe("single-agent dialogue", () => {
     expect(output.reply).not.toMatch(/доверенност|нотариус|согласие супруга/iu);
   });
 
+  it("refuses a vehicle registered in Russia instead of answering the UNA ownership FAQ", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult,
+      reply: "Для оформления займа автомобиль должен быть зарегистрирован в УНА на человека, который обращается за займом.",
+      leadCardPatch: {}
+    }) } }] }) } as any;
+
+    const output = await new AgentTurnService(client).run({
+      messages: [], facts: {}, settings: {}, text: "У меня авто в РФ зареган", attachments: []
+    });
+
+    expect(output.result.leadCardPatch).toMatchObject({ vehicleRegistrationCountry: "RU" });
+    expect(output.result.dialogueState).toMatchObject({ stage: "REFUSED", status: "refuse" });
+    expect(output.reply).toContain("К сожалению, нет. Мы принимаем в залог только автомобили, зарегистрированные в Кыргызской Республике.");
+    expect(output.reply).not.toContain("зарегистрирован в УНА");
+  });
+
+  it("refuses an unsupported vehicle type without appending a workflow question", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult, reply: "Распознано.", leadCardPatch: {}
+    }) } }] }) } as any;
+
+    const output = await new AgentTurnService(client).run({
+      messages: [], facts: {}, settings: {}, text: "У меня мотоцикл", attachments: []
+    });
+
+    expect(output.result.leadCardPatch).toMatchObject({ vehicleType: "мотоцикл" });
+    expect(output.result.dialogueState).toMatchObject({ stage: "REFUSED", status: "refuse" });
+    expect(output.reply).toContain("К сожалению, мы принимаем в залог только легковые автомобили.");
+    expect(output.reply).not.toMatch(/подскажите|какая сумма|в какое время/iu);
+  });
+
   it("lets the knowledge model adapt an approved answer to a factual disclosure", async () => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
       reply: "Для оформления займа автомобиль должен быть зарегистрирован в УНА на человека, который обращается за займом.",
@@ -214,6 +246,22 @@ describe("single-agent dialogue", () => {
 
     expect(output?.reply).toBe("Для оформления займа автомобиль должен быть зарегистрирован в УНА на человека, который обращается за займом.");
     expect(output?.reply).not.toMatch(/^да[.!]?/iu);
+  });
+
+  it("uses the approved unknown-answer fallback instead of inventing an unlisted company service", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      reply: "Да, есть. В офисе есть зона ожидания, Wi‑Fi, вода и кулер.",
+      answerFound: true
+    }) } }] }) } as any;
+
+    const output = await new AgentTurnService(client).answerWithKnowledge({
+      messages: [], facts: {}, settings: {}, text: "А у вас есть свой мастер по авто?", workflowFollowUp: ""
+    });
+
+    expect(output).toMatchObject({
+      answerFound: false,
+      reply: "К сожалению, у меня нет достоверной информации по этому вопросу. Когда Вы приедете, сотрудники с удовольствием подскажут Вам."
+    });
   });
 
   it("keeps other knowledge answers when a turn also asks for the maximum", async () => {

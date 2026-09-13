@@ -23,6 +23,7 @@ const MAX_LOG_VALUE_LENGTH = 4000;
 const DEFAULT_OFFICE_ADDRESS = "Б. Молодой Гвардии, 22, Бишкек";
 const DEFAULT_TWO_GIS_URL = "https://go.2gis.com/Y34m4";
 const DEFAULT_GOOGLE_MAPS_URL = "https://maps.app.goo.gl/9xiWLVvdyRgn3Sx4A";
+const UNKNOWN_KNOWLEDGE_ANSWER = "К сожалению, у меня нет достоверной информации по этому вопросу. Когда Вы приедете, сотрудники с удовольствием подскажут Вам.";
 export const OLDER_VEHICLE_PROGRAM_NOTICE = "По общему правилу мы принимаем в залог автомобили старше 15 лет только на стоянку, но если вы планируете получить займ без изъятия, то мы готовы рассмотреть вашу заявку индивидуально.";
 // The complete lead card keeps durable facts, while a compact recent tail is
 // enough to resolve conversational references. Keeping this bounded is one of
@@ -250,11 +251,14 @@ export class AgentTurnService {
       // model remains the author of its client-facing formulation, so it can
       // adapt a factual statement to the actual conversational context.
       const hasSeveralQuestions = hasSeveralClientQuestions(input.text ?? "");
-      const answerFound = parsed.data.answerFound || (!hasSeveralQuestions && Boolean(documentation.mandatoryAnswer));
+      const unsupportedCompanyServiceQuestion = isUnsupportedCompanyServiceQuestion(input.text ?? "") && !documentation.mandatoryAnswer;
+      const answerFound = !unsupportedCompanyServiceQuestion && (parsed.data.answerFound || (!hasSeveralQuestions && Boolean(documentation.mandatoryAnswer)));
       // The office location is server-owned configuration, including live map
       // links, and therefore remains verbatim. Every knowledge-base response
       // comes from the dedicated model and is adapted to the current message.
-      const knowledgeReply = removeInternalPricingInstruction(officeLocationResponse ?? ensureGeneralRateCoverage(parsed.data.reply, input.text));
+      const knowledgeReply = answerFound
+        ? removeInternalPricingInstruction(officeLocationResponse ?? ensureGeneralRateCoverage(parsed.data.reply, input.text))
+        : UNKNOWN_KNOWLEDGE_ANSWER;
       // The maximum range is server-owned, but it is only one answer in a
       // multi-question turn. Keep the canonical range and retain all other
       // independent KB answers (rate, office amenities, vehicle conditions).
@@ -1358,6 +1362,13 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     ...familyPatchFromClearReply(input, input.facts, leadCardFacts),
     ...finalQuestionsPatchFromClearReply(input, input.facts, leadCardFacts),
     ...visitPatchFromClearReply(input, input.facts),
+    // A country of registration is an eligibility fact. It must win over a
+    // model's generic UNA/owner-registration interpretation of the same
+    // sentence.
+    ...foreignVehicleRegistrationPatch(semanticText),
+    ...unsupportedVehicleTypePatch(semanticText),
+    ...foreignCitizenshipPatch(semanticText),
+    ...region10RegistrationPatch(semanticText),
     // A year supplied in response to the exact future-year correction is a
     // factual correction, not an interpretation left to the general model.
     // In particular, do not retain the previously rejected year when the
@@ -1528,6 +1539,18 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   const accidentNotDrivableNotice = !input.facts.accidentNotDrivable && effectiveFacts.accidentNotDrivable
     ? "Автомобиль после серьёзного ДТП и не на ходу не принимается как подходящий залог."
     : undefined;
+  const foreignVehicleRegistrationNotice = isForeignVehicleRegistration(effectiveFacts)
+    ? "К сожалению, нет. Мы принимаем в залог только автомобили, зарегистрированные в Кыргызской Республике."
+    : undefined;
+  const unsupportedVehicleTypeNotice = isUnsupportedVehicleType(effectiveFacts)
+    ? "К сожалению, мы принимаем в залог только легковые автомобили. Если у Вас есть легковой автомобиль или минивэн, мы готовы продолжить рассмотрение заявки."
+    : undefined;
+  const foreignCitizenNotice = isForeignCitizen(effectiveFacts)
+    ? "К сожалению, займ оформляется только гражданам Кыргызской Республики."
+    : undefined;
+  const region10RefusalNotice = effectiveFacts.vehicleRegistrationRegion === "10"
+    ? "К сожалению, автомобили с регионом 10 мы не принимаем в залог."
+    : undefined;
   const completionNotice = stageCompletion.visit && effectiveFacts.clientClosed
     ? "Спасибо за обращение. Ожидайте звонка менеджера, он подтвердит время визита."
     : undefined;
@@ -1544,7 +1567,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   // A direct question about spouse/guarantor requirements is answered from
   // the card before a fallible model label such as current-stage
   // clarification can return the client to the pending visit prompt.
-  const directAnswerWithoutRepeatedStage = relationshipEligibilityAnswer ?? workflowStageClarification ?? accidentNotDrivableNotice ?? visitNotice ?? completionNotice ?? attachmentAcceptanceNotice ?? optionalStageDeclineNotice ?? visitNonWorkingDay ?? visitTimeRecorded ?? visitProgress ?? visitTimeUnavailable ?? visitTimeClarification ?? residenceLimitNotice ?? programmeChangeGuarantorNotice ?? acceptedLimitNotice ?? (region10Answer ? [region10Answer, olderVehicleNotice].filter(Boolean).join("\n\n") : undefined) ?? olderVehicleNotice ?? spouseVisitAnswer(input) ?? familyNotice ?? unknownVehicleValueNotice ?? waitingForVehicleValueNotice;
+  const directAnswerWithoutRepeatedStage = unsupportedVehicleTypeNotice ?? region10RefusalNotice ?? foreignVehicleRegistrationNotice ?? foreignCitizenNotice ?? relationshipEligibilityAnswer ?? workflowStageClarification ?? accidentNotDrivableNotice ?? visitNotice ?? completionNotice ?? attachmentAcceptanceNotice ?? optionalStageDeclineNotice ?? visitNonWorkingDay ?? visitTimeRecorded ?? visitProgress ?? visitTimeUnavailable ?? visitTimeClarification ?? residenceLimitNotice ?? programmeChangeGuarantorNotice ?? acceptedLimitNotice ?? (region10Answer ? [region10Answer, olderVehicleNotice].filter(Boolean).join("\n\n") : undefined) ?? olderVehicleNotice ?? spouseVisitAnswer(input) ?? familyNotice ?? unknownVehicleValueNotice ?? waitingForVehicleValueNotice;
   const directAnswer = directAnswerWithoutRepeatedStage ?? repeatedStageReply;
   // A direct approved FAQ outranks all free-form model prose. This prevents
   // plausible but unsupported claims such as a parking location or credit
@@ -1571,7 +1594,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     && loanQuestionKind === "none"
     ? parsed.contextualAcknowledgement
     : undefined;
-  const workflowFollowUp = pauseNotice || accidentNotDrivableNotice || rejectedMoneyClarification || belowMinimumReply || visitTimeRecorded || visitProgress || visitTimeUnavailable || visitTimeClarification || visitNonWorkingDay || hasPendingMoneyCurrencyClarification(internalReply)
+  const workflowFollowUp = pauseNotice || unsupportedVehicleTypeNotice || region10RefusalNotice || foreignVehicleRegistrationNotice || foreignCitizenNotice || accidentNotDrivableNotice || rejectedMoneyClarification || belowMinimumReply || visitTimeRecorded || visitProgress || visitTimeUnavailable || visitTimeClarification || visitNonWorkingDay || hasPendingMoneyCurrencyClarification(internalReply)
     ? undefined
     : serverWorkflowFollowUp(loanQuestionKind, effectiveFacts, stageCompletion, requestedAmountLimit, workflowSelectedLimitNotice);
   const answerBeforeWorkflow = isLoanRateQuestion(loanQuestionKind)
@@ -1617,6 +1640,10 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
       : existingContractServiceRequest
       ? { stage: "EXISTING_CONTRACT_REDIRECT", status: "redirect_existing_contract", nextAction: "redirect_existing_contract" }
       : accidentNotDrivableNotice
+      ? { stage: "REFUSED", status: "refuse", nextAction: "none" }
+      : unsupportedVehicleTypeNotice || region10RefusalNotice || foreignCitizenNotice
+      ? { stage: "REFUSED", status: "refuse", nextAction: "none" }
+      : foreignVehicleRegistrationNotice
       ? { stage: "REFUSED", status: "refuse", nextAction: "none" }
       : region10PolicyQuestion && !input.facts.vehicleRegistrationRegion && parsed.dialogueState.stage === "REFUSED"
       ? { stage: "COLLECTING_VEHICLE", status: "need_more_data", nextAction: "continue_application" }
@@ -1729,6 +1756,52 @@ function accidentNotDrivablePatch(text: string | undefined, messages: Stage1Mess
   const mentionsAccident = /(?:дтп|авари(?:я|и|ю|ей|ями)?|после\s+удара)/iu.test(`${normalized} ${recentContext}`);
   const confirmsNotDrivable = /(?:эвакуатор(?:е|ом|а|ы)?|не\s*на\s*ходу|не\s+едет|не\s+заводит(?:ся)?)/iu.test(normalized);
   return mentionsAccident && confirmsNotDrivable ? { accidentNotDrivable: true } : {};
+}
+
+function foreignVehicleRegistrationPatch(text: string | undefined): Partial<ApplicationFacts> {
+  const normalized = text?.toLocaleLowerCase("ru-RU") ?? "";
+  const mentionsVehicle = /(?:авто|автомобил\p{L}*|машин\p{L}*)/iu.test(normalized);
+  const mentionsRegistration = /(?:зарег\p{L}*|(?:на|по)\s+уч[её]т\p{L}*|номерах?)/iu.test(normalized);
+  if (!mentionsVehicle || !mentionsRegistration) return {};
+  if (/(?:^|[^\p{L}])рф(?:$|[^\p{L}])|росси\p{L}*|русск\p{L}*/iu.test(normalized)) return { vehicleRegistrationCountry: "RU" };
+  if (/(?:казахстан|\bкз\b)/iu.test(normalized)) return { vehicleRegistrationCountry: "KZ" };
+  if (/(?:не\s+(?:в\s+)?кыргызстан\p{L}*|не\s+(?:в\s+)?киргиз\p{L}*|иностранн\p{L}*\s+(?:регистрац|номер))/iu.test(normalized)) return { vehicleRegistrationCountry: "FOREIGN" };
+  return {};
+}
+
+function isForeignVehicleRegistration(facts: ApplicationFacts): boolean {
+  const country = facts.vehicleRegistrationCountry?.trim().toLocaleLowerCase("ru-RU");
+  return Boolean(country && !["kg", "кр", "кыргызстан", "кыргызская республика"].includes(country));
+}
+
+function unsupportedVehicleTypePatch(text: string | undefined): Partial<ApplicationFacts> {
+  const normalized = text?.toLocaleLowerCase("ru-RU") ?? "";
+  const type = /(?:грузов(?:ик|ая)?|фура|автобус|спецтехник\p{L}*|трактор\p{L}*|экскаватор\p{L}*|мотоцикл\p{L}*|скутер\p{L}*|лодк\p{L}*|катер\p{L}*|прицеп\p{L}*)/iu.exec(normalized)?.[0];
+  return type ? { vehicleType: type } : {};
+}
+
+function isUnsupportedVehicleType(facts: ApplicationFacts): boolean {
+  const type = facts.vehicleType?.trim().toLocaleLowerCase("ru-RU");
+  return Boolean(type && !["car", "passenger_car", "minivan", "легковой автомобиль", "минивэн"].includes(type));
+}
+
+function foreignCitizenshipPatch(text: string | undefined): Partial<ApplicationFacts> {
+  const normalized = text?.toLocaleLowerCase("ru-RU") ?? "";
+  if (!/(?:я\s+)?(?:гражданин|гражданка|гражданство)/iu.test(normalized)) return {};
+  if (/(?:\bрф\b|росси\p{L}*|казахстан|\bкз\b|иностран\p{L}*)/iu.test(normalized)) return { citizenship: "FOREIGN" };
+  return {};
+}
+
+function isForeignCitizen(facts: ApplicationFacts): boolean {
+  const citizenship = facts.citizenship?.trim().toLocaleLowerCase("ru-RU");
+  return Boolean(citizenship && !["kg", "кр", "кыргызстан", "кыргызская республика"].includes(citizenship));
+}
+
+function region10RegistrationPatch(text: string | undefined): Partial<ApplicationFacts> {
+  const normalized = text?.toLocaleLowerCase("ru-RU") ?? "";
+  return /(?:авто|автомобил\p{L}*|машин\p{L}*|номер\p{L}*|регион).{0,50}\b10\s*(?:регион|номер)|\b10\s*(?:регион|номер).{0,50}(?:авто|автомобил\p{L}*|машин\p{L}*)/iu.test(normalized)
+    ? { vehicleRegistrationRegion: "10" }
+    : {};
 }
 
 function isGenericClarificationReply(reply: string): boolean {
@@ -3321,6 +3394,12 @@ function isLikelyKnowledgeQuestion(text: string): boolean {
   if (/[?？]/u.test(text)) return true;
   if (wordCount(text) < 2) return false;
   return /^(?:(?:(?:а|и|ну)\s+)?(?:есть|можно|сколько|какой|какая|какие|где|когда|как|работает|ставите|нужн(?:о|а|ы)?|дадите|оформить|оформлю|приеду)(?=\s|$)|(?:авто|машин).{0,40}(?:кредит|залоге|арест|ограничен)|(?:датчик|gps|гпс|трекер|парковк|стоянк|вещ|багаж)|(?:(?:а|и|ну|с)\s+)?(?:кофе|чай|wi-?fi|туалет|соб[ао](?:а)?к\p{L}*|животн\p{L}*).{0,60}(?:есть|можно\p{L}*|пуска\p{L}*|разреш\p{L}*))/iu.test(text.trim());
+}
+
+/** A broad office/amenities snippet must never be used to invent a service
+ * the approved material does not mention (for example an in-house mechanic). */
+function isUnsupportedCompanyServiceQuestion(text: string): boolean {
+  return /(?:свой|ваш|есть)\s+(?:мастер\p{L}*|механик\p{L}*|автосервис\p{L}*|сервис\p{L}*|ремонт\p{L}*|шиномонтаж\p{L}*)|(?:мастер\p{L}*|механик\p{L}*|автосервис\p{L}*|шиномонтаж\p{L}*).{0,80}(?:есть|имеется|у\s+вас)/iu.test(text);
 }
 
 /**
