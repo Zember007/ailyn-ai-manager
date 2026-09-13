@@ -279,14 +279,18 @@ describe("single-agent dialogue", () => {
     expect(output?.reply).not.toMatch(/^да[.!]?/iu);
   });
 
-  it("uses the approved unknown-answer fallback instead of inventing an unlisted company service", async () => {
+  it.each([
+    "А у вас есть свой мастер по авто?",
+    "А есть квас в офисе?",
+    "А ставите улучшенную электронику в авто и можете шины накачать?"
+  ])("uses the approved unknown-answer fallback instead of inventing an unlisted company service: %s", async (text) => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
       reply: "Да, есть. В офисе есть зона ожидания, Wi‑Fi, вода и кулер.",
       answerFound: true
     }) } }] }) } as any;
 
     const output = await new AgentTurnService(client).answerWithKnowledge({
-      messages: [], facts: {}, settings: {}, text: "А у вас есть свой мастер по авто?", workflowFollowUp: ""
+      messages: [], facts: {}, settings: {}, text, workflowFollowUp: ""
     });
 
     expect(output).toMatchObject({

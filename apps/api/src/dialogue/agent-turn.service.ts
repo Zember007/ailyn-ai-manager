@@ -3416,7 +3416,12 @@ function isLikelyKnowledgeQuestion(text: string): boolean {
 /** A broad office/amenities snippet must never be used to invent a service
  * the approved material does not mention (for example an in-house mechanic). */
 function isUnsupportedCompanyServiceQuestion(text: string): boolean {
-  return /(?:свой|ваш|есть)\s+(?:мастер\p{L}*|механик\p{L}*|автосервис\p{L}*|сервис\p{L}*|ремонт\p{L}*|шиномонтаж\p{L}*)|(?:мастер\p{L}*|механик\p{L}*|автосервис\p{L}*|шиномонтаж\p{L}*).{0,80}(?:есть|имеется|у\s+вас)/iu.test(text);
+  const normalized = text.trim();
+  if (isOfficeLocationQuestion(normalized)) return false;
+  // Questions about an amenity or workshop service need their own approved
+  // article. A nearby fact (tea, Wi-Fi, inspection) is never evidence for
+  // kvas, repairs, tyre work, or vehicle modifications.
+  return /(?:свой|ваш|есть)\s+(?:мастер\p{L}*|механик\p{L}*|автосервис\p{L}*|сервис\p{L}*|ремонт\p{L}*|шиномонтаж\p{L}*|квас|напит(?:ок|ки)|еда|перекус|улучшенн\p{L}*\s+электрон\p{L}*)|(?:мастер\p{L}*|механик\p{L}*|автосервис\p{L}*|шиномонтаж\p{L}*|квас|накач(?:ать|ива\p{L}*)\s+шин\p{L}*|установ\p{L}*.{0,40}электрон\p{L}*|ставите.{0,40}электрон\p{L}*|можете.{0,40}накач(?:ать|ива\p{L}*)|ремонт\p{L}*).{0,100}(?:есть|имеется|у\s+вас|можете|ставите|делаете)|(?:можете|ставите).{0,60}(?:шин\p{L}*.{0,20}накач|электрон\p{L}*)/iu.test(normalized);
 }
 
 /**
