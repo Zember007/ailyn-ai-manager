@@ -1456,14 +1456,17 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   // OTHER_KG, not that the application cannot be made.
   const resolvingResidenceClarification = isResidenceClarificationQuestion(lastAssistantReply)
     && hasUnresolvedResidence(input.facts);
-  const mandatoryKnowledgeAnswer = maximumLoanQuestion || isLoanRateQuestion(loanQuestionKind) || resolvingResidenceClarification
-    ? undefined
-    : selectRelevantDocumentation({
-      facts: input.facts,
-      currentMessage: input.text,
-      messages: input.messages,
-      includeCrossStageMatches: input.knowledgeLookup
-    }).mandatoryAnswer;
+  const documentAvailabilityAnswer = documentAvailabilityAnswerFor(semanticText ?? "");
+  const mandatoryKnowledgeAnswer = documentAvailabilityAnswer ?? (
+    maximumLoanQuestion || isLoanRateQuestion(loanQuestionKind) || resolvingResidenceClarification
+      ? undefined
+      : selectRelevantDocumentation({
+        facts: input.facts,
+        currentMessage: input.text,
+        messages: input.messages,
+        includeCrossStageMatches: input.knowledgeLookup
+      }).mandatoryAnswer
+  );
   const normalizedModelReply = normalizeTechnicalReply(parsed.reply);
   // «Нужно уточнение» is a model fallback, not customer-facing content. If
   // this turn did yield any new server-owned fact, the canonical next step is
@@ -2201,7 +2204,7 @@ function guardWorkflowStageOrder(reply: string, facts: ApplicationFacts, complet
 
 export function nextRequiredStageQuestion(facts: ApplicationFacts, completion = deriveStageCompletion(facts)): string | undefined {
   if (!completion?.vehicle) {
-    if (typeof facts.reportedInvalidVehicleYear === "number") {
+    if (typeof facts.reportedInvalidVehicleYear === "number" && facts.reportedInvalidVehicleYear > new Date().getFullYear()) {
       return `${facts.reportedInvalidVehicleYear} год ещё не наступил. Уточните, пожалуйста, верный год выпуска автомобиля.`;
     }
     const missing = [
@@ -2758,11 +2761,28 @@ function isIdentityQuestion(input: Pick<AgentTurnInput, "text" | "currentTurnMes
   return /(?:кто\s+(?:ты|вы)(?:\s+(?:такой|такая))?|чем\s+(?:(?:ты|вы)\s+)?занима(?:ешься|етесь)|зачем\s+(?:ты|вы)|(?:ты|вы)\s+(?:бот|робот|ии)|(?:это|ты|вы)\s+(?:ai|ии)|жив(?:ой|ая)|настоящ(?:ий|ая))/iu.test(text);
 }
 
+/** The source FAQ contains two adjacent document cases. Select the one the
+ * client actually named before generic retrieval can blend them together. */
+function documentAvailabilityAnswerFor(text: string): string | undefined {
+  const normalized = text.toLocaleLowerCase("ru-RU");
+  const missing = "(?:нет|без|потерял(?:а)?|утерял(?:а)?|утрачен(?:а|о)?)";
+  if (new RegExp(`${missing}.{0,40}(?:\\bid\\b|паспорт\\p{L}*)|(?:\\bid\\b|паспорт\\p{L}*).{0,40}${missing}`, "iu").test(normalized)) {
+    return "Вы можете использовать приложение Tunduk для идентификации личности.";
+  }
+  if (new RegExp(`${missing}.{0,50}(?:свидетельств\\p{L}*.{0,25}регистрац\\p{L}*|регистрационн\\p{L}*\\s+свидетельств\\p{L}*)|(?:свидетельств\\p{L}*.{0,25}регистрац\\p{L}*|регистрационн\\p{L}*\\s+свидетельств\\p{L}*).{0,50}${missing}`, "iu").test(normalized)) {
+    return "К сожалению, мы не сможем Вам выдать займ без оригинала свидетельства о регистрации транспортного средства.";
+  }
+  return undefined;
+}
+
 /** Existing-loan support text is valid only for an explicit current-turn servicing request. */
 function removeUnpromptedExistingContractRedirect(reply: string, input: Pick<AgentTurnInput, "text" | "currentTurnMessages">): string {
   const text = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "").trim();
   if (isExplicitExistingContractRequest(text)) return reply;
   return reply
+    // Remove the complete redirect even when the model copied only its
+    // contact sentence and omitted the usual closing phrase.
+    .replace(/(?:я\s+айлин\s*[—-]\s*виртуальн\p{L}*\s+помощник\s+по\s+вопросам\s+оформления\s+новых\s+займов\.?\s*)?если\s+у\s+вас\s+уже\s+оформлен\s+займ,?\s+пожалуйста,?\s+(?:позвоните|напишите)[\s\S]{0,300}?(?:whatsapp\s*\+?\d[\d\s-]*|\+?\d[\d\s-]{6,})\.?\s*/giu, "")
     .replace(/(?:я\s+айлин\s*[—-]\s*виртуальн\p{L}*\s+помощник\s+по\s+вопросам\s+оформления\s+новых\s+займов\.?\s*)?если\s+у\s+вас\s+уже\s+оформлен\s+займ,?\s+пожалуйста,?\s+позвоните[\s\S]{0,500}?(?:решить\s+ваш\s+вопрос|помогут\s+решить\s+ваш\s+вопрос)\.?/giu, "")
     .replace(/[ \t]{2,}/gu, " ")
     .trim();

@@ -315,6 +315,25 @@ describe("single-agent dialogue", () => {
     expect(output.result.leadCardPatch).toMatchObject({ vehicleYear: 2020, reportedInvalidVehicleYear: null });
   });
 
+  it("answers a lost ID question without mixing it with the registration document or old-loan redirect", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult,
+      reply: "К сожалению, мы не сможем Вам выдать займ без оригинала свидетельства о регистрации. Я Айлин — виртуальный помощник по вопросам оформления новых займов. Если у Вас уже оформлен займ, пожалуйста, позвоните по телефону +996 502 108 108 или напишите в WhatsApp +996 776 108 108.",
+      leadCardPatch: {}
+    }) } }] }) } as any;
+
+    const output = await new AgentTurnService(client).run({
+      messages: [],
+      facts: { reportedInvalidVehicleYear: 2019 } as any,
+      settings: {}, text: "Блин, я свой паспорт потерял, без него никак?", attachments: []
+    });
+
+    expect(output.reply).toContain("Вы можете использовать приложение Tunduk для идентификации личности.");
+    expect(output.reply).not.toContain("свидетельства о регистрации");
+    expect(output.reply).not.toContain("Если у Вас уже оформлен займ");
+    expect(output.reply).not.toContain("2019 год ещё не наступил");
+  });
+
   it("asks only for visit time when the visit date is already saved", () => {
     expect(nextRequiredStageQuestion({
       vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 3_000_000,

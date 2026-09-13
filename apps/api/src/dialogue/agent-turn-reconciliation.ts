@@ -70,6 +70,10 @@ export function effectiveFactsForTurn(input: {
   } else if (result.vehicleYear !== undefined) {
     // A later valid correction resolves the previous invalid-year prompt.
     result.reportedInvalidVehicleYear = null;
+  } else if (typeof result.reportedInvalidVehicleYear === "number" && result.reportedInvalidVehicleYear <= currentYear) {
+    // Old cards can contain a stale audit marker from an earlier failed
+    // extraction. It is not an error once that year has already arrived.
+    result.reportedInvalidVehicleYear = null;
   }
   return result;
 }
