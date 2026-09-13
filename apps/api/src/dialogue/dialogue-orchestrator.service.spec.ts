@@ -5674,6 +5674,29 @@ describe("single-agent dialogue", () => {
     expect(output.reply).toBe("Офис работает с понедельника по пятницу с 11:00 до 19:00. Для оформления нужно приехать не позднее 18:00. В какое время Вам удобно подъехать?");
   });
 
+  it("records both a weekday and a colloquial after-time in one visit reply", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-13T10:00:00.000Z"));
+    try {
+      const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ ...validResult, reply: "Распознано.", leadCardPatch: {} }) } }] }) } as any;
+      const output = await new AgentTurnService(client).run({
+        messages: [{ author: "ai", body: "Офис работает с понедельника по пятницу с 11:00 до 19:00. Для оформления нужно приехать не позднее 18:00. На какой день и время Вам удобно подъехать?", createdAt: "now" } as any],
+        facts: {
+          vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 3_000_000,
+          requestedAmount: 600_000, requestedProgram: "without_storage",
+          residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY",
+          documentsProvided: true, documents: { car_photo: "received" }, familyStatus: "single"
+        } as any,
+        settings: { timezone: "Asia/Bishkek" }, text: "может во вторник смогу после 4", attachments: []
+      });
+
+      expect(output.result?.leadCardPatch).toEqual(expect.objectContaining({ visitRequested: true, visitDate: "2026-09-15", visitTime: "16:00" }));
+      expect(output.reply).not.toMatch(/в какое время вам удобно подъехать/iu);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("never invents a time when a client names only a possible visit day", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-09-11T10:00:00.000Z"));

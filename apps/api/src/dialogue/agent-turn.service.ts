@@ -1782,7 +1782,7 @@ function visitPatchFromClearReply(input: Pick<AgentTurnInput, "text" | "currentT
   if (visitDate && !isWorkingVisitDate(visitDate)) return {};
   // The time must be tied to «в» (or an explicit hour suffix), otherwise the
   // date day in «6 октября» is incorrectly treated as 18:00.
-  const timeMatches = [...text.matchAll(/(?:(?:^|[\s,])в\s+(\d{1,2})(?::(\d{2}))?|(?:^|[\s,])(\d{1,2})(?::(\d{2}))?\s*(?:час(?:а|ов)?|ч))\s*(утра|дня|вечера)?(?!\p{L})/giu)];
+  const timeMatches = [...text.matchAll(/(?:(?:^|[\s,])(?:в|после|около)\s+(\d{1,2})(?::(\d{2}))?|(?:^|[\s,])(\d{1,2})(?::(\d{2}))?\s*(?:час(?:а|ов)?|ч))\s*(утра|дня|вечера)?(?!\p{L})/giu)];
   // In a correction such as «в 3 неудобно, давайте в 6» the final time is
   // the replacement; never keep the now explicitly rejected first time.
   const timeMatch = timeMatches.at(-1);
