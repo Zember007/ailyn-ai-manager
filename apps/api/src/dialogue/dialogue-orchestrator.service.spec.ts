@@ -234,6 +234,37 @@ describe("single-agent dialogue", () => {
     expect(output.reply).not.toMatch(/подскажите|какая сумма|в какое время/iu);
   });
 
+  it("does not repeat a prior vehicle-type refusal after an acknowledgement", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult, reply: "Распознано.", leadCardPatch: {}
+    }) } }] }) } as any;
+
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "К сожалению, мы принимаем в залог только легковые автомобили.", createdAt: "now" } as any],
+      facts: { vehicleType: "грузовик" } as any, settings: {}, text: "ок", attachments: []
+    });
+
+    expect(output.result.leadCardPatch.vehicleType).toBeUndefined();
+    expect(output.reply).not.toContain("мы принимаем в залог только легковые автомобили");
+    expect(output.result.dialogueState.stage).not.toBe("REFUSED");
+  });
+
+  it("clears a past refusal when the client names a different vehicle", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult, reply: "Распознано.", leadCardPatch: { vehicleModel: "Camry" }
+    }) } }] }) } as any;
+
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "К сожалению, мы принимаем в залог только легковые автомобили.", createdAt: "now" } as any],
+      facts: { vehicleType: "скутер" } as any, settings: {}, text: "У меня Камри", attachments: []
+    });
+
+    expect(output.result.leadCardPatch).toMatchObject({ vehicleModel: "Camry" });
+    expect(output.result.leadCardPatch.vehicleType).toBeUndefined();
+    expect(output.reply).not.toContain("мы принимаем в залог только легковые автомобили");
+    expect(output.result.dialogueState.stage).not.toBe("REFUSED");
+  });
+
   it("lets the knowledge model adapt an approved answer to a factual disclosure", async () => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
       reply: "Для оформления займа автомобиль должен быть зарегистрирован в УНА на человека, который обращается за займом.",

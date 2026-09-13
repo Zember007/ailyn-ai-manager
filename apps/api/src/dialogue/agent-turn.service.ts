@@ -1354,6 +1354,10 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   const schedulingVisitReply = isVisitSchedulingReply(input, input.facts);
   const rawModelPatch = {
     ...(schedulingVisitReply ? {} : modelMoneyPatchForTurn(modelFactsWithoutResidence, input, parsed.hasMoney, loanQuestionKind)),
+    // A refusal is about the current vehicle/client, not a permanent
+    // conversation lock. Any new client turn starts a fresh eligibility
+    // check; explicit facts from this turn below can set a new refusal again.
+    ...refusalResetForNewClientTurn(input.facts, semanticText),
     ...residencePatchFromExplicitClientText(input, leadCardFacts, input.facts, parsed.residenceStatement === true),
     ...requestedAmountResetPatch(input),
     ...repeatedRequestedAmountPatch(input, input.facts),
@@ -1568,6 +1572,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   // the card before a fallible model label such as current-stage
   // clarification can return the client to the pending visit prompt.
   const directAnswerWithoutRepeatedStage = unsupportedVehicleTypeNotice ?? region10RefusalNotice ?? foreignVehicleRegistrationNotice ?? foreignCitizenNotice ?? relationshipEligibilityAnswer ?? workflowStageClarification ?? accidentNotDrivableNotice ?? visitNotice ?? completionNotice ?? attachmentAcceptanceNotice ?? optionalStageDeclineNotice ?? visitNonWorkingDay ?? visitTimeRecorded ?? visitProgress ?? visitTimeUnavailable ?? visitTimeClarification ?? residenceLimitNotice ?? programmeChangeGuarantorNotice ?? acceptedLimitNotice ?? (region10Answer ? [region10Answer, olderVehicleNotice].filter(Boolean).join("\n\n") : undefined) ?? olderVehicleNotice ?? spouseVisitAnswer(input) ?? familyNotice ?? unknownVehicleValueNotice ?? waitingForVehicleValueNotice;
+  const terminalRefusalAnswer = unsupportedVehicleTypeNotice ?? region10RefusalNotice ?? foreignVehicleRegistrationNotice ?? foreignCitizenNotice ?? accidentNotDrivableNotice;
   const directAnswer = directAnswerWithoutRepeatedStage ?? repeatedStageReply;
   // A direct approved FAQ outranks all free-form model prose. This prevents
   // plausible but unsupported claims such as a parking location or credit
@@ -1615,7 +1620,9 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   // A contextual "why" must survive all later stage-specific normalizers
   // (notably the Chuy and guarantor resolvers). Otherwise they can replace
   // the explanation with the same question the client just queried.
-  const responsePlan = relationshipEligibilityAnswer
+  const responsePlan = terminalRefusalAnswer
+    ? terminalRefusalAnswer
+    : relationshipEligibilityAnswer
     ? appendRequiredWorkflowFollowUp(relationshipEligibilityAnswer, workflowFollowUp)
     : workflowStageClarification
     ? appendRequiredWorkflowFollowUp(workflowStageClarification, workflowFollowUp)
@@ -1802,6 +1809,16 @@ function region10RegistrationPatch(text: string | undefined): Partial<Applicatio
   return /(?:авто|автомобил\p{L}*|машин\p{L}*|номер\p{L}*|регион).{0,50}\b10\s*(?:регион|номер)|\b10\s*(?:регион|номер).{0,50}(?:авто|автомобил\p{L}*|машин\p{L}*)/iu.test(normalized)
     ? { vehicleRegistrationRegion: "10" }
     : {};
+}
+
+function refusalResetForNewClientTurn(previous: ApplicationFacts, text: string | undefined): Partial<ApplicationFacts> {
+  if (!text?.trim()) return {};
+  const reset: Partial<ApplicationFacts> = {};
+  if (isUnsupportedVehicleType(previous)) reset.vehicleType = undefined;
+  if (isForeignVehicleRegistration(previous)) reset.vehicleRegistrationCountry = undefined;
+  if (previous.vehicleRegistrationRegion === "10") reset.vehicleRegistrationRegion = undefined;
+  if (isForeignCitizen(previous)) reset.citizenship = undefined;
+  return reset;
 }
 
 function isGenericClarificationReply(reply: string): boolean {
