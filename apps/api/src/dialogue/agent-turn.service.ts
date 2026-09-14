@@ -1542,7 +1542,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   const programmeChangeGuarantorNotice = !requiresGuarantorForFacts(input.facts)
     && requiresGuarantorForFacts(effectiveFacts)
     && selectedLimitNotice
-    ? `${selectedLimitNotice}\n\n${GUARANTOR_REQUIREMENTS}`
+    ? `${selectedLimitNotice}\n\n${GUARANTOR_REQUIREMENTS_AFTER_CONTEXT}`
     : guarantorTransitionNotice;
   const workflowSelectedLimitNotice = residenceLimitNotice ? undefined : selectedLimitNotice;
   const unknownVehicleValueNotice = unknownVehicleValueReply(input, effectiveFacts);
@@ -2346,7 +2346,13 @@ export function nextRequiredStageQuestion(facts: ApplicationFacts, completion = 
   // An amount can be present but rejected by the selected programme limit.
   // In that case the server must render the canonical limit alternative,
   // never reopen collection with the misleading generic amount question.
-  if (!completion.requestedAmount && facts.requestedAmount === undefined) return "Какая сумма займа Вам необходима?";
+  // An entered amount can still be invalid for the selected programme. This
+  // gate precedes guarantor collection: a guarantor cannot make an over-limit
+  // or otherwise ineligible amount valid.
+  if (!completion.requestedAmount) {
+    if (facts.requestedAmount === undefined) return "Какая сумма займа Вам необходима?";
+    return requestedAmountLimitReply(calculateLoanPricing(facts), facts) ?? "Какая сумма займа Вам необходима?";
+  }
   if (!completion.program) return "Вас интересует займ без изъятия автомобиля или с постановкой автомобиля на охраняемую стоянку?";
   // Region and category are written only by the server locality resolver.
   // Once both exist, a stale `residenceNeedsClarification` flag must never
@@ -2531,7 +2537,16 @@ function isAlreadyProvidedReply(input: Pick<AgentTurnInput, "text" | "currentTur
 function requestedAmountLimitReply(pricing: LoanPricing | undefined, facts: ApplicationFacts): string | undefined {
   if (facts.requestedAmount === undefined || !facts.requestedProgram) return undefined;
   const selectedPricing = facts.requestedProgram === "without_storage" ? pricing?.withoutStorage : pricing?.parking;
-  if (!selectedPricing?.available || typeof selectedPricing.publicMax !== "number" || facts.requestedAmount <= selectedPricing.publicMax) return undefined;
+  if (!selectedPricing?.available || typeof selectedPricing.publicMax !== "number") {
+    const parkingMaximum = pricing?.parking.available && typeof pricing.parking.publicMax === "number"
+      ? pricing.parking.publicMax
+      : undefined;
+    if (facts.requestedProgram === "without_storage" && parkingMaximum !== undefined) {
+      return `По программе без изъятия по текущим параметрам заявку продолжить нельзя. Со стоянкой при текущей стоимости автомобиля доступно до ${formatSomMoney(parkingMaximum)} сом. Могу продолжить по программе со стоянкой.`;
+    }
+    return undefined;
+  }
+  if (facts.requestedAmount <= selectedPricing.publicMax) return undefined;
   const programName = facts.requestedProgram === "without_storage" ? "без изъятия" : "со стоянкой";
   const limit = formatSomMoney(selectedPricing.publicMax);
   const requested = formatSomMoney(facts.requestedAmount);
@@ -2625,7 +2640,7 @@ function residenceLimitNoticeForTurn(previous: ApplicationFacts, current: Applic
   // Otherwise one reply contains both the guarantor question and the next
   // canonical amount question.
   return requiresGuarantorForFacts(current) && deriveStageCompletion(current).requestedAmount
-    ? `${prefix}\n\n${GUARANTOR_REQUIREMENTS}`
+    ? `${prefix}\n\n${GUARANTOR_REQUIREMENTS_AFTER_CONTEXT}`
     : prefix;
 }
 
@@ -3333,7 +3348,8 @@ function guarantorPatchFromClearReply(
   return {};
 }
 
-const GUARANTOR_REQUIREMENTS = "И Вам потребуется поручитель:\n- возраст от 25 лет\n- проживает в г. Бишкек или Чуйской области\n- должен лично присутствовать при выдаче займа и иметь с собой ID (паспорт)\nУ Вас есть такой поручитель?";
+const GUARANTOR_REQUIREMENTS = "Вам потребуется поручитель:\n- возраст от 25 лет\n- проживает в г. Бишкек или Чуйской области\n- должен лично присутствовать при выдаче займа и иметь с собой ID (паспорт)\nУ Вас есть такой поручитель?";
+const GUARANTOR_REQUIREMENTS_AFTER_CONTEXT = `И ${GUARANTOR_REQUIREMENTS}`;
 const GUARANTOR_CONTEXT_CLARIFICATION = "Поручитель нужен только по программе без изъятия автомобиля, если прописка клиента находится за пределами Бишкека и Чуйской области. По программе со стоянкой поручитель не требуется. Поручителю должно быть не менее 25 лет; он должен проживать в Бишкеке или Чуйской области, лично присутствовать при выдаче займа и иметь с собой ID (паспорт).";
 const GUARANTOR_PARKING_ALTERNATIVE = "Поручитель обязателен для программы без изъятия в Вашем регионе. Можем рассмотреть программу с постановкой автомобиля на охраняемую стоянку?";
 const FINAL_QUESTIONS_PROMPT = "Есть ли у Вас ещё вопросы?";

@@ -15,16 +15,11 @@ describe("calculateLoanPricing", () => {
     expect(pricing.parking.publicMax).toBeLessThanOrEqual(pricing.parking.rawMax!);
   });
 
-  it("does not offer without-storage below one million outside Bishkek and Chuy", () => {
+  it("calculates the regional without-storage cap below one million outside Bishkek and Chuy", () => {
     const pricing = calculateLoanPricing({ vehicleValue: 999_999, residenceRegion: "Ош" });
 
     expect(pricing.residence).toEqual({ category: "OTHER_KG", residenceRegion: "Другой регион Кыргызстана" });
-    expect(pricing.withoutStorage).toEqual({
-      available: false,
-      rawMax: null,
-      publicMax: null,
-      reason: "vehicle_value_below_other_region_minimum"
-    });
+    expect(pricing.withoutStorage).toEqual({ available: true, rawMax: 200_000, publicMax: 200_000 });
     expect(pricing.parking).toMatchObject({ available: true, rawMax: 499_999.5, publicMax: 490_000 });
   });
 

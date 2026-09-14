@@ -790,6 +790,31 @@ describe("single-agent dialogue", () => {
     expect(output.reply).not.toContain("У Вас есть такой поручитель?");
   });
 
+  it("does not ask for a guarantor when the saved amount is invalid for the selected programme", () => {
+    const reply = nextRequiredStageQuestion({
+      vehicleModel: "Corolla", vehicleYear: 2026, vehicleValue: 900_000,
+      requestedAmount: 450_000, requestedProgram: "without_storage",
+      residenceText: "Бостери", residenceRegion: "Другой регион Кыргызстана", residenceCategory: "OTHER_KG",
+      guarantorAvailable: true
+    } as any);
+
+    expect(reply).toContain("По программе без изъятия доступно до 200 000 сом.");
+    expect(reply).toContain("Со стоянкой при текущей стоимости автомобиля доступно до 450 000 сом.");
+    expect(reply).toContain("Могу продолжить либо на сумму до 200 000 сом без изъятия, либо перейти на программу со стоянкой");
+    expect(reply).not.toMatch(/поручител/iu);
+  });
+
+  it("does not start a standalone guarantor question with a conjunction", () => {
+    const reply = nextRequiredStageQuestion({
+      vehicleModel: "Corolla", vehicleYear: 2026, vehicleValue: 1_200_000,
+      requestedAmount: 200_000, requestedProgram: "without_storage",
+      residenceText: "Бостери", residenceRegion: "Другой регион Кыргызстана", residenceCategory: "OTHER_KG"
+    } as any);
+
+    expect(reply).toMatch(/^Вам потребуется поручитель:/u);
+    expect(reply).not.toMatch(/^И Вам потребуется поручитель:/u);
+  });
+
   it("does not append the future guarantor question while the amount stage is still open", async () => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
       ...validResult,
@@ -3480,16 +3505,33 @@ describe("single-agent dialogue", () => {
     expect(reply).not.toMatch(/MAX_LIMIT_/u);
   });
 
+  it("returns the available parking minimum and maximum when without-storage is unavailable", () => {
+    const reply = replaceMaximumLimitPlaceholders(
+      "Для вас доступно:\nБез изъятия: от 50 000 сом до MAX_LIMIT_WITHOUT сом\nСо стоянкой: от 50 000 сом до MAX_LIMIT_PARK сом",
+      {
+        vehicleValue: 900_000,
+        residenceText: "Бостери",
+        residenceRegion: "Другой регион Кыргызстана",
+        residenceCategory: "OTHER_KG"
+      } as any,
+      {}
+    );
+
+    expect(reply).toBe("Для вас доступно:\nБез изъятия: от 50 000 сом до 200 000 сом\nСо стоянкой: от 50 000 сом до 450 000 сом");
+    expect(reply).not.toMatch(/MAX_LIMIT_|Максимальную сумму смогу рассчитать/iu);
+  });
+
   it("removes an unresolved maximum template when calculation inputs are missing", () => {
     const reply = replaceMaximumLimitPlaceholders(
-      "Без изъятия: от 50 000 сом до MAX_LIMIT_WITHOUT сом Со стоянкой: от 50 000 сом до MAX_LIMIT_PARK сом",
+      "Для вас доступно:\nБез изъятия: от 50 000 сом до MAX_LIMIT_WITHOUT сом\nСо стоянкой: от 50 000 сом до MAX_LIMIT_PARK сом",
       {},
       {}
     );
 
-    expect(reply).toContain("ориентировочная стоимость автомобиля");
-    expect(reply).toContain("Ваша прописка");
+    expect(reply).toContain("ориентировочную стоимость автомобиля");
+    expect(reply).toContain("Вашу прописку");
     expect(reply).not.toMatch(/MAX_LIMIT_/u);
+    expect(reply).not.toContain("Для вас доступно:");
   });
 
   it("uses only the exact currency-exchange answer instead of a bundled nearby-services reply", async () => {

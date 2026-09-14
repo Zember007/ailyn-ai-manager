@@ -10,7 +10,7 @@ import { BackendLogsService } from "../logs/backend-logs.service.js";
 import { Stage1StoreService, type Stage1Application, type Stage1Conversation, type Stage1Message } from "./stage1-store.service.js";
 import { DeferredIntegrationsService } from "./deferred-integrations.service.js";
 import { detectMoneyMentions, formatMoney, formatSomMoney, resolveMoneyFacts, roundSomAmount, type ForeignMoneyCurrencyCode } from "./money-normalization.js";
-import { calculateLoanPricing } from "./loan-pricing.js";
+import { calculateLoanPricing, calculateLoanRangeDisplayMaximums } from "./loan-pricing.js";
 
 export interface DialogueResult { conversation: Stage1Conversation; application: Stage1Application; reply: string; validation: { passed: boolean; errors: string[] }; routerAiModel: string; promptVersion: string; needsKnowledgeLookup?: boolean; summaryNeedsRefresh?: boolean; }
 export interface DialogueReceiveOptions { signal?: AbortSignal; deferReplyPersistence?: boolean; }
@@ -464,26 +464,30 @@ function hasMaximumLoanPrerequisites(facts: ApplicationFacts): boolean {
  */
 export function replaceMaximumLimitPlaceholders(reply: string, facts: ApplicationFacts, settings: object): string {
   if (!/MAX_LIMIT_(?:WITHOUT|PARK)/iu.test(reply)) return reply;
-  const pricing = calculateLoanPricing(facts, settings);
-  const without = pricing.withoutStorage;
-  const parking = pricing.parking;
-  if (
-    without.available
-    && typeof without.publicMax === "number"
-    && parking.available
-    && typeof parking.publicMax === "number"
-  ) {
-    return reply
-      .replace(/MAX_LIMIT_WITHOUT/giu, formatSomMoney(without.publicMax))
-      .replace(/MAX_LIMIT_PARK/giu, formatSomMoney(parking.publicMax));
-  }
+  const displayMaximums = calculateLoanRangeDisplayMaximums(facts, settings);
   const withoutTemplate = /(?:Какая\s+максимальная\s+сумма\s+возможна\?\s*)?Без\s+изъятия:\s*от\s+50\s*000\s+сом\s+до\s+MAX_LIMIT_WITHOUT\s+сом[.!?]?\s*/giu;
   const parkingTemplate = /Со\s+стоянкой:\s*от\s+50\s*000\s+сом\s+до\s+MAX_LIMIT_PARK\s+сом[.!?]?\s*/giu;
+
+  // The maximum/minimum FAQ presents both preliminary ranges. It must not
+  // turn a later programme-eligibility decision into an "unavailable" answer
+  // here; that decision still uses `calculateLoanPricing` in the workflow.
+  if (typeof displayMaximums.withoutStorage === "number" && typeof displayMaximums.parking === "number") {
+    return reply
+      .replace(/MAX_LIMIT_WITHOUT/giu, formatSomMoney(displayMaximums.withoutStorage))
+      .replace(/MAX_LIMIT_PARK/giu, formatSomMoney(displayMaximums.parking))
+      .replace(/\n{3,}/gu, "\n\n")
+      .replace(/[ \t]{2,}/gu, " ")
+      .trim();
+  }
   const answerWithoutTemplate = reply
     .replace(withoutTemplate, "")
     .replace(parkingTemplate, "")
+    // This heading belongs to the two ranges and must not be delivered on
+    // its own after the missing-data explanation.
+    .replace(/(?:^|\n)\s*Для\s+вас\s+доступно:\s*(?=\n|$)/giu, "\n")
     .replace(/MAX_LIMIT_(?:WITHOUT|PARK)/giu, "")
     .replace(/[ \t]{2,}/gu, " ")
+    .replace(/\n{3,}/gu, "\n\n")
     .trim();
   const missing = [
     facts.vehicleValue === undefined ? "ориентировочную стоимость автомобиля" : undefined,

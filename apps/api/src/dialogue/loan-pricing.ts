@@ -74,22 +74,16 @@ export function calculateLoanPricing(facts: ApplicationFacts, settings: LoanPric
   }
 
   const parkingRawMax = Math.min(value * numberSetting(settings.parkingPercent, 0.5), numberSetting(settings.parkingLimit, 2_000_000));
-  // Cars older than 15 years are reviewed individually. Once the customer
-  // explicitly selects without-storage, that review must still receive the
-  // regional 200k cap and guarantor gate instead of falling through to an
-  // unpriced guarantor question merely because the car is below the standard
-  // other-region appraisal threshold.
-  const olderVehicleIndividualReview = typeof facts.vehicleYear === "number" && new Date().getFullYear() - facts.vehicleYear > 15;
-  const withoutStorageAllowed = residence.category === "BISHKEK_CHUY" || olderVehicleIndividualReview || value >= numberSetting(settings.otherRegionMinVehicleValue, 1_000_000);
-  const withoutStorageRawMax = withoutStorageAllowed
-    ? Math.min(
-      value * numberSetting(settings.withoutStoragePercent, 0.4),
-      numberSetting(
-        residence.category === "BISHKEK_CHUY" ? settings.withoutStorageLimitBishkekChuy : settings.withoutStorageLimitOtherRegion,
-        residence.category === "BISHKEK_CHUY" ? 600_000 : 200_000
-      )
+  // Both programmes receive a calculated range once vehicle value and
+  // residence are known. The regional cap, rather than a second minimum
+  // vehicle-value gate, determines the without-storage limit.
+  const withoutStorageRawMax = Math.min(
+    value * numberSetting(settings.withoutStoragePercent, 0.4),
+    numberSetting(
+      residence.category === "BISHKEK_CHUY" ? settings.withoutStorageLimitBishkekChuy : settings.withoutStorageLimitOtherRegion,
+      residence.category === "BISHKEK_CHUY" ? 600_000 : 200_000
     )
-    : unavailableWithoutStorage;
+  );
 
   return {
     minimumLoan,
@@ -99,6 +93,36 @@ export function calculateLoanPricing(facts: ApplicationFacts, settings: LoanPric
       ? { available: true, rawMax: withoutStorageRawMax, publicMax: publicMaximum(withoutStorageRawMax) }
       : withoutStorageRawMax,
     parking: { available: true, rawMax: parkingRawMax, publicMax: publicMaximum(parkingRawMax), monthlyRate: 2.4, dailyParkingFee: 130 }
+  };
+}
+
+/**
+ * Ranges shown in response to a general maximum/minimum question. They use
+ * the same percentage and public rounding as pricing, but do not decide
+ * whether a later application may select that programme. Eligibility remains
+ * the responsibility of `calculateLoanPricing` and the workflow gates.
+ */
+export function calculateLoanRangeDisplayMaximums(facts: ApplicationFacts, settings: LoanPricingSettings = {}): {
+  withoutStorage: number | null;
+  parking: number | null;
+} {
+  const residence = resolveResidence(facts);
+  const value = positiveFinite(facts.vehicleValue);
+  if (!residence || !value) return { withoutStorage: null, parking: null };
+  const withoutStorageRawMax = Math.min(
+    value * numberSetting(settings.withoutStoragePercent, 0.4),
+    numberSetting(
+      residence.category === "BISHKEK_CHUY" ? settings.withoutStorageLimitBishkekChuy : settings.withoutStorageLimitOtherRegion,
+      residence.category === "BISHKEK_CHUY" ? 600_000 : 200_000
+    )
+  );
+  const parkingRawMax = Math.min(
+    value * numberSetting(settings.parkingPercent, 0.5),
+    numberSetting(settings.parkingLimit, 2_000_000)
+  );
+  return {
+    withoutStorage: publicMaximum(withoutStorageRawMax),
+    parking: publicMaximum(parkingRawMax)
   };
 }
 
