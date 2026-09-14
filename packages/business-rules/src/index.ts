@@ -201,7 +201,9 @@ export const defaultBusinessRuleSettings: BusinessRuleSettings = {
   ]
 };
 
-const supportedVehicleTypes = new Set(["car", "passenger_car", "minivan"]);
+/** Only special equipment is ineligible. Passenger vehicles, including
+ * pickups, trucks, buses, motorcycles and minibuses, remain eligible. */
+const unsupportedVehicleTypes = new Set(["special_equipment", "спецтехника", "трактор", "экскаватор", "бульдозер", "погрузчик", "автокран", "комбайн", "грейдер", "асфальтоукладчик"]);
 export function evaluateApplication(
   facts: ApplicationFacts,
   settings: BusinessRuleSettings = defaultBusinessRuleSettings
@@ -505,9 +507,9 @@ function firstRefusal(
   settings: BusinessRuleSettings,
   rulesApplied: string[]
 ): string | undefined {
-  if (facts.vehicleType && !supportedVehicleTypes.has(normalize(facts.vehicleType))) {
+  if (facts.vehicleType && unsupportedVehicleTypes.has(normalize(facts.vehicleType))) {
     rulesApplied.push("unsupported_vehicle_type");
-    return "Компания оформляет займы только под легковые автомобили и минивэны.";
+    return "К сожалению, спецтехнику мы не принимаем в залог.";
   }
   if (normalize(facts.vehicleRegistrationRegion) === "10") {
     rulesApplied.push("region_10_refusal");

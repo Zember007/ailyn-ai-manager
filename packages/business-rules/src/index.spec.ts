@@ -80,8 +80,10 @@ describe("business rules", () => {
     expect(calculateLoanLimits({ vehicleValue: 6_000_000, residenceRegion: "Бишкек" }).parking).toBe(2_000_000);
   });
 
-  it("refuses unsupported critical vehicle and ownership conditions deterministically", () => {
-    expect(evaluateApplication({ vehicleType: "truck" }).rulesApplied).toContain("unsupported_vehicle_type");
+  it("refuses special equipment but accepts other vehicle types deterministically", () => {
+    expect(evaluateApplication({ vehicleType: "special_equipment" }).rulesApplied).toContain("unsupported_vehicle_type");
+    expect(evaluateApplication({ vehicleType: "truck" }).rulesApplied).not.toContain("unsupported_vehicle_type");
+    expect(evaluateApplication({ vehicleType: "minibus" }).rulesApplied).not.toContain("unsupported_vehicle_type");
     expect(evaluateApplication({ vehicleRegistrationRegion: "10" }).rulesApplied).toContain("region_10_refusal");
     expect(evaluateApplication({ vehicleInCredit: true }).rulesApplied).toContain("credit_or_pledge_refusal");
     expect(evaluateApplication({ ownerCanVisit: false }).rulesApplied).toContain("owner_presence_required");

@@ -45,9 +45,9 @@ const scenarios = [
     includes: ["По автомобилям с регионом 10 компания займ не оформляет."]
   },
   {
-    id: "E2E-05-motorcycle-refusal",
-    steps: ["Хочу займ под мото, стоит 300к"],
-    includes: ["только под легковые автомобили и минивэны"]
+    id: "E2E-05-special-equipment-refusal",
+    steps: ["Хочу займ под экскаватор, стоит 300к"],
+    includes: ["спецтехнику мы не принимаем"]
   },
   {
     id: "E2E-06-other-region-guarantor",

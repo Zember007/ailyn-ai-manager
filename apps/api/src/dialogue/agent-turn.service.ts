@@ -25,6 +25,7 @@ const DEFAULT_TWO_GIS_URL = "https://go.2gis.com/Y34m4";
 const DEFAULT_GOOGLE_MAPS_URL = "https://maps.app.goo.gl/9xiWLVvdyRgn3Sx4A";
 const UNKNOWN_KNOWLEDGE_ANSWER = "К сожалению, у меня нет достоверной информации по этому вопросу. Когда Вы приедете, сотрудники с удовольствием подскажут Вам.";
 export const OLDER_VEHICLE_PROGRAM_NOTICE = "По общему правилу мы принимаем в залог автомобили старше 15 лет только на стоянку, но если вы планируете получить займ без изъятия, то мы готовы рассмотреть вашу заявку индивидуально.";
+type ContextualKnowledgePolicy = { key: "region_10_refusal"; approvedAnswer: string };
 // The complete lead card keeps durable facts, while a compact recent tail is
 // enough to resolve conversational references. Keeping this bounded is one of
 // the few latency levers that does not weaken application validation.
@@ -73,7 +74,7 @@ export class AgentTurnService {
   private readonly config = loadAppConfig();
   private readonly logger = new Logger(AgentTurnService.name);
 
-  constructor(private readonly client: RouterAiClient, private readonly logs?: BackendLogsService) {}
+  constructor(private readonly client: RouterAiClient, private readonly logs?: BackendLogsService) { }
 
   async classifyPendingMoneyClarification(input: { text?: string; messages: Stage1Message[]; conversationId?: string; signal?: AbortSignal }): Promise<PendingMoneyClarificationDecision | undefined> {
     const lastAssistantMessage = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
@@ -209,6 +210,7 @@ export class AgentTurnService {
     const maximumLoanTemplate = maximumLoanChunk && "approvedAnswer" in maximumLoanChunk
       ? maximumLoanChunk.approvedAnswer
       : undefined;
+    const contextualPolicy = contextualKnowledgePolicy(input.messages, input.text ?? "");
     const context = {
       currentMessage: input.text ?? "",
       currentTurnMessages: input.currentTurnMessages ?? (input.text === undefined ? [] : [{ index: 1, text: input.text }]),
@@ -223,6 +225,9 @@ export class AgentTurnService {
       // its two markers and either substitutes current limits or asks for the
       // missing calculation facts after this answer.
       maximumLoanTemplate: maximumLoanQuestion ? maximumLoanTemplate : undefined,
+      // A short question after a terminal policy must be classified against
+      // that policy before the broad corpus is considered.
+      contextualPolicy,
       // Keep the model focused on the approved answer most relevant to this
       // message. The packet always starts with FAQ, then section 3.18 rules,
       // instead of making it search a large, competing corpus by itself.
@@ -256,8 +261,12 @@ export class AgentTurnService {
       // The office location is server-owned configuration, including live map
       // links, and therefore remains verbatim. Every knowledge-base response
       // comes from the dedicated model and is adapted to the current message.
-      const knowledgeReply = answerFound
-        ? removeInternalPricingInstruction(officeLocationResponse ?? ensureGeneralRateCoverage(parsed.data.reply, input.text))
+      const knowledgeReply = contextualPolicy && parsed.data.contextualPolicyRelation === "follow_up"
+        // The policy is server-approved; keep a model from blending in a
+        // semantically nearby but unrelated rule such as the 15-year policy.
+        ? contextualPolicy.approvedAnswer
+        : answerFound
+          ? removeInternalPricingInstruction(officeLocationResponse ?? ensureGeneralRateCoverage(parsed.data.reply, input.text))
         : UNKNOWN_KNOWLEDGE_ANSWER;
       // The maximum range is server-owned, but it is only one answer in a
       // multi-question turn. Keep the canonical range and retain all other
@@ -360,10 +369,12 @@ export class AgentTurnService {
         response_format: { type: "json_object" },
         messages: [
           { role: "system", content: loadPrompt("dialogue-summary.system.md") },
-          { role: "user", content: JSON.stringify({
-            messages: input.messages.map(({ author, body, createdAt }) => ({ author, text: body, createdAt })),
-            finalFacts: input.facts
-          }) }
+          {
+            role: "user", content: JSON.stringify({
+              messages: input.messages.map(({ author, body, createdAt }) => ({ author, text: body, createdAt })),
+              finalFacts: input.facts
+            })
+          }
         ]
       }, { timeoutMs: this.config.routerAiTimeoutMs, signal: input.signal });
       const parsed = dialogueSummarySchema.safeParse(parseAgentJson(response.choices?.[0]?.message?.content));
@@ -520,11 +531,11 @@ export class AgentTurnService {
       if (decision === "known" || decision === "unknown" || decision === "not_a_visit_answer") {
         return decision === "unknown"
           ? {
-              ...normalizedParsed,
-              visitTimeAvailability: decision,
-              leadCardPatch: { ...normalizedParsed.leadCardPatch, clientPaused: false },
-              dialogueState: { stage: "SCHEDULING_VISIT", status: "need_more_data", nextAction: "schedule_visit" }
-            }
+            ...normalizedParsed,
+            visitTimeAvailability: decision,
+            leadCardPatch: { ...normalizedParsed.leadCardPatch, clientPaused: false },
+            dialogueState: { stage: "SCHEDULING_VISIT", status: "need_more_data", nextAction: "schedule_visit" }
+          }
           : { ...normalizedParsed, visitTimeAvailability: decision };
       }
     } catch (error) {
@@ -533,11 +544,11 @@ export class AgentTurnService {
     }
     return visitTimeUnavailableFallback(clientReply)
       ? {
-          ...normalizedParsed,
-          visitTimeAvailability: "unknown",
-          leadCardPatch: { ...normalizedParsed.leadCardPatch, clientPaused: false },
-          dialogueState: { stage: "SCHEDULING_VISIT", status: "need_more_data", nextAction: "schedule_visit" }
-        }
+        ...normalizedParsed,
+        visitTimeAvailability: "unknown",
+        leadCardPatch: { ...normalizedParsed.leadCardPatch, clientPaused: false },
+        dialogueState: { stage: "SCHEDULING_VISIT", status: "need_more_data", nextAction: "schedule_visit" }
+      }
       : normalizedParsed;
   }
 
@@ -746,9 +757,11 @@ export class AgentTurnService {
         reasoning: { enabled: false },
         response_format: { type: "json_object" },
         messages: [
-          { role: "system", content: singleProgrammeOffer
-            ? "Интерпретируй ответ клиента только на серверное предложение продолжить по уже выбранной программе на меньшую сумму. Верни строго JSON {\"choice\":\"keep_car\"|\"parking\"|\"undecided\",\"hasOtherStageAnswer\":boolean,\"question\":string|null}. `keep_car` означает согласие принять предложенный лимит — в том числе «да», «ок», «хорошо», «подходит». `undecided` означает отказ или неясный ответ. `parking` не выбирай, если клиент явно не просит сменить программу на стоянку. Если клиент одновременно задаёт иной вопрос или меняет иной факт, hasOtherStageAnswer=true; question содержит только этот вопрос. Не придумывай выбор."
-            : "Интерпретируй ответ клиента только на серверную развилку лимита: либо снизить сумму по программе без изъятия, либо перейти на охраняемую стоянку. Верни строго JSON {\"choice\":\"keep_car\"|\"parking\"|\"undecided\",\"hasOtherStageAnswer\":boolean,\"question\":string|null}. `parking` — клиент выбирает стоянку: «стоянка», «на стоянку», «парковка», «со стоянкой». `keep_car` — без изъятия или уменьшение суммы: «без изъятия», «оставляю машину у себя», «уменьшаем сумму»; а также ясное согласие И ясный отказ на эту развилку — в обоих случаях сервер оставляет без изъятия и снижает сумму до предложенного лимита. Если клиент одновременно задаёт иной вопрос или меняет иной факт, hasOtherStageAnswer=true; question содержит только этот вопрос. Не придумывай выбор." },
+          {
+            role: "system", content: singleProgrammeOffer
+              ? "Интерпретируй ответ клиента только на серверное предложение продолжить по уже выбранной программе на меньшую сумму. Верни строго JSON {\"choice\":\"keep_car\"|\"parking\"|\"undecided\",\"hasOtherStageAnswer\":boolean,\"question\":string|null}. `keep_car` означает согласие принять предложенный лимит — в том числе «да», «ок», «хорошо», «подходит». `undecided` означает отказ или неясный ответ. `parking` не выбирай, если клиент явно не просит сменить программу на стоянку. Если клиент одновременно задаёт иной вопрос или меняет иной факт, hasOtherStageAnswer=true; question содержит только этот вопрос. Не придумывай выбор."
+              : "Интерпретируй ответ клиента только на серверную развилку лимита: либо снизить сумму по программе без изъятия, либо перейти на охраняемую стоянку. Верни строго JSON {\"choice\":\"keep_car\"|\"parking\"|\"undecided\",\"hasOtherStageAnswer\":boolean,\"question\":string|null}. `parking` — клиент выбирает стоянку: «стоянка», «на стоянку», «парковка», «со стоянкой». `keep_car` — без изъятия или уменьшение суммы: «без изъятия», «оставляю машину у себя», «уменьшаем сумму»; а также ясное согласие И ясный отказ на эту развилку — в обоих случаях сервер оставляет без изъятия и снижает сумму до предложенного лимита. Если клиент одновременно задаёт иной вопрос или меняет иной факт, hasOtherStageAnswer=true; question содержит только этот вопрос. Не придумывай выбор."
+          },
           { role: "user", content: JSON.stringify({ limitOffer: lastAssistant, clientReply }) }
         ]
       }, { timeoutMs: this.config.routerAiTimeoutMs, signal: input.signal });
@@ -966,9 +979,11 @@ export class AgentTurnService {
         reasoning: { enabled: false },
         response_format: { type: "json_object" },
         messages: [
-          { role: "system", content: parkingAlternative
-            ? "Определи смысл ответа клиента относительно текущего вопроса AI, который передан отдельным полем activeQuestion. Это предложение перейти на программу со стоянкой вместо поручителя. Верни строго JSON {\"decision\":\"accept\"|\"reject\"|\"has_guarantor\"|\"undecided\",\"question\":string|null}. Явное согласие на стоянку, включая «Понял, стоянка тогда», «тогда на стоянку», «давайте на стоянку», а также уточнение уже выбранной программы «Но у меня стоянка» или короткое «д стоянка же» (опечатка «да»), — accept. Если клиент сообщает, что поручитель у него есть («есть поручитель», «поручитель имеется», «приведу поручителя», «найду поручителя»), — has_guarantor: это не вопрос и не отказ от стоянки; продолжаем по прежней программе без изъятия. Критично: «нет, найду поручителя» означает has_guarantor. Первое «нет» отклоняет только стоянку, а обещание найти поручителя определяет итог; не считай такую реплику вопросом или отказом от поручителя. Определяй ответ на activeQuestion по первой ясной части реплики даже если после неё клиент задал отдельный вопрос: «ок. а сколько денег дадите» — decision=accept. В question верни дословно отдельный вопрос клиента без части согласия; если вопроса нет — null. Нейтральная, несвязанная, оценочная или бессмысленная реплика без ясного согласия или отказа — undecided. Не додумывай согласие или отказ. Не добавляй текст."
-            : "Определи смысл ответа клиента относительно текущего вопроса AI, который передан отдельным полем activeQuestion: есть ли у него требуемый поручитель. Верни строго JSON {\"decision\":\"accept\"|\"reject\"|\"clarification\"|\"undecided\"}. Ответы «найду», «приведу», «организую», «будет человек», обещание найти или привести поручителя означают accept. Отсутствие поручителя или отказ искать — reject. Если клиент уточняет, о каком поручителе речь, зачем он нужен или какие к нему требования (например, «какой такой?», «что за поручитель?», «зачем он?»), — clarification; это не самостоятельный FAQ-вопрос. Нейтральная, несвязанная, оценочная или бессмысленная реплика без ясного смысла — undecided. Не додумывай согласие или отказ. Не добавляй текст." },
+          {
+            role: "system", content: parkingAlternative
+              ? "Определи смысл ответа клиента относительно текущего вопроса AI, который передан отдельным полем activeQuestion. Это предложение перейти на программу со стоянкой вместо поручителя. Верни строго JSON {\"decision\":\"accept\"|\"reject\"|\"has_guarantor\"|\"undecided\",\"question\":string|null}. Явное согласие на стоянку, включая «Понял, стоянка тогда», «тогда на стоянку», «давайте на стоянку», а также уточнение уже выбранной программы «Но у меня стоянка» или короткое «д стоянка же» (опечатка «да»), — accept. Если клиент сообщает, что поручитель у него есть («есть поручитель», «поручитель имеется», «приведу поручителя», «найду поручителя»), — has_guarantor: это не вопрос и не отказ от стоянки; продолжаем по прежней программе без изъятия. Критично: «нет, найду поручителя» означает has_guarantor. Первое «нет» отклоняет только стоянку, а обещание найти поручителя определяет итог; не считай такую реплику вопросом или отказом от поручителя. Определяй ответ на activeQuestion по первой ясной части реплики даже если после неё клиент задал отдельный вопрос: «ок. а сколько денег дадите» — decision=accept. В question верни дословно отдельный вопрос клиента без части согласия; если вопроса нет — null. Нейтральная, несвязанная, оценочная или бессмысленная реплика без ясного согласия или отказа — undecided. Не додумывай согласие или отказ. Не добавляй текст."
+              : "Определи смысл ответа клиента относительно текущего вопроса AI, который передан отдельным полем activeQuestion: есть ли у него требуемый поручитель. Верни строго JSON {\"decision\":\"accept\"|\"reject\"|\"clarification\"|\"undecided\"}. Ответы «найду», «приведу», «организую», «будет человек», обещание найти или привести поручителя означают accept. Отсутствие поручителя или отказ искать — reject. Если клиент уточняет, о каком поручителе речь, зачем он нужен или какие к нему требования (например, «какой такой?», «что за поручитель?», «зачем он?»), — clarification; это не самостоятельный FAQ-вопрос. Нейтральная, несвязанная, оценочная или бессмысленная реплика без ясного смысла — undecided. Не додумывай согласие или отказ. Не добавляй текст."
+          },
           { role: "user", content: JSON.stringify({ activeQuestion, lastAssistantReply: lastAssistant, clientReply: currentReply }) }
         ]
       }, { timeoutMs: this.config.routerAiTimeoutMs, signal: input.signal });
@@ -1266,6 +1281,10 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     residenceRegion: _modelResidenceRegion,
     residenceCategory: _modelResidenceCategory,
     residenceNeedsClarification: _modelResidenceNeedsClarification,
+    // Vehicle type is an eligibility stop factor. It must come only from an
+    // explicit client text statement below, never from OCR or an image seen
+    // by the multimodal dialogue model.
+    vehicleType: _modelVehicleType,
     // A visit slot is a server-owned pair. The model may understand a date
     // or time, but it must never create either one—or complete a date-only
     // reply with a guessed time.
@@ -1370,7 +1389,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     // model's generic UNA/owner-registration interpretation of the same
     // sentence.
     ...foreignVehicleRegistrationPatch(semanticText),
-    ...unsupportedVehicleTypePatch(semanticText),
+    ...specialEquipmentVehicleTypePatch(semanticText),
     ...foreignCitizenshipPatch(semanticText),
     ...region10RegistrationPatch(semanticText),
     // A year supplied in response to the exact future-year correction is a
@@ -1547,7 +1566,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     ? "К сожалению, нет. Мы принимаем в залог только автомобили, зарегистрированные в Кыргызской Республике."
     : undefined;
   const unsupportedVehicleTypeNotice = isUnsupportedVehicleType(effectiveFacts)
-    ? "К сожалению, мы принимаем в залог только легковые автомобили. Если у Вас есть легковой автомобиль или минивэн, мы готовы продолжить рассмотрение заявки."
+    ? "К сожалению, спецтехнику мы не принимаем в залог."
     : undefined;
   const foreignCitizenNotice = isForeignCitizen(effectiveFacts)
     ? "К сожалению, займ оформляется только гражданам Кыргызской Республики."
@@ -1608,10 +1627,10 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     // That direct question must not be hidden by a model's mistaken label of
     // the same turn as a clarification of the pending visit stage.
     : pauseNotice ?? relationshipEligibilityAnswer ?? workflowStageClarification ?? workflowClarificationAnswer ?? mandatoryKnowledgeAnswer ?? contextualAcknowledgement?.text ?? directAnswer ?? removeIncorrectResidenceClarificationProse(
-    removeForbiddenMetaPhrases(dropUnsupportedFallbackForNonQuestion(replaceUnsupportedFallbackWithApprovedAnswer(guardedModelReply, mandatoryKnowledgeAnswer, input), semanticText)),
-    input,
-    effectiveFacts
-  );
+      removeForbiddenMetaPhrases(dropUnsupportedFallbackForNonQuestion(replaceUnsupportedFallbackWithApprovedAnswer(guardedModelReply, mandatoryKnowledgeAnswer, input), semanticText)),
+      input,
+      effectiveFacts
+    );
   // Limits and eligibility are calculated by the server. If an amount is
   // over the selected programme's limit, preserve a normal acknowledgement or
   // FAQ answer but remove the model's competing explanation before adding the
@@ -1623,17 +1642,17 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   const responsePlan = terminalRefusalAnswer
     ? terminalRefusalAnswer
     : relationshipEligibilityAnswer
-    ? appendRequiredWorkflowFollowUp(relationshipEligibilityAnswer, workflowFollowUp)
-    : workflowStageClarification
-    ? appendRequiredWorkflowFollowUp(workflowStageClarification, workflowFollowUp)
-    : appendRequiredWorkflowFollowUp(
-      (contextualAcknowledgement ? undefined : repeatedStageReply) ?? appendContinuationAfterRegion10PolicyQuestion(
-        removeModelWorkflowQuestion(removeQuestionsForKnownLeadFacts(removeUnaskedProgramDetails(removeRepeatedProgramExplanation(enforceFirstContactGreeting(serverSafeAnswer, input), effectiveFacts, input), input, programSelectionOnly), effectiveFacts, input.facts)),
-        input,
-        effectiveFacts
-      ),
-      identityQuestion ? undefined : workflowFollowUp
-    );
+      ? appendRequiredWorkflowFollowUp(relationshipEligibilityAnswer, workflowFollowUp)
+      : workflowStageClarification
+        ? appendRequiredWorkflowFollowUp(workflowStageClarification, workflowFollowUp)
+        : appendRequiredWorkflowFollowUp(
+          (contextualAcknowledgement ? undefined : repeatedStageReply) ?? appendContinuationAfterRegion10PolicyQuestion(
+            removeModelWorkflowQuestion(removeQuestionsForKnownLeadFacts(removeUnaskedProgramDetails(removeRepeatedProgramExplanation(enforceFirstContactGreeting(serverSafeAnswer, input), effectiveFacts, input), input, programSelectionOnly), effectiveFacts, input.facts)),
+            input,
+            effectiveFacts
+          ),
+          identityQuestion ? undefined : workflowFollowUp
+        );
   return {
     ...parsed,
     clientQuestion,
@@ -1645,16 +1664,16 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     dialogueState: effectiveFacts.clientPaused
       ? { stage: "PAUSED", status: "target_reached", nextAction: "pause" }
       : existingContractServiceRequest
-      ? { stage: "EXISTING_CONTRACT_REDIRECT", status: "redirect_existing_contract", nextAction: "redirect_existing_contract" }
-      : accidentNotDrivableNotice
-      ? { stage: "REFUSED", status: "refuse", nextAction: "none" }
-      : unsupportedVehicleTypeNotice || region10RefusalNotice || foreignCitizenNotice
-      ? { stage: "REFUSED", status: "refuse", nextAction: "none" }
-      : foreignVehicleRegistrationNotice
-      ? { stage: "REFUSED", status: "refuse", nextAction: "none" }
-      : region10PolicyQuestion && !input.facts.vehicleRegistrationRegion && parsed.dialogueState.stage === "REFUSED"
-      ? { stage: "COLLECTING_VEHICLE", status: "need_more_data", nextAction: "continue_application" }
-      : parsed.dialogueState,
+        ? { stage: "EXISTING_CONTRACT_REDIRECT", status: "redirect_existing_contract", nextAction: "redirect_existing_contract" }
+        : accidentNotDrivableNotice
+          ? { stage: "REFUSED", status: "refuse", nextAction: "none" }
+          : unsupportedVehicleTypeNotice || region10RefusalNotice || foreignCitizenNotice
+            ? { stage: "REFUSED", status: "refuse", nextAction: "none" }
+            : foreignVehicleRegistrationNotice
+              ? { stage: "REFUSED", status: "refuse", nextAction: "none" }
+              : region10PolicyQuestion && !input.facts.vehicleRegistrationRegion && parsed.dialogueState.stage === "REFUSED"
+                ? { stage: "COLLECTING_VEHICLE", status: "need_more_data", nextAction: "continue_application" }
+                : parsed.dialogueState,
     // Reconciliation belongs to the orchestrator's persistence boundary.
     // The model is the sole owner of conversational meaning and client prose.
     // A limit warning answers a client-provided amount, but must never erase
@@ -1662,8 +1681,8 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     reply: stripMechanicalAcknowledgement(normalizeVehicleRegistrationTerminology(belowMinimumReply ?? moneyRoleReply ?? (rejectedMoneyClarification
       ? "Тогда уточните, какую сумму вы имели в виду?"
       : vehicleNeedClarification
-      ? enforceFirstContactGreeting(vehicleNeedClarification, input)
-      : (modelCurrentStageClarification ? undefined : unresolvedBinaryDecisionReply(input, effectiveFacts, loanQuestionKind)) ?? visitNonWorkingDay ?? visitTimeClarification ?? responsePlan)))
+        ? enforceFirstContactGreeting(vehicleNeedClarification, input)
+        : (modelCurrentStageClarification ? undefined : unresolvedBinaryDecisionReply(input, effectiveFacts, loanQuestionKind)) ?? visitNonWorkingDay ?? visitTimeClarification ?? responsePlan)))
   };
 }
 
@@ -1684,9 +1703,9 @@ function reconcileExplicitMoneyRoles(values: NormalizedMoneyValue[], text: strin
 
   const reconciled = deterministic.vehicleValue !== undefined && deterministic.requestedAmount !== undefined
     ? [
-        ...(vehicle ? [{ field: "vehicleValue" as const, amount: deterministic.vehicleValue, currency: vehicleCurrency, confidence: Math.max(vehicle.confidence, deterministic.vehicleValueConfidence) }] : []),
-        ...(requested ? [{ field: "requestedAmount" as const, amount: deterministic.requestedAmount, currency: requestedCurrency, confidence: Math.max(requested.confidence, deterministic.requestedAmountConfidence) }] : [])
-      ]
+      ...(vehicle ? [{ field: "vehicleValue" as const, amount: deterministic.vehicleValue, currency: vehicleCurrency, confidence: Math.max(vehicle.confidence, deterministic.vehicleValueConfidence) }] : []),
+      ...(requested ? [{ field: "requestedAmount" as const, amount: deterministic.requestedAmount, currency: requestedCurrency, confidence: Math.max(requested.confidence, deterministic.requestedAmountConfidence) }] : [])
+    ]
     : values;
 
   const reconciledVehicle = reconciled.find((value) => value.field === "vehicleValue");
@@ -1781,15 +1800,18 @@ function isForeignVehicleRegistration(facts: ApplicationFacts): boolean {
   return Boolean(country && !["kg", "кр", "кыргызстан", "кыргызская республика"].includes(country));
 }
 
-function unsupportedVehicleTypePatch(text: string | undefined): Partial<ApplicationFacts> {
+/** Vehicle type is intentionally derived only from client text. In
+ * particular, do not infer it from STS/ID OCR or vehicle photographs. */
+function specialEquipmentVehicleTypePatch(text: string | undefined): Partial<ApplicationFacts> {
   const normalized = text?.toLocaleLowerCase("ru-RU") ?? "";
-  const type = /(?:грузов(?:ик|ая)?|фура|автобус|спецтехник\p{L}*|трактор\p{L}*|экскаватор\p{L}*|мотоцикл\p{L}*|скутер\p{L}*|лодк\p{L}*|катер\p{L}*|прицеп\p{L}*)/iu.exec(normalized)?.[0];
-  return type ? { vehicleType: type } : {};
+  return /(?:спец(?:иальн\p{L}*\s*)?техник\p{L}*|трактор\p{L}*|экскаватор\p{L}*|бульдозер\p{L}*|погрузчик\p{L}*|автокран\p{L}*|комбайн\p{L}*|грейдер\p{L}*|асфальтоукладчик\p{L}*)/iu.test(normalized)
+    ? { vehicleType: "special_equipment" }
+    : {};
 }
 
 function isUnsupportedVehicleType(facts: ApplicationFacts): boolean {
   const type = facts.vehicleType?.trim().toLocaleLowerCase("ru-RU");
-  return Boolean(type && !["car", "passenger_car", "minivan", "легковой автомобиль", "минивэн"].includes(type));
+  return Boolean(type && ["special_equipment", "спецтехника", "трактор", "экскаватор", "бульдозер", "погрузчик", "автокран", "комбайн", "грейдер", "асфальтоукладчик"].includes(type));
 }
 
 function foreignCitizenshipPatch(text: string | undefined): Partial<ApplicationFacts> {
@@ -2181,10 +2203,11 @@ function visitConfirmationNotice(input: Pick<AgentTurnInput, "settings">, previo
   void timezone;
   return [
     `Записываю Вас на ${weekday}, ${displayDate}, в ${current.visitTime}.`,
-    "Запись предварительная, её подтвердит менеджер.",
     `Адрес: ${address}`,
     `2ГИС: ${twoGis}`,
     `Google Maps: ${googleMaps}`,
+    "",
+    "Запись предварительная, её подтвердит менеджер.",
     visitRequirementsReminder(current)
   ].filter(Boolean).join("\n");
 }
@@ -3410,7 +3433,25 @@ function requiresKnowledgeAnswer(input: Pick<AgentTurnInput, "text" | "currentTu
 function isLikelyKnowledgeQuestion(text: string): boolean {
   if (/[?？]/u.test(text)) return true;
   if (wordCount(text) < 2) return false;
-  return /^(?:(?:(?:а|и|ну)\s+)?(?:есть|можно|сколько|какой|какая|какие|где|когда|как|работает|ставите|нужн(?:о|а|ы)?|дадите|оформить|оформлю|приеду)(?=\s|$)|(?:авто|машин).{0,40}(?:кредит|залоге|арест|ограничен)|(?:датчик|gps|гпс|трекер|парковк|стоянк|вещ|багаж)|(?:(?:а|и|ну|с)\s+)?(?:кофе|чай|wi-?fi|туалет|соб[ао](?:а)?к\p{L}*|животн\p{L}*).{0,60}(?:есть|можно\p{L}*|пуска\p{L}*|разреш\p{L}*))/iu.test(text.trim());
+  return /^(?:(?:(?:а|и|ну)\s+)?(?:есть|можно|сколько|какой|какая|какие|где|когда|как|работает|ставите|нужн(?:о|а|ы)?|дадите|оформить|оформлю|приеду)(?=\s|$)|(?:так\s+)?что\s+делать(?:\s+дальше)?|(?:авто|машин).{0,40}(?:кредит|залоге|арест|ограничен)|(?:датчик|gps|гпс|трекер|парковк|стоянк|вещ|багаж)|(?:(?:а|и|ну|с)\s+)?(?:кофе|чай|wi-?fi|туалет|соб[ао](?:а)?к\p{L}*|животн\p{L}*).{0,60}(?:есть|можно\p{L}*|пуска\p{L}*|разреш\p{L}*))/iu.test(text.trim());
+}
+
+/** A policy candidate is deliberately narrow: the model decides whether the
+ * new message continues it, while the server decides which prior policies are
+ * safe to offer as such context. */
+function contextualKnowledgePolicy(messages: Stage1Message[], text: string): ContextualKnowledgePolicy | undefined {
+  if (!isShortContextualQuestion(text)) return undefined;
+  const lastAssistant = [...messages].reverse().find((message) => message.author === "ai")?.body ?? "";
+  if (!/(?:автомобил[ья]?\s+с\s+)?регион(?:ом)?\s*10.{0,80}(?:не\s+принимаем|не\s+оформля\p{L}*|не\s+сможем\s+продолжить)/iu.test(lastAssistant)) return undefined;
+  return {
+    key: "region_10_refusal",
+    approvedAnswer: "К сожалению, по автомобилю с регионом 10 мы не сможем продолжить оформление. Если у Вас есть другой автомобиль без региона 10, можете сообщить его модель, год выпуска, ориентировочную стоимость и нужную сумму займа."
+  };
+}
+
+function isShortContextualQuestion(text: string): boolean {
+  const normalized = text.trim();
+  return normalized.length > 0 && normalized.length <= 160 && (/[?？]/u.test(normalized) || /(?:так\s+)?что\s+делать|почему|зачем|а\s+что\s+теперь|как\s+быть|можно\s+иначе/iu.test(normalized));
 }
 
 /** A broad office/amenities snippet must never be used to invent a service

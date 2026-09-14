@@ -49,9 +49,7 @@ export function LeadCard({ application, attachments = [] }: Readonly<{ applicati
   const facts = application?.facts ?? {};
   return (
     <dl className="lead">
-      <Field label="ID заявки" value={application?.id} />
-      <Field label="Этап" value={translateStage(application?.stage)} />
-      <Field label="Статус" value={translateStatus(application?.status)} />
+      <Field label="ID заявки" value={application?.publicId ?? application?.id} />
       <Field label="ФИО" value={facts.fullName} />
       <Field label="Телефон" value={facts.phone} />
       <Field label="Язык" value={facts.language} />
@@ -66,7 +64,6 @@ export function LeadCard({ application, attachments = [] }: Readonly<{ applicati
       <Field label="Поручитель" value={translateBoolean(facts.guarantorAvailable)} />
       <Field label="Документы" value={attachments.map((attachment) => `${translateAttachmentType(attachment.type)}: ${translateStatus(attachment.status)}`).join(", ")} />
       <Field label="Визит" value={[facts.visitDate, facts.visitTime].filter(Boolean).join(" ")} />
-      <Field label="Следующее действие" value={translateNextAction(application?.decision?.nextAction)} />
     </dl>
   );
 }
@@ -164,28 +161,6 @@ function translateStatus(status?: string): string {
   return map[value.toLowerCase()] ?? value;
 }
 
-function translateStage(stage?: string): string {
-  const value = stage ?? "unknown";
-  const map: Record<string, string> = {
-    NEW: "Новая заявка",
-    COLLECTING_VEHICLE: "Сбор данных об автомобиле",
-    COLLECTING_VALUE: "Сбор стоимости",
-    COLLECTING_AMOUNT: "Сбор суммы",
-    COLLECTING_RESIDENCE: "Сбор прописки",
-    ELIGIBILITY_CHECK: "Проверка условий",
-    COLLECTING_DOCUMENTS: "Сбор документов",
-    COLLECTING_FAMILY_STATUS: "Семейное положение",
-    CHECKING_GUARANTOR: "Проверка поручителя",
-    SCHEDULING_VISIT: "Согласование визита",
-    TARGET_REACHED_DOCUMENTS: "Цель достигнута: документы",
-    TARGET_REACHED_VISIT: "Цель достигнута: визит",
-    REFUSED: "Отказ",
-    PAUSED: "Пауза",
-    EXISTING_CONTRACT_REDIRECT: "Действующий договор"
-  };
-  return map[value] ?? value;
-}
-
 function translateProgram(program?: unknown): string {
   if (typeof program !== "string") return "Не указана";
   return ({
@@ -198,23 +173,6 @@ function translateBoolean(value: unknown): string {
   if (value === true) return "Да";
   if (value === false) return "Нет";
   return "Не указано";
-}
-
-function translateNextAction(value: unknown): string {
-  if (typeof value !== "string") return displayValue(value);
-  const map: Record<string, string> = {
-    ask_vehicle: "Запросить данные об автомобиле",
-    ask_vehicle_value: "Запросить стоимость автомобиля",
-    ask_amount: "Запросить нужную сумму",
-    ask_residence: "Запросить прописку",
-    ask_documents: "Запросить документы",
-    ask_family_status: "Запросить семейное положение",
-    ask_visit: "Согласовать визит",
-    refuse: "Сообщить отказ",
-    pause: "Остановить до продолжения клиента",
-    redirect_existing_contract: "Перенаправить к сотрудникам"
-  };
-  return map[value] ?? value;
 }
 
 function translateAttachmentType(value: unknown): string {

@@ -227,10 +227,10 @@ const scenarios = [
   },
   {
     id: "TC-021",
-    title: "Мотоцикл или другой неподдерживаемый транспорт",
-    steps: [{ message: "Хочу заложить мотоцикл." }],
+    title: "Спецтехника",
+    steps: [{ message: "Хочу заложить экскаватор." }],
     check: ({ lastReply }) =>
-      includesAll(lastReply, ["только под легковые автомобили и минивэны"])
+      includesAll(lastReply, ["спецтехнику мы не принимаем"])
   },
   {
     id: "TC-022",

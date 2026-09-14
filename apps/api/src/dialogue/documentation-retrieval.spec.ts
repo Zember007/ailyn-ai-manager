@@ -202,9 +202,9 @@ describe("selectRelevantDocumentation", () => {
   });
 
   it("provides the approved refusal for an unsupported vehicle type", () => {
-    const result = selectRelevantDocumentation({ facts: {}, currentMessage: "У меня мотоцикл", messages: [] });
+    const result = selectRelevantDocumentation({ facts: {}, currentMessage: "У меня экскаватор", messages: [] });
 
-    expect(result.mandatoryAnswer).toBe("К сожалению, мы принимаем в залог только легковые автомобили. Если у Вас есть легковой автомобиль или минивэн, мы готовы продолжить рассмотрение заявки.");
+    expect(result.mandatoryAnswer).toBe("К сожалению, спецтехнику мы не принимаем в залог.");
   });
 
   it("retrieves the free-evaluation answer instead of an unrelated application chunk", () => {

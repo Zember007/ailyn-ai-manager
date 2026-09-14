@@ -219,19 +219,47 @@ describe("single-agent dialogue", () => {
     expect(output.reply).not.toContain("зарегистрирован в УНА");
   });
 
-  it("refuses an unsupported vehicle type without appending a workflow question", async () => {
+  it("refuses explicitly stated special equipment without appending a workflow question", async () => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
       ...validResult, reply: "Распознано.", leadCardPatch: {}
     }) } }] }) } as any;
 
     const output = await new AgentTurnService(client).run({
-      messages: [], facts: {}, settings: {}, text: "У меня мотоцикл", attachments: []
+      messages: [], facts: {}, settings: {}, text: "У меня экскаватор", attachments: []
     });
 
-    expect(output.result.leadCardPatch).toMatchObject({ vehicleType: "мотоцикл" });
+    expect(output.result.leadCardPatch).toMatchObject({ vehicleType: "special_equipment" });
     expect(output.result.dialogueState).toMatchObject({ stage: "REFUSED", status: "refuse" });
-    expect(output.reply).toContain("К сожалению, мы принимаем в залог только легковые автомобили.");
+    expect(output.reply).toContain("К сожалению, спецтехнику мы не принимаем в залог.");
     expect(output.reply).not.toMatch(/подскажите|какая сумма|в какое время/iu);
+  });
+
+  it.each([
+    ["документ", "Загрузил техпаспорт"],
+    ["фото автомобиля", "Загрузил фото автомобиля"]
+  ])("does not take the vehicle type from %s", async (_source, text) => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult, reply: "Распознано.", leadCardPatch: { vehicleType: "special_equipment" }
+    }) } }] }) } as any;
+
+    const output = await new AgentTurnService(client).run({
+      messages: [], facts: {}, settings: {}, text, attachments: [{ id: "upload", mimeType: "image/jpeg" }]
+    });
+
+    expect(output.result.leadCardPatch.vehicleType).toBeUndefined();
+    expect(output.result.dialogueState.stage).not.toBe("REFUSED");
+    expect(output.reply).not.toContain("спецтехнику мы не принимаем");
+  });
+
+  it.each(["грузовик", "пикап", "микроавтобус", "скутер"]) ("does not refuse an eligible %s", async (vehicle) => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult, reply: "Распознано.", leadCardPatch: { vehicleType: "special_equipment" }
+    }) } }] }) } as any;
+
+    const output = await new AgentTurnService(client).run({ messages: [], facts: {}, settings: {}, text: `У меня ${vehicle}`, attachments: [] });
+
+    expect(output.result.leadCardPatch.vehicleType).toBeUndefined();
+    expect(output.result.dialogueState.stage).not.toBe("REFUSED");
   });
 
   it("does not repeat a prior vehicle-type refusal after an acknowledgement", async () => {
@@ -240,12 +268,12 @@ describe("single-agent dialogue", () => {
     }) } }] }) } as any;
 
     const output = await new AgentTurnService(client).run({
-      messages: [{ author: "ai", body: "К сожалению, мы принимаем в залог только легковые автомобили.", createdAt: "now" } as any],
-      facts: { vehicleType: "грузовик" } as any, settings: {}, text: "ок", attachments: []
+      messages: [{ author: "ai", body: "К сожалению, спецтехнику мы не принимаем в залог.", createdAt: "now" } as any],
+      facts: { vehicleType: "special_equipment" } as any, settings: {}, text: "ок", attachments: []
     });
 
     expect(output.result.leadCardPatch.vehicleType).toBeUndefined();
-    expect(output.reply).not.toContain("мы принимаем в залог только легковые автомобили");
+    expect(output.reply).not.toContain("спецтехнику мы не принимаем");
     expect(output.result.dialogueState.stage).not.toBe("REFUSED");
   });
 
@@ -255,13 +283,13 @@ describe("single-agent dialogue", () => {
     }) } }] }) } as any;
 
     const output = await new AgentTurnService(client).run({
-      messages: [{ author: "ai", body: "К сожалению, мы принимаем в залог только легковые автомобили.", createdAt: "now" } as any],
-      facts: { vehicleType: "скутер" } as any, settings: {}, text: "У меня Камри", attachments: []
+      messages: [{ author: "ai", body: "К сожалению, спецтехнику мы не принимаем в залог.", createdAt: "now" } as any],
+      facts: { vehicleType: "special_equipment" } as any, settings: {}, text: "У меня Камри", attachments: []
     });
 
     expect(output.result.leadCardPatch).toMatchObject({ vehicleModel: "Camry" });
     expect(output.result.leadCardPatch.vehicleType).toBeUndefined();
-    expect(output.reply).not.toContain("мы принимаем в залог только легковые автомобили");
+    expect(output.reply).not.toContain("спецтехнику мы не принимаем");
     expect(output.result.dialogueState.stage).not.toBe("REFUSED");
   });
 
@@ -277,6 +305,42 @@ describe("single-agent dialogue", () => {
 
     expect(output?.reply).toBe("Для оформления займа автомобиль должен быть зарегистрирован в УНА на человека, который обращается за займом.");
     expect(output?.reply).not.toMatch(/^да[.!]?/iu);
+  });
+
+  it("uses only the preceding region-10 policy for a contextual follow-up", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      reply: "По общему правилу автомобили старше 15 лет рассматриваются на стоянке.",
+      answerFound: true,
+      contextualPolicyRelation: "follow_up"
+    }) } }] }) } as any;
+    const service = new AgentTurnService(client);
+
+    const output = await service.answerWithKnowledge({
+      messages: [{ author: "ai", body: "По автомобилям с регионом 10 компания займ не оформляет.", createdAt: "now" } as any],
+      facts: { vehicleRegistrationRegion: "10" }, settings: {}, text: "так что делать", workflowFollowUp: ""
+    });
+
+    expect(output?.reply).toBe("К сожалению, по автомобилю с регионом 10 мы не сможем продолжить оформление. Если у Вас есть другой автомобиль без региона 10, можете сообщить его модель, год выпуска, ориентировочную стоимость и нужную сумму займа.");
+    expect(output?.reply).not.toMatch(/15\s*лет|стоянк/iu);
+    const context = JSON.parse(client.createChatCompletion.mock.calls[0][0].messages[1].content);
+    expect(context.contextualPolicy).toMatchObject({ key: "region_10_refusal" });
+  });
+
+  it("keeps a new rate question independent after a region-10 refusal", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      reply: "По программе без изъятия ставка определяется индивидуально после осмотра.",
+      answerFound: true,
+      contextualPolicyRelation: "new_question"
+    }) } }] }) } as any;
+    const service = new AgentTurnService(client);
+
+    const output = await service.answerWithKnowledge({
+      messages: [{ author: "ai", body: "К сожалению, автомобили с регионом 10 мы не принимаем в залог.", createdAt: "now" } as any],
+      facts: { vehicleRegistrationRegion: "10" }, settings: {}, text: "какая ставка?", workflowFollowUp: ""
+    });
+
+    expect(output?.reply).toContain("ставка определяется индивидуально");
+    expect(JSON.parse(client.createChatCompletion.mock.calls[0][0].messages[1].content).contextualPolicy).toMatchObject({ key: "region_10_refusal" });
   });
 
   it.each([

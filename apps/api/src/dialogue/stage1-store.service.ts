@@ -28,6 +28,7 @@ export interface Stage1Message {
 
 export interface Stage1Application {
   id: string;
+  publicId?: string;
   conversationId: string;
   contactId: string;
   status: DecisionResult["status"];
@@ -170,28 +171,7 @@ export class Stage1StoreService {
     externalContactId: string;
     externalConversationId: string;
   }): Promise<Stage1Conversation> {
-    const contact = await this.prisma.contact.create({
-      data: {
-        externalContactId: input.externalContactId,
-        metadata: toJson({ source: toPrismaChannel(input.channel) })
-      }
-    });
-    const conversation = await this.prisma.conversation.create({
-      data: {
-        contactId: contact.id,
-        channel: toPrismaChannel(input.channel),
-        externalConversationId: input.externalConversationId,
-        metadata: toJson({ source: toPrismaChannel(input.channel) }),
-        applications: {
-          create: {
-            contactId: contact.id,
-            state: "NEW",
-            metadata: toJson({ status: "need_more_data" })
-          }
-        }
-      },
-      include: conversationInclude()
-    });
+    const conversation = await this.createConversationWithApplication(input);
     await this.recordAudit("conversation.created", "Conversation", conversation.id, { externalConversationId: input.externalConversationId });
     return this.mapConversation(conversation);
   }
@@ -229,14 +209,11 @@ export class Stage1StoreService {
   }
 
   async createNewApplication(conversation: Stage1Conversation, previousFacts: ApplicationFacts): Promise<Stage1Application> {
-    const saved = await this.prisma.application.create({
-      data: {
-        contactId: conversation.contactId,
-        conversationId: conversation.id,
-        state: "NEW",
-        metadata: { status: "need_more_data" }
-      },
-      include: applicationInclude()
+    const saved = await this.createApplicationWithPublicId({
+      contactId: conversation.contactId,
+      conversationId: conversation.id,
+      state: "NEW",
+      metadata: { status: "need_more_data" }
     });
     await this.updateFacts(this.mapApplication(saved), {
       fullName: previousFacts.fullName,
@@ -500,6 +477,7 @@ export class Stage1StoreService {
     const metadata = asRecord(application.metadata);
     return {
       id: application.id,
+      publicId: application.publicId ?? undefined,
       conversationId: application.conversationId ?? "",
       contactId: application.contactId ?? "",
       status: (metadata.status as DecisionResult["status"]) ?? "need_more_data",
@@ -517,6 +495,66 @@ export class Stage1StoreService {
       createdAt: application.createdAt.toISOString(),
       updatedAt: application.updatedAt.toISOString()
     };
+  }
+
+  private async createConversationWithApplication(input: {
+    channel: "web-test" | "wazzup";
+    externalContactId: string;
+    externalConversationId: string;
+  }) {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        return await this.prisma.$transaction(async (transaction) => {
+          const publicId = await this.nextPublicApplicationId(transaction);
+          const contact = await transaction.contact.create({
+            data: {
+              externalContactId: input.externalContactId,
+              metadata: toJson({ source: toPrismaChannel(input.channel) })
+            }
+          });
+          return transaction.conversation.create({
+            data: {
+              contactId: contact.id,
+              channel: toPrismaChannel(input.channel),
+              externalConversationId: input.externalConversationId,
+              metadata: toJson({ source: toPrismaChannel(input.channel) }),
+              applications: {
+                create: {
+                  publicId,
+                  contactId: contact.id,
+                  state: "NEW",
+                  metadata: toJson({ status: "need_more_data" })
+                }
+              }
+            },
+            include: conversationInclude()
+          });
+        }, { isolationLevel: "Serializable" });
+      } catch (error) {
+        if (attempt === 2 || !isRetriableApplicationIdConflict(error)) throw error;
+      }
+    }
+    throw new Error("Unable to allocate a public application ID");
+  }
+
+  private async nextPublicApplicationId(client: Pick<PrismaService, "application"> = this.prisma): Promise<string> {
+    const prefix = publicApplicationIdPrefix(new Date());
+    const count = await client.application.count({ where: { publicId: { startsWith: `${prefix}-` } } });
+    return `${prefix}-${count + 1}`;
+  }
+
+  private async createApplicationWithPublicId(data: Prisma.ApplicationUncheckedCreateInput) {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        return await this.prisma.application.create({
+          data: { ...data, publicId: await this.nextPublicApplicationId() },
+          include: applicationInclude()
+        });
+      } catch (error) {
+        if (attempt === 2 || !isRetriableApplicationIdConflict(error)) throw error;
+      }
+    }
+    throw new Error("Unable to allocate a public application ID");
   }
 
   private mapAttachment(
@@ -576,6 +614,23 @@ function toPrismaChannel(channel: "web-test" | "wazzup"): MessageChannel {
 
 function fromPrismaChannel(channel: MessageChannel): "web-test" | "wazzup" {
   return channel === "wazzup" ? "wazzup" : "web-test";
+}
+
+function publicApplicationIdPrefix(date: Date): string {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Bishkek",
+    day: "2-digit",
+    month: "2-digit",
+    year: "2-digit"
+  }).formatToParts(date);
+  const value = (type: "day" | "month" | "year") => parts.find((part) => part.type === type)?.value;
+  return `${value("day")}-${value("month")}-${value("year")}`;
+}
+
+function isRetriableApplicationIdConflict(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const code = "code" in error ? error.code : undefined;
+  return code === "P2002" || code === "P2034";
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

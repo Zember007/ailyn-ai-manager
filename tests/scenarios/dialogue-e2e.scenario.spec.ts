@@ -187,13 +187,13 @@ describe.skip("Legacy deterministic dialogue pipeline scenarios", () => {
     expect(answer).not.toContain("Подскажите, пожалуйста, модель и год выпуска автомобиля.");
   });
 
-  it("refuses unsupported motorcycle collateral", async () => {
+  it("refuses special-equipment collateral", async () => {
     const dialogue = new DialogueHarness();
 
-    const answer = await dialogue.send("Меня зовут Иванов Иван Иванович, телефон +996 555 123 456. Хочу займ под мото, стоит 300к");
+    const answer = await dialogue.send("Меня зовут Иванов Иван Иванович, телефон +996 555 123 456. Хочу займ под экскаватор, стоит 300к");
 
     expect(dialogue.currentDecision.status).toBe("refuse");
-    expect(answer).toContain("только под легковые автомобили и минивэны");
+    expect(answer).toContain("спецтехнику мы не принимаем");
   });
 
   it("requires a guarantor for other-region without-storage applications", async () => {

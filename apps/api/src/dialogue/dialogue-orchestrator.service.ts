@@ -127,11 +127,12 @@ export class DialogueOrchestratorService {
       && Boolean(turn.result)
       && hasMaximumLoanPrerequisites(turn.result!.leadCardPatch);
     const maximumLoanQuestion = currentMaximumLoanQuestion || deferredMaximumLoanAnswer;
+    const contextualKnowledgeFollowUp = isContextualKnowledgeFollowUp(modelMessages, text);
     // A maximum-limit question has an approved KB answer and a server-owned
     // calculation template. It must reach that path even when the workflow
     // model failed to set `needsKnowledgeLookup`; otherwise the stage prompt
     // below replaces the answer the client actually asked for.
-    if (((knowledgeRequest?.required ?? turn.result?.needsKnowledgeLookup) || maximumLoanQuestion) && turn.result) {
+    if (((knowledgeRequest?.required ?? turn.result?.needsKnowledgeLookup) || maximumLoanQuestion || contextualKnowledgeFollowUp) && turn.result) {
       const { knowledgeRequest: _knowledgeRequest, ...turnFacts } = turn.result.leadCardPatch;
       const factsForWorkflow = { ...normalizedFacts, ...turnFacts };
       const canonicalWorkflowFollowUp = nextRequiredStageQuestion(
@@ -827,6 +828,17 @@ export function removeEarlierDuplicateSentences(reply: string): string {
     .replace(/\n{3,}/gu, "\n\n")
     .replace(/[ \t]{2,}/gu, " ")
     .trim();
+}
+
+/** Route a terse follow-up after the region-10 refusal to the knowledge
+ * model even if the main dialogue model did not recognise it as a FAQ. The
+ * knowledge model receives the prior policy and decides whether this is a
+ * continuation or an independent new question. */
+function isContextualKnowledgeFollowUp(messages: Stage1Message[], text: string): boolean {
+  const normalized = text.trim();
+  if (!normalized || normalized.length > 160 || !(/(?:так\s+)?что\s+делать|почему|зачем|а\s+что\s+теперь|как\s+быть|можно\s+иначе|[?？]/iu.test(normalized))) return false;
+  const lastAssistant = [...messages].reverse().find((message) => message.author === "ai")?.body ?? "";
+  return /(?:автомобил[ья]?\s+с\s+)?регион(?:ом)?\s*10.{0,80}(?:не\s+принимаем|не\s+оформля\p{L}*|не\s+сможем\s+продолжить)/iu.test(lastAssistant);
 }
 
 // Public compatibility symbols kept while the old orchestration path is removed.

@@ -61,7 +61,9 @@ export type AgentTurnResult = z.infer<typeof agentTurnResultSchema>;
 export type AgentLeadCardPatch = Partial<ApplicationFacts>;
 export const knowledgeAnswerSchema = z.object({
   reply: z.string().min(1).max(4000),
-  answerFound: z.boolean()
+  answerFound: z.boolean(),
+  /** Classification only when the server supplied a previous terminal policy. */
+  contextualPolicyRelation: z.enum(["follow_up", "new_question"]).optional()
 }).strict();
 export type KnowledgeAnswer = z.infer<typeof knowledgeAnswerSchema>;
 export const dialogueSummarySchema = z.object({ summary: z.string().min(1).max(4_000) }).strict();

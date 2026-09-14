@@ -85,6 +85,7 @@ model Conversation {
 
 model Application {
   id             String           @id @default(uuid())
+  publicId       String?          @unique
   contactId      String?
   conversationId String?
   state          ApplicationState @default(NEW)

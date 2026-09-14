@@ -47,6 +47,7 @@ export interface Stage1Attachment {
 
 export interface Stage1Application {
   id: string;
+  publicId?: string;
   conversationId: string;
   contactId: string;
   status: string;

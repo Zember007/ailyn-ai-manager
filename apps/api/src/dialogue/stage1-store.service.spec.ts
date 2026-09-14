@@ -55,6 +55,7 @@ describe("Stage1StoreService", () => {
           applications: [
             {
               id: "app-2",
+              publicId: "28-08-26-1",
               conversationId: "conv-2",
               contactId: "contact-2",
               state: "NEW",
@@ -87,5 +88,6 @@ describe("Stage1StoreService", () => {
     expect(result.isNew).toBe(false);
     expect(result.conversation.id).toBe("conv-2");
     expect(result.application.id).toBe("app-2");
+    expect(result.application.publicId).toBe("28-08-26-1");
   });
 });
