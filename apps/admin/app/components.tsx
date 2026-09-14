@@ -172,7 +172,7 @@ function translateProgram(program?: unknown): string {
 function translateBoolean(value: unknown): string {
   if (value === true) return "Да";
   if (value === false) return "Нет";
-  return "Не указано";
+  return "Не нужен";
 }
 
 function translateAttachmentType(value: unknown): string {
