@@ -25,7 +25,7 @@ const DEFAULT_TWO_GIS_URL = "https://go.2gis.com/Y34m4";
 const DEFAULT_GOOGLE_MAPS_URL = "https://maps.app.goo.gl/9xiWLVvdyRgn3Sx4A";
 const UNKNOWN_KNOWLEDGE_ANSWER = "К сожалению, у меня нет достоверной информации по этому вопросу. Когда Вы приедете, сотрудники с удовольствием подскажут Вам.";
 export const OLDER_VEHICLE_PROGRAM_NOTICE = "По общему правилу мы принимаем в залог автомобили старше 15 лет только на стоянку, но если вы планируете получить займ без изъятия, то мы готовы рассмотреть вашу заявку индивидуально.";
-type ContextualKnowledgePolicy = { key: "region_10_refusal" | "vehicle_registration_una" | "previous_assistant_answer"; approvedAnswer: string };
+type ContextualKnowledgePolicy = { key: "region_10_refusal" | "previous_assistant_answer"; approvedAnswer: string };
 // The complete lead card keeps durable facts, while a compact recent tail is
 // enough to resolve conversational references. Keeping this bounded is one of
 // the few latency levers that does not weaken application validation.
@@ -211,6 +211,11 @@ export class AgentTurnService {
       ? maximumLoanChunk.approvedAnswer
       : undefined;
     const contextualPolicy = contextualKnowledgePolicy(input.messages, input.text ?? "");
+    const knowledge = prioritizedKnowledgeForQuestion({
+      facts: input.facts,
+      currentMessage: input.text,
+      messages: input.messages
+    });
     const context = {
       currentMessage: input.text ?? "",
       currentTurnMessages: input.currentTurnMessages ?? (input.text === undefined ? [] : [{ index: 1, text: input.text }]),
@@ -231,11 +236,7 @@ export class AgentTurnService {
       // Keep the model focused on the approved answer most relevant to this
       // message. The packet always starts with FAQ, then section 3.18 rules,
       // instead of making it search a large, competing corpus by itself.
-      knowledge: prioritizedKnowledgeForQuestion({
-        facts: input.facts,
-        currentMessage: input.text,
-        messages: input.messages
-      })
+      knowledge
     };
     try {
       throwIfAborted(input.signal);
@@ -258,15 +259,13 @@ export class AgentTurnService {
       const hasSeveralQuestions = hasSeveralClientQuestions(input.text ?? "");
       const unsupportedCompanyServiceQuestion = isUnsupportedCompanyServiceQuestion(input.text ?? "") && !documentation.mandatoryAnswer;
       const ungroundedCreditAnswer = isUngroundedVehicleCreditAnswer(parsed.data.reply, input.text ?? "");
-      const answerFound = contextualPolicy?.key === "vehicle_registration_una" || (!ungroundedCreditAnswer
+      const answerFound = !ungroundedCreditAnswer
         && !unsupportedCompanyServiceQuestion
-        && (parsed.data.answerFound || (!hasSeveralQuestions && Boolean(documentation.mandatoryAnswer))));
+        && (parsed.data.answerFound || (!hasSeveralQuestions && Boolean(documentation.mandatoryAnswer)));
       // The office location is server-owned configuration, including live map
       // links, and therefore remains verbatim. Every knowledge-base response
       // comes from the dedicated model and is adapted to the current message.
-      const knowledgeReply = contextualPolicy?.key === "vehicle_registration_una"
-        ? contextualPolicy.approvedAnswer
-        : contextualPolicy?.key === "region_10_refusal" && parsed.data.contextualPolicyRelation === "follow_up"
+      const knowledgeReply = contextualPolicy?.key === "region_10_refusal" && parsed.data.contextualPolicyRelation === "follow_up"
         // The policy is server-approved; keep a model from blending in a
         // semantically nearby but unrelated rule such as the 15-year policy.
         ? contextualPolicy.approvedAnswer
@@ -3486,12 +3485,6 @@ function contextualKnowledgePolicy(messages: Stage1Message[], text: string): Con
     return {
       key: "region_10_refusal",
       approvedAnswer: "К сожалению, по автомобилю с регионом 10 мы не сможем продолжить оформление. Если у Вас есть другой автомобиль без региона 10, можете сообщить его модель, год выпуска, ориентировочную стоимость и нужную сумму займа."
-    };
-  }
-  if (/автомобил\p{L}*\s+должен\s+быть\s+зарегистрир\p{L}*\s+в\s+уна|поставить\s+автомобил\p{L}*\s+на\s+уч[её]т\s+в\s+уна/iu.test(lastAssistant)) {
-    return {
-      key: "vehicle_registration_una",
-      approvedAnswer: "Нет, это обязательное условие: для оформления займа автомобиль должен быть зарегистрирован в УНА на человека, который обращается за займом. Сначала нужно поставить автомобиль на учёт в УНА."
     };
   }
   if (isContextualFollowUpPhrase(text) && lastAssistant.trim()) {
