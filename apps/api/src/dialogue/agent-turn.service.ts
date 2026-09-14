@@ -2235,9 +2235,8 @@ function visitConfirmationNotice(input: Pick<AgentTurnInput, "settings">, previo
     `Адрес: ${address}`,
     `2ГИС: ${twoGis}`,
     `Google Maps: ${googleMaps}`,
-    "",
-    "Запись предварительная, её подтвердит менеджер.",
-    visitRequirementsReminder(current)
+    visitRequirementsReminder(current),
+    "\nЗапись предварительная, её подтвердит менеджер.",
   ].filter(Boolean).join("\n");
 }
 
