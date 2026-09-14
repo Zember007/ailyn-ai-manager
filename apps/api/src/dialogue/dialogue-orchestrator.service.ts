@@ -11,6 +11,7 @@ import { Stage1StoreService, type Stage1Application, type Stage1Conversation, ty
 import { DeferredIntegrationsService } from "./deferred-integrations.service.js";
 import { detectMoneyMentions, formatMoney, formatSomMoney, resolveMoneyFacts, roundSomAmount, type ForeignMoneyCurrencyCode } from "./money-normalization.js";
 import { calculateLoanPricing, calculateLoanRangeDisplayMaximums } from "./loan-pricing.js";
+import { referencesOtherPersonsVehicle } from "./lead-card-ownership.js";
 
 export interface DialogueResult { conversation: Stage1Conversation; application: Stage1Application; reply: string; validation: { passed: boolean; errors: string[] }; routerAiModel: string; promptVersion: string; needsKnowledgeLookup?: boolean; summaryNeedsRefresh?: boolean; }
 export interface DialogueReceiveOptions { signal?: AbortSignal; deferReplyPersistence?: boolean; }
@@ -83,7 +84,7 @@ export class DialogueOrchestratorService {
       : undefined;
     // Keep an invalid low amount out of persisted facts. The agent receives it
     // separately only to form the confirmation or minimum-loan response.
-    const currencyFactsForTurn = belowMinimumRequestedAmount === undefined
+    const currencyFactsForTurn = belowMinimumRequestedAmount === undefined && !referencesOtherPersonsVehicle(text)
       ? discardConflictingSingleMoneyRole(currency.facts, text)
       : {};
     const normalizedFacts = effectiveFactsForTurn({

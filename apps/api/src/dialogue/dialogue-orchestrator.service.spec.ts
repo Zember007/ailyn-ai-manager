@@ -815,6 +815,24 @@ describe("single-agent dialogue", () => {
     expect(reply).not.toMatch(/^И Вам потребуется поручитель:/u);
   });
 
+  it("does not overwrite the lead card with a relative's vehicle", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult,
+      reply: "Да, этот автомобиль тоже можем рассмотреть.",
+      leadCardPatch: { vehicleModel: "Corolla", vehicleYear: 2026 }
+    }) } }] }) } as any;
+    const output = await new AgentTurnService(client).run({
+      messages: [],
+      facts: { vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 2_000_000, requestedAmount: 300_000 } as any,
+      settings: {}, text: "А у меня братишка есть у него королла 2026 года, возьмете ?", attachments: []
+    });
+
+    expect(output.result?.leadCardPatch).toMatchObject({
+      vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 2_000_000, requestedAmount: 300_000
+    });
+    expect(output.result?.leadCardPatch.vehicleModel).not.toBe("Corolla");
+  });
+
   it("does not append the future guarantor question while the amount stage is still open", async () => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
       ...validResult,

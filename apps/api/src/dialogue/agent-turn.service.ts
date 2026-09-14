@@ -13,6 +13,7 @@ import { hasApprovedKnowledgeMatch, isMaximumLoanKnowledgeQuestion, prioritizedK
 import { agentTurnResultSchema, dialogueSummarySchema, knowledgeAnswerSchema, type AgentTurnResult } from "./agent-turn.contracts.js";
 import { moneyNormalizationSchema } from "./pipeline.contracts.js";
 import { calculateLoanPricing, type LoanPricing, type LoanPricingSettings } from "./loan-pricing.js";
+import { referencesOtherPersonsVehicle, removeOtherPersonsVehicleFacts } from "./lead-card-ownership.js";
 import { detectMoneyMentions, formatSomMoney, resolveMoneyFacts, roundSomAmount } from "./money-normalization.js";
 import type { Stage1Message } from "./stage1-store.service.js";
 
@@ -1376,7 +1377,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   // labels «6 октября в 5» as money from replacing the car value with 0
   // after monetary rounding.
   const schedulingVisitReply = isVisitSchedulingReply(input, input.facts);
-  const rawModelPatch = {
+  let rawModelPatch = {
     ...(schedulingVisitReply ? {} : modelMoneyPatchForTurn(modelFactsWithoutResidence, input, parsed.hasMoney, loanQuestionKind)),
     // A refusal is about the current vehicle/client, not a permanent
     // conversation lock. Any new client turn starts a fresh eligibility
@@ -1410,6 +1411,13 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     ...(isClearDocumentsRefusal(input) ? { declinedDocuments: true } : {}),
     ...(isClearCarPhotoRefusal(input) ? { declinedCarPhoto: true } : {})
   };
+  // A vehicle belonging to a relative or another person can be discussed in
+  // the same chat, but it is not an update to this applicant's application.
+  // This runs after every extractor has contributed its patch and before any
+  // fact can affect pricing, stage completion, or persistence.
+  if (referencesOtherPersonsVehicle(semanticText)) {
+    rawModelPatch = removeOtherPersonsVehicleFacts(rawModelPatch);
+  }
   // A guarantor decision has meaning only as an answer to its own active
   // question. A question about another vehicle must not let the broad model
   // erase a confirmed guarantor and send the customer backwards in the flow.
