@@ -47,12 +47,6 @@ export function calculateLoanPricing(facts: ApplicationFacts, settings: LoanPric
   const minimumLoan = numberSetting(settings.minimumLoan, 50_000);
   const value = positiveFinite(facts.vehicleValue);
 
-  const unavailableWithoutStorage: LoanPricing["withoutStorage"] = {
-    available: false,
-    rawMax: null,
-    publicMax: null,
-    ...(residence ? { reason: "vehicle_value_below_other_region_minimum" as const } : { reason: "residence_unknown" as const })
-  };
   const unavailableParking: LoanPricing["parking"] = {
     available: false,
     rawMax: null,
