@@ -3501,7 +3501,7 @@ function isShortContextualQuestion(text: string): boolean {
 /** A follow-up deliberately has no independent subject: its meaning comes
  * from the immediately preceding assistant answer. */
 function isContextualFollowUpPhrase(text: string): boolean {
-  return /^(?:(?:а\s+)?если\s+(?:нет|не\s+получится|нельзя)|(?:а\s+)?что\s+делать(?:\s+дальше)?|(?:а\s+)?как\s+быть|(?:а\s+)?как\s+это\s+связан\p{L}*|(?:а\s+)?почему|(?:а\s+)?зачем|(?:а\s+)?что\s+(?:тогда|теперь)|(?:а\s+)?без\s+этого|(?:а\s+)?и\s+что)[?!.\s]*$/iu.test(text.trim());
+  return /^(?:(?:а\s+)?если\s+(?:нет|не\s+получится|нельзя)|(?:а\s+)?что\s+делать(?:\s+дальше)?|(?:а\s+)?как\s+быть|(?:а\s+)?как\s+это\s+связан\p{L}*|(?:а\s+)?почему|(?:а\s+)?зачем|(?:а\s+)?что\s+(?:тогда|теперь)|(?:а\s+)?без\s+этого|(?:а\s+)?и\s+что|такого\s+нет|другого\s+нет|нет\s+такого)[?!.\s]*$/iu.test(text.trim());
 }
 
 /** A broad office/amenities snippet must never be used to invent a service

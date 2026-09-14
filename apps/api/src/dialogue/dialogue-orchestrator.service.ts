@@ -842,7 +842,7 @@ function isContextualKnowledgeFollowUp(messages: Stage1Message[], text: string):
 }
 
 function isContextualFollowUpPhrase(text: string): boolean {
-  return /^(?:(?:а\s+)?если\s+(?:нет|не\s+получится|нельзя)|(?:а\s+)?что\s+делать(?:\s+дальше)?|(?:а\s+)?как\s+быть|(?:а\s+)?как\s+это\s+связан\p{L}*|(?:а\s+)?почему|(?:а\s+)?зачем|(?:а\s+)?что\s+(?:тогда|теперь)|(?:а\s+)?без\s+этого|(?:а\s+)?и\s+что)[?!.\s]*$/iu.test(text.trim());
+  return /^(?:(?:а\s+)?если\s+(?:нет|не\s+получится|нельзя)|(?:а\s+)?что\s+делать(?:\s+дальше)?|(?:а\s+)?как\s+быть|(?:а\s+)?как\s+это\s+связан\p{L}*|(?:а\s+)?почему|(?:а\s+)?зачем|(?:а\s+)?что\s+(?:тогда|теперь)|(?:а\s+)?без\s+этого|(?:а\s+)?и\s+что|такого\s+нет|другого\s+нет|нет\s+такого)[?!.\s]*$/iu.test(text.trim());
 }
 
 // Public compatibility symbols kept while the old orchestration path is removed.

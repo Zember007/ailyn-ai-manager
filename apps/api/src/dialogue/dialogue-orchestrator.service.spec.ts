@@ -337,25 +337,25 @@ describe("single-agent dialogue", () => {
   });
 
   it("passes a short follow-up after the UNA rule to the model with its prior context", async () => {
-    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
-      reply: "К сожалению, мы не сможем Вам выдать займ без оригинала свидетельства о регистрации.", answerFound: true
-    }) } }] }) } as any;
+    const answer = "Без регистрации автомобиля в УНА оформить займ нельзя: сначала нужно поставить его на учёт.";
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ reply: answer, answerFound: true, contextualPolicyRelation: "follow_up" }) } }] }) } as any;
     const output = await new AgentTurnService(client).answerWithKnowledge({
       messages: [{ author: "ai", body: "Нет, это обязательное условие: для оформления займа автомобиль должен быть зарегистрирован в УНА на человека, который обращается за займом. Сначала нужно поставить автомобиль на учёт в УНА.", createdAt: "now" } as any],
       facts: {}, settings: {}, text: "а если нет?", workflowFollowUp: ""
     });
 
-    expect(output).toMatchObject({ answerFound: true, reply: "К сожалению, мы не сможем Вам выдать займ без оригинала свидетельства о регистрации." });
+    expect(output).toMatchObject({ answerFound: true, reply: answer });
     const context = JSON.parse(client.createChatCompletion.mock.calls[0][0].messages[1].content);
     expect(context.contextualPolicy).toMatchObject({ key: "previous_assistant_answer" });
     expect(context.knowledge.length).toBeGreaterThan(0);
     expect(client.createChatCompletion.mock.calls[0][0].messages[0].content).toContain("запрещено переключаться на оригинал свидетельства");
   });
 
-  it("does not impose an UNA answer outside the knowledge model", async () => {
+  it("lets the model answer an UNA follow-up without a server-written response", async () => {
+    const answer = "Без регистрации автомобиля в УНА оформить займ нельзя: сначала нужно поставить его на учёт.";
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
       ...validResult,
-      reply: "К сожалению, мы не сможем Вам выдать займ без оригинала свидетельства о регистрации.",
+      reply: answer,
       leadCardPatch: {}
     }) } }] }) } as any;
     const output = await new AgentTurnService(client).run({
@@ -363,7 +363,7 @@ describe("single-agent dialogue", () => {
       facts: {}, settings: {}, text: "а если нет", attachments: []
     });
 
-    expect(output.reply).toContain("К сожалению, мы не сможем Вам выдать займ без оригинала свидетельства о регистрации.");
+    expect(output.reply).toContain(answer);
   });
 
   it.each(["а если нет?", "А что делать?", "А как это связано?"])("passes %s to knowledge as a follow-up to the preceding answer", async (text) => {
