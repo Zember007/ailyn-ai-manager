@@ -1291,6 +1291,10 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     // explicit client text statement below, never from OCR or an image seen
     // by the multimodal dialogue model.
     vehicleType: _modelVehicleType,
+    // A general vision pass may see unrelated numbers on an ID (issuing
+    // authority, personal number, dates). It is never a source for the
+    // vehicle-registration region, especially the terminal region-10 flag.
+    vehicleRegistrationRegion: _modelVehicleRegistrationRegion,
     // A visit slot is a server-owned pair. The model may understand a date
     // or time, but it must never create either one—or complete a date-only
     // reply with a guessed time.

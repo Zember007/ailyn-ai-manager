@@ -833,6 +833,22 @@ describe("single-agent dialogue", () => {
     expect(output.result?.leadCardPatch.vehicleModel).not.toBe("Corolla");
   });
 
+  it("does not treat digits from an ID as vehicle region 10", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult,
+      reply: "Фотографии получены.",
+      leadCardPatch: { vehicleRegistrationRegion: "10" }
+    }) } }] }) } as any;
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "Пожалуйста, отправьте фото ID и свидетельства о регистрации автомобиля с обеих сторон.", createdAt: "now" } as any],
+      facts: { vehicleModel: "Rexton", vehicleYear: 2018, vehicleValue: 2_000_000, requestedAmount: 500_000, requestedProgram: "parking", residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY" } as any,
+      settings: {}, text: "", attachments: [{ id: "id-front", fileName: "id.jpg", mimeType: "image/jpeg" } as any]
+    });
+
+    expect(output.result?.leadCardPatch.vehicleRegistrationRegion).toBeUndefined();
+    expect(output.reply).not.toContain("регионом 10");
+  });
+
   it("does not append the future guarantor question while the amount stage is still open", async () => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
       ...validResult,
