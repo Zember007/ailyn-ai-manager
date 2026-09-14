@@ -830,15 +830,19 @@ export function removeEarlierDuplicateSentences(reply: string): string {
     .trim();
 }
 
-/** Route a terse follow-up after the region-10 refusal to the knowledge
+/** Route a terse follow-up after a server-approved policy to the knowledge
  * model even if the main dialogue model did not recognise it as a FAQ. The
  * knowledge model receives the prior policy and decides whether this is a
  * continuation or an independent new question. */
 function isContextualKnowledgeFollowUp(messages: Stage1Message[], text: string): boolean {
   const normalized = text.trim();
-  if (!normalized || normalized.length > 160 || !(/(?:так\s+)?что\s+делать|почему|зачем|а\s+что\s+теперь|как\s+быть|можно\s+иначе|[?？]/iu.test(normalized))) return false;
+  if (!normalized || normalized.length > 160 || !isContextualFollowUpPhrase(normalized)) return false;
   const lastAssistant = [...messages].reverse().find((message) => message.author === "ai")?.body ?? "";
-  return /(?:автомобил[ья]?\s+с\s+)?регион(?:ом)?\s*10.{0,80}(?:не\s+принимаем|не\s+оформля\p{L}*|не\s+сможем\s+продолжить)/iu.test(lastAssistant);
+  return Boolean(lastAssistant.trim());
+}
+
+function isContextualFollowUpPhrase(text: string): boolean {
+  return /^(?:(?:а\s+)?если\s+(?:нет|не\s+получится|нельзя)|(?:а\s+)?что\s+делать(?:\s+дальше)?|(?:а\s+)?как\s+быть|(?:а\s+)?как\s+это\s+связан\p{L}*|(?:а\s+)?почему|(?:а\s+)?зачем|(?:а\s+)?что\s+(?:тогда|теперь)|(?:а\s+)?без\s+этого|(?:а\s+)?и\s+что)[?!.\s]*$/iu.test(text.trim());
 }
 
 // Public compatibility symbols kept while the old orchestration path is removed.

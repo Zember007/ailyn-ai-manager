@@ -25,7 +25,7 @@ const DEFAULT_TWO_GIS_URL = "https://go.2gis.com/Y34m4";
 const DEFAULT_GOOGLE_MAPS_URL = "https://maps.app.goo.gl/9xiWLVvdyRgn3Sx4A";
 const UNKNOWN_KNOWLEDGE_ANSWER = "К сожалению, у меня нет достоверной информации по этому вопросу. Когда Вы приедете, сотрудники с удовольствием подскажут Вам.";
 export const OLDER_VEHICLE_PROGRAM_NOTICE = "По общему правилу мы принимаем в залог автомобили старше 15 лет только на стоянку, но если вы планируете получить займ без изъятия, то мы готовы рассмотреть вашу заявку индивидуально.";
-type ContextualKnowledgePolicy = { key: "region_10_refusal"; approvedAnswer: string };
+type ContextualKnowledgePolicy = { key: "region_10_refusal" | "vehicle_registration_una" | "previous_assistant_answer"; approvedAnswer: string };
 // The complete lead card keeps durable facts, while a compact recent tail is
 // enough to resolve conversational references. Keeping this bounded is one of
 // the few latency levers that does not weaken application validation.
@@ -257,11 +257,16 @@ export class AgentTurnService {
       // adapt a factual statement to the actual conversational context.
       const hasSeveralQuestions = hasSeveralClientQuestions(input.text ?? "");
       const unsupportedCompanyServiceQuestion = isUnsupportedCompanyServiceQuestion(input.text ?? "") && !documentation.mandatoryAnswer;
-      const answerFound = !unsupportedCompanyServiceQuestion && (parsed.data.answerFound || (!hasSeveralQuestions && Boolean(documentation.mandatoryAnswer)));
+      const ungroundedCreditAnswer = isUngroundedVehicleCreditAnswer(parsed.data.reply, input.text ?? "");
+      const answerFound = contextualPolicy?.key === "vehicle_registration_una" || (!ungroundedCreditAnswer
+        && !unsupportedCompanyServiceQuestion
+        && (parsed.data.answerFound || (!hasSeveralQuestions && Boolean(documentation.mandatoryAnswer))));
       // The office location is server-owned configuration, including live map
       // links, and therefore remains verbatim. Every knowledge-base response
       // comes from the dedicated model and is adapted to the current message.
-      const knowledgeReply = contextualPolicy && parsed.data.contextualPolicyRelation === "follow_up"
+      const knowledgeReply = contextualPolicy?.key === "vehicle_registration_una"
+        ? contextualPolicy.approvedAnswer
+        : contextualPolicy?.key === "region_10_refusal" && parsed.data.contextualPolicyRelation === "follow_up"
         // The policy is server-approved; keep a model from blending in a
         // semantically nearby but unrelated rule such as the 15-year policy.
         ? contextualPolicy.approvedAnswer
@@ -1406,6 +1411,13 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     ...(isClearDocumentsRefusal(input) ? { declinedDocuments: true } : {}),
     ...(isClearCarPhotoRefusal(input) ? { declinedCarPhoto: true } : {})
   };
+  // A guarantor decision has meaning only as an answer to its own active
+  // question. A question about another vehicle must not let the broad model
+  // erase a confirmed guarantor and send the customer backwards in the flow.
+  if (!isGuarantorQuestion(lastAssistantReply) && !isActiveGuarantorParkingAlternative(lastAssistantReply, input.facts)) {
+    delete rawModelPatch.guarantorAvailable;
+    delete rawModelPatch.guarantorAlternativeDeclined;
+  }
   // Office-consent can only be inferred from a reply to its own question. A
   // family-status reply such as «в браке» must not skip the separate consent
   // stage merely because the model over-eagerly emitted this field.
@@ -2463,6 +2475,13 @@ function mergeMaximumLoanTemplateWithOtherAnswers(template: string, modelReply: 
   return [canonical, remaining].filter(Boolean).join("\n\n");
 }
 
+/** The KB model may see a broad FAQ packet, but a credit refusal is valid
+ * only when the current client turn actually concerns credit/pledge status. */
+function isUngroundedVehicleCreditAnswer(reply: string, clientText: string): boolean {
+  if (!/кредит\p{L}*/iu.test(reply)) return false;
+  return !/(?:кредит\p{L}*|авто\p{L}*\s+в\s+залоге|машин\p{L}*\s+в\s+залоге)/iu.test(clientText);
+}
+
 /** Knowledge chunks may describe server implementation, but that prose is never client-facing. */
 function removeInternalPricingInstruction(reply: string): string {
   return reply
@@ -3463,16 +3482,33 @@ function isLikelyKnowledgeQuestion(text: string): boolean {
 function contextualKnowledgePolicy(messages: Stage1Message[], text: string): ContextualKnowledgePolicy | undefined {
   if (!isShortContextualQuestion(text)) return undefined;
   const lastAssistant = [...messages].reverse().find((message) => message.author === "ai")?.body ?? "";
-  if (!/(?:автомобил[ья]?\s+с\s+)?регион(?:ом)?\s*10.{0,80}(?:не\s+принимаем|не\s+оформля\p{L}*|не\s+сможем\s+продолжить)/iu.test(lastAssistant)) return undefined;
-  return {
-    key: "region_10_refusal",
-    approvedAnswer: "К сожалению, по автомобилю с регионом 10 мы не сможем продолжить оформление. Если у Вас есть другой автомобиль без региона 10, можете сообщить его модель, год выпуска, ориентировочную стоимость и нужную сумму займа."
-  };
+  if (/(?:автомобил[ья]?\s+с\s+)?регион(?:ом)?\s*10.{0,80}(?:не\s+принимаем|не\s+оформля\p{L}*|не\s+сможем\s+продолжить)/iu.test(lastAssistant)) {
+    return {
+      key: "region_10_refusal",
+      approvedAnswer: "К сожалению, по автомобилю с регионом 10 мы не сможем продолжить оформление. Если у Вас есть другой автомобиль без региона 10, можете сообщить его модель, год выпуска, ориентировочную стоимость и нужную сумму займа."
+    };
+  }
+  if (/автомобил\p{L}*\s+должен\s+быть\s+зарегистрир\p{L}*\s+в\s+уна|поставить\s+автомобил\p{L}*\s+на\s+уч[её]т\s+в\s+уна/iu.test(lastAssistant)) {
+    return {
+      key: "vehicle_registration_una",
+      approvedAnswer: "Нет, это обязательное условие: для оформления займа автомобиль должен быть зарегистрирован в УНА на человека, который обращается за займом. Сначала нужно поставить автомобиль на учёт в УНА."
+    };
+  }
+  if (isContextualFollowUpPhrase(text) && lastAssistant.trim()) {
+    return { key: "previous_assistant_answer", approvedAnswer: lastAssistant };
+  }
+  return undefined;
 }
 
 function isShortContextualQuestion(text: string): boolean {
   const normalized = text.trim();
   return normalized.length > 0 && normalized.length <= 160 && (/[?？]/u.test(normalized) || /(?:так\s+)?что\s+делать|почему|зачем|а\s+что\s+теперь|как\s+быть|можно\s+иначе/iu.test(normalized));
+}
+
+/** A follow-up deliberately has no independent subject: its meaning comes
+ * from the immediately preceding assistant answer. */
+function isContextualFollowUpPhrase(text: string): boolean {
+  return /^(?:(?:а\s+)?если\s+(?:нет|не\s+получится|нельзя)|(?:а\s+)?что\s+делать(?:\s+дальше)?|(?:а\s+)?как\s+быть|(?:а\s+)?как\s+это\s+связан\p{L}*|(?:а\s+)?почему|(?:а\s+)?зачем|(?:а\s+)?что\s+(?:тогда|теперь)|(?:а\s+)?без\s+этого|(?:а\s+)?и\s+что)[?!.\s]*$/iu.test(text.trim());
 }
 
 /** A broad office/amenities snippet must never be used to invent a service

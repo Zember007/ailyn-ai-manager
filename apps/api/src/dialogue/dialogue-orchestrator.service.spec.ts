@@ -307,6 +307,66 @@ describe("single-agent dialogue", () => {
     expect(output?.reply).not.toMatch(/^да[.!]?/iu);
   });
 
+  it("rejects an ungrounded credit refusal for a question about another vehicle", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      reply: "К сожалению, мы не сможем оформить займ, если автомобиль в кредите.", answerFound: true
+    }) } }] }) } as any;
+
+    const output = await new AgentTurnService(client).answerWithKnowledge({
+      messages: [], facts: {}, settings: {}, text: "А у меня братишка есть, у него Королла 2026 года, возьмёте?", workflowFollowUp: ""
+    });
+
+    expect(output).toMatchObject({
+      answerFound: false,
+      reply: "К сожалению, у меня нет достоверной информации по этому вопросу. Когда Вы приедете, сотрудники с удовольствием подскажут Вам."
+    });
+    expect(client.createChatCompletion.mock.calls[0][0].messages[0].content).toContain("нельзя писать про кредит");
+  });
+
+  it("uses the approved orientation for another person's vehicle", async () => {
+    const answer = "Да, этот автомобиль тоже можем рассмотреть. Владелец может приехать вместе с Вами или самостоятельно в любое удобное время в часы работы офиса.";
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ reply: answer, answerFound: true }) } }] }) } as any;
+
+    const output = await new AgentTurnService(client).answerWithKnowledge({
+      messages: [], facts: {}, settings: {}, text: "А у меня братишка есть, у него Королла 2026 года, возьмёте?", workflowFollowUp: ""
+    });
+
+    expect(output).toMatchObject({ answerFound: true, reply: answer });
+    const context = JSON.parse(client.createChatCompletion.mock.calls[0][0].messages[1].content);
+    expect(context.knowledge).toEqual(expect.arrayContaining([expect.objectContaining({ key: "faq_another_person_vehicle" })]));
+  });
+
+  it("treats a short follow-up after the UNA rule as its mandatory consequence", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ reply: "Не знаю.", answerFound: false }) } }] }) } as any;
+    const output = await new AgentTurnService(client).answerWithKnowledge({
+      messages: [{ author: "ai", body: "Нет, это обязательное условие: для оформления займа автомобиль должен быть зарегистрирован в УНА на человека, который обращается за займом. Сначала нужно поставить автомобиль на учёт в УНА.", createdAt: "now" } as any],
+      facts: {}, settings: {}, text: "а если нет?", workflowFollowUp: ""
+    });
+
+    expect(output).toMatchObject({
+      answerFound: true,
+      reply: "Нет, это обязательное условие: для оформления займа автомобиль должен быть зарегистрирован в УНА на человека, который обращается за займом. Сначала нужно поставить автомобиль на учёт в УНА."
+    });
+    expect(JSON.parse(client.createChatCompletion.mock.calls[0][0].messages[1].content).contextualPolicy).toMatchObject({ key: "vehicle_registration_una" });
+  });
+
+  it.each(["а если нет?", "А что делать?", "А как это связано?"])("passes %s to knowledge as a follow-up to the preceding answer", async (text) => {
+    const priorAnswer = "Для оформления нужен оригинал свидетельства о регистрации транспортного средства.";
+    const adaptedAnswer = "Без оригинала свидетельства о регистрации транспортного средства оформить займ не получится.";
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      reply: adaptedAnswer, answerFound: true, contextualPolicyRelation: "follow_up"
+    }) } }] }) } as any;
+
+    const output = await new AgentTurnService(client).answerWithKnowledge({
+      messages: [{ author: "ai", body: priorAnswer, createdAt: "now" } as any], facts: {}, settings: {}, text, workflowFollowUp: ""
+    });
+
+    expect(output).toMatchObject({ answerFound: true, reply: adaptedAnswer });
+    expect(JSON.parse(client.createChatCompletion.mock.calls[0][0].messages[1].content).contextualPolicy).toMatchObject({
+      key: "previous_assistant_answer", approvedAnswer: priorAnswer
+    });
+  });
+
   it("uses only the preceding region-10 policy for a contextual follow-up", async () => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
       reply: "По общему правилу автомобили старше 15 лет рассматриваются на стоянке.",
@@ -3492,6 +3552,27 @@ describe("single-agent dialogue", () => {
     expect(output.result?.dialogueState.stage).not.toBe("PAUSED");
     expect(output.reply).toContain("Пожалуйста, отправьте фото ID");
     expect(output.reply).not.toContain("Когда будете готовы");
+  });
+
+  it("does not reopen a confirmed guarantor from an unrelated question about another vehicle", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult, reply: "Распознано.", leadCardPatch: { guarantorAvailable: false, guarantorAlternativeDeclined: false }
+    }) } }] }) } as any;
+    const facts = {
+      vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 1_000_000,
+      requestedAmount: 200_000, requestedProgram: "without_storage",
+      residenceRegion: "Другой регион Кыргызстана", residenceCategory: "OTHER_KG",
+      guarantorAvailable: true, declinedDocuments: true
+    } as any;
+
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "Пожалуйста, отправьте 2–3 фотографии автомобиля.", createdAt: "now" } as any],
+      facts, settings: {}, text: "А у братишки Королла 2026 года, возьмёте?", attachments: []
+    });
+
+    expect(output.result?.leadCardPatch.guarantorAvailable).toBe(true);
+    expect(output.reply).toContain("Пожалуйста, отправьте 2–3 фотографии автомобиля.");
+    expect(output.reply).not.toContain("У Вас есть такой поручитель?");
   });
 
   it("returns to the mandatory guarantor requirement when parking is declined", async () => {
