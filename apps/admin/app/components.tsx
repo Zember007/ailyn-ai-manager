@@ -62,7 +62,7 @@ export function LeadCard({ application, attachments = [] }: Readonly<{ applicati
       <Field label="Предварительный лимит" value={application?.agentState?.preliminaryLimit} />
       <Field label="Семейное положение" value={facts.familyStatus} />
       <Field label="Поручитель" value={translateBoolean(facts.guarantorAvailable)} />
-      <Field label="Документы" value={attachments.map((attachment) => `${translateAttachmentType(attachment.type)}: ${translateStatus(attachment.status)}`).join(", ")} />
+      <Field label="Документы" value={formatReceivedDocuments(attachments)} />
       <Field label="Визит" value={[facts.visitDate, facts.visitTime].filter(Boolean).join(" ")} />
     </dl>
   );
@@ -187,6 +187,24 @@ function translateAttachmentType(value: unknown): string {
     poor_quality: "Нечитаемое изображение"
   };
   return map[value] ?? value;
+}
+
+function formatReceivedDocuments(attachments: { type?: unknown; status?: unknown }[]): string {
+  const receivedTypes = new Set(
+    attachments
+      .filter((attachment) => attachment.status === "received")
+      .map((attachment) => attachment.type)
+  );
+  const documents: string[] = [];
+
+  if (receivedTypes.has("id_front") || receivedTypes.has("id_back")) {
+    documents.push("Получено ID");
+  }
+  if (receivedTypes.has("vehicle_registration_front") || receivedTypes.has("vehicle_registration_back")) {
+    documents.push("Получен СТС");
+  }
+
+  return documents.join(", ");
 }
 
 function translateAuthor(author: string): string {
