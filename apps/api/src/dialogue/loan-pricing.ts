@@ -74,7 +74,13 @@ export function calculateLoanPricing(facts: ApplicationFacts, settings: LoanPric
   }
 
   const parkingRawMax = Math.min(value * numberSetting(settings.parkingPercent, 0.5), numberSetting(settings.parkingLimit, 2_000_000));
-  const withoutStorageAllowed = residence.category === "BISHKEK_CHUY" || value >= numberSetting(settings.otherRegionMinVehicleValue, 1_000_000);
+  // Cars older than 15 years are reviewed individually. Once the customer
+  // explicitly selects without-storage, that review must still receive the
+  // regional 200k cap and guarantor gate instead of falling through to an
+  // unpriced guarantor question merely because the car is below the standard
+  // other-region appraisal threshold.
+  const olderVehicleIndividualReview = typeof facts.vehicleYear === "number" && new Date().getFullYear() - facts.vehicleYear > 15;
+  const withoutStorageAllowed = residence.category === "BISHKEK_CHUY" || olderVehicleIndividualReview || value >= numberSetting(settings.otherRegionMinVehicleValue, 1_000_000);
   const withoutStorageRawMax = withoutStorageAllowed
     ? Math.min(
       value * numberSetting(settings.withoutStoragePercent, 0.4),

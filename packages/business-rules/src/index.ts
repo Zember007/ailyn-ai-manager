@@ -467,8 +467,9 @@ export function calculateLoanLimits(
   const withoutStorageRegionalLimit = residenceCategory === "BISHKEK_CHUY"
     ? settings.withoutStorageLimitBishkekChuy
     : settings.withoutStorageLimitOtherRegion;
+  const olderVehicleIndividualReview = typeof facts.vehicleYear === "number" && new Date().getFullYear() - facts.vehicleYear > 15;
   const withoutStorageAllowed =
-    residenceCategory === "BISHKEK_CHUY" || facts.vehicleValue >= settings.otherRegionMinVehicleValue;
+    residenceCategory === "BISHKEK_CHUY" || olderVehicleIndividualReview || facts.vehicleValue >= settings.otherRegionMinVehicleValue;
   const withoutStorage = withoutStorageAllowed
     ? Math.min(Math.floor(facts.vehicleValue * settings.withoutStoragePercent), withoutStorageRegionalLimit)
     : undefined;
@@ -487,7 +488,8 @@ export function determineAvailablePrograms(
     programs.unshift("without_storage");
     return programs;
   }
-  if (facts.vehicleValue >= settings.otherRegionMinVehicleValue) {
+  const olderVehicleIndividualReview = typeof facts.vehicleYear === "number" && new Date().getFullYear() - facts.vehicleYear > 15;
+  if (olderVehicleIndividualReview || facts.vehicleValue >= settings.otherRegionMinVehicleValue) {
     programs.unshift("without_storage");
   }
   return programs;

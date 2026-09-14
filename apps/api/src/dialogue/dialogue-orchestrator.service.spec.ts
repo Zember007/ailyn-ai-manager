@@ -688,9 +688,30 @@ describe("single-agent dialogue", () => {
       settings: {}, text: "каракол", attachments: []
     });
 
-    expect(output.reply).toContain("В связи с тем, что Вы прописаны за пределами Чуйской области, по программе без изъятия Вам доступно до 200 000 сом.");
+    expect(output.reply).toContain("По программе без изъятия Вам доступно до 200 000 сом.");
     expect(output.reply).toContain("И Вам потребуется поручитель:");
     expect(output.reply.match(/по программе без изъятия[^.]*до 200 000 сом/giu)).toHaveLength(1);
+  });
+
+  it("settles an over-limit other-region application with both limits before any guarantor branch", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult, reply: "Распознано.", leadCardPatch: {}
+    }) } }] }) } as any;
+
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "Подскажите, пожалуйста, Вашу прописку — Бишкек, Чуйская область или другой регион Кыргызстана.", createdAt: "now" } as any],
+      facts: {
+        vehicleModel: "SsangYong", vehicleYear: 2009, vehicleValue: 900_000,
+        requestedAmount: 500_000, requestedProgram: "without_storage"
+      } as any,
+      settings: {}, text: "Бостери", attachments: []
+    });
+
+    expect(output.result?.leadCardPatch).toMatchObject({ residenceCategory: "OTHER_KG", requestedAmount: 500_000 });
+    expect(output.reply).toContain("По программе без изъятия доступно до 200 000 сом");
+    expect(output.reply).toContain("Со стоянкой при текущей стоимости автомобиля доступно до 450 000 сом");
+    expect(output.reply).not.toMatch(/^И Вам потребуется поручитель/iu);
+    expect(output.reply).not.toContain("У Вас есть такой поручитель?");
   });
 
   it("does not append the future guarantor question while the amount stage is still open", async () => {
@@ -3454,6 +3475,25 @@ describe("single-agent dialogue", () => {
     expect(undecided.reply).not.toContain("Поняла");
   });
 
+  it("treats a standalone promise to search for a guarantor as acceptance and never pauses", async () => {
+    const facts = {
+      vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 1_740_000,
+      requestedAmount: 200_000, requestedProgram: "without_storage",
+      residenceRegion: "Другой регион Кыргызстана", residenceCategory: "OTHER_KG"
+    } as any;
+    const question = "И Вам потребуется поручитель:\n- возраст от 25 лет\n- проживает в г. Бишкек или Чуйской области\n- должен лично присутствовать при выдаче займа и иметь с собой ID (паспорт)\nУ Вас есть такой поручитель?";
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn()
+      .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ ...validResult, reply: "Распознано.", leadCardPatch: { clientPaused: true } }) } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ decision: "undecided" }) } }] }) } as any;
+
+    const output = await new AgentTurnService(client).run({ messages: [{ author: "ai", body: question, createdAt: "now" } as any], facts, settings: {}, text: "Поищу", attachments: [] });
+
+    expect(output.result?.leadCardPatch).toMatchObject({ guarantorAvailable: true, clientPaused: false });
+    expect(output.result?.dialogueState.stage).not.toBe("PAUSED");
+    expect(output.reply).toContain("Пожалуйста, отправьте фото ID");
+    expect(output.reply).not.toContain("Когда будете готовы");
+  });
+
   it("returns to the mandatory guarantor requirement when parking is declined", async () => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ ...validResult, reply: "Поняла.", leadCardPatch: {} }) } }] }) } as any;
     const output = await new AgentTurnService(client).run({
@@ -4441,7 +4481,7 @@ describe("single-agent dialogue", () => {
       settings: {}, text: "Мне нужна другая сумма займа", attachments: []
     });
 
-    expect(output.result?.leadCardPatch).toMatchObject({ requestedMaximumAmount: false });
+    expect(output.result?.leadCardPatch).not.toHaveProperty("requestedMaximumAmount");
     expect(output.result?.leadCardPatch.requestedAmount).toBeUndefined();
     expect(output.result?.leadCardPatch.requestedProgram).toBeUndefined();
     expect(output.reply).toContain("Какая сумма займа Вам необходима?");

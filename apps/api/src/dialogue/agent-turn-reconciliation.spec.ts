@@ -172,7 +172,7 @@ describe("agent turn reconciliation pricing", () => {
     });
   });
 
-  it("reopens only the amount stage when the current programme limit is exceeded", () => {
+  it("reopens the amount stage and invalidates dependent stages when the current programme limit is exceeded", () => {
     const completion = deriveStageCompletion({
       vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 2_000_000,
       requestedAmount: 2_000_000, requestedProgram: "parking",
@@ -182,8 +182,8 @@ describe("agent turn reconciliation pricing", () => {
 
     expect(completion).toMatchObject({
       vehicle: true, requestedAmount: false, program: true, residence: true,
-      guarantor: true, documents: true, carPhoto: true, family: true,
-      readyForVisit: true, visit: true
+      guarantor: false, documents: false, carPhoto: false, family: false,
+      readyForVisit: false, visit: false
     });
   });
 });

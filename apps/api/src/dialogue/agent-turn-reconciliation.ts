@@ -101,8 +101,13 @@ export function deriveStageCompletion(facts: ApplicationFacts, settings: LoanPri
   // limit, an over-limit amount deliberately reopens this stage.
   const requestedAmount = requestedAmountProvided
     && (!selectedPricing || (selectedPricing.available && typeof selectedPricing.publicMax === "number" && facts.requestedAmount! <= selectedPricing.publicMax));
-  const guarantorRequired = residence && facts.requestedProgram === "without_storage" && facts.residenceCategory === "OTHER_KG";
-  const guarantor = residence && (!guarantorRequired || facts.guarantorAvailable === true);
+  // An amount above the newly calculated cap invalidates the application at
+  // that point. Do not leave downstream stages visually complete merely
+  // because stale model facts happen to be present on the card: they are not
+  // valid until the customer accepts an eligible amount/programme again.
+  const eligibleApplication = requestedAmount;
+  const guarantorRequired = eligibleApplication && facts.requestedProgram === "without_storage" && facts.residenceCategory === "OTHER_KG";
+  const guarantor = eligibleApplication && (!guarantorRequired || facts.guarantorAvailable === true);
   const documents = guarantor && (facts.documentsProvided === true || facts.declinedDocuments === true);
   const carPhoto = documents && (facts.documents?.car_photo === "received" || facts.declinedCarPhoto === true);
   const family = carPhoto && Boolean(facts.familyStatus && facts.familyStatus !== "unknown") && (facts.familyStatus !== "married" || facts.spouseConsentReady === true || facts.spouseConsentAtOffice !== undefined) && (facts.familyStatus !== "divorced" || facts.vehicleBoughtDuringMarriage !== undefined);

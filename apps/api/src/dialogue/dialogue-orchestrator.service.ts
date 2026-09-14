@@ -521,7 +521,7 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
 function isPausedConversationContinuation(text: string): boolean {
   const normalized = text.trim().toLocaleLowerCase("ru-RU");
   if (!normalized) return false;
-  return !/^(?:потом\s+(?:напиш|отвеч|продолж)|вернусь\s+позже|давайте\s+(?:продолжим\s+)?потом|сейчас\s+не\s+могу|подумаю(?:\s+и\s+напишу)?|пока\s+не\s+решил(?:а)?)[.!\s]*$/iu.test(normalized);
+  return !/^(?:потом\s+(?:напиш\p{L}*|отвеч\p{L}*|продолж\p{L}*)|вернусь\s+позже|давайте\s+(?:продолжим\s+)?потом|сейчас\s+(?:некогда|не\s+могу|занят(?:а)?|занят)|подумаю(?:\s+и\s+напишу)?|пока\s+не\s+решил(?:а)?)[.!\s]*$/iu.test(normalized);
 }
 
 function supplementNormalizedMoney(values: NormalizedMoneyValue[], text: string, currentFacts: ApplicationFacts, messages: Stage1Message[] = [], moneyClarification?: PendingMoneyClarificationDecision): NormalizedMoneyValue[] {

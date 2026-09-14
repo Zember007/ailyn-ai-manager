@@ -982,7 +982,7 @@ export class AgentTurnService {
           {
             role: "system", content: parkingAlternative
               ? "Определи смысл ответа клиента относительно текущего вопроса AI, который передан отдельным полем activeQuestion. Это предложение перейти на программу со стоянкой вместо поручителя. Верни строго JSON {\"decision\":\"accept\"|\"reject\"|\"has_guarantor\"|\"undecided\",\"question\":string|null}. Явное согласие на стоянку, включая «Понял, стоянка тогда», «тогда на стоянку», «давайте на стоянку», а также уточнение уже выбранной программы «Но у меня стоянка» или короткое «д стоянка же» (опечатка «да»), — accept. Если клиент сообщает, что поручитель у него есть («есть поручитель», «поручитель имеется», «приведу поручителя», «найду поручителя»), — has_guarantor: это не вопрос и не отказ от стоянки; продолжаем по прежней программе без изъятия. Критично: «нет, найду поручителя» означает has_guarantor. Первое «нет» отклоняет только стоянку, а обещание найти поручителя определяет итог; не считай такую реплику вопросом или отказом от поручителя. Определяй ответ на activeQuestion по первой ясной части реплики даже если после неё клиент задал отдельный вопрос: «ок. а сколько денег дадите» — decision=accept. В question верни дословно отдельный вопрос клиента без части согласия; если вопроса нет — null. Нейтральная, несвязанная, оценочная или бессмысленная реплика без ясного согласия или отказа — undecided. Не додумывай согласие или отказ. Не добавляй текст."
-              : "Определи смысл ответа клиента относительно текущего вопроса AI, который передан отдельным полем activeQuestion: есть ли у него требуемый поручитель. Верни строго JSON {\"decision\":\"accept\"|\"reject\"|\"clarification\"|\"undecided\"}. Ответы «найду», «приведу», «организую», «будет человек», обещание найти или привести поручителя означают accept. Отсутствие поручителя или отказ искать — reject. Если клиент уточняет, о каком поручителе речь, зачем он нужен или какие к нему требования (например, «какой такой?», «что за поручитель?», «зачем он?»), — clarification; это не самостоятельный FAQ-вопрос. Нейтральная, несвязанная, оценочная или бессмысленная реплика без ясного смысла — undecided. Не додумывай согласие или отказ. Не добавляй текст."
+              : "Определи смысл ответа клиента относительно текущего вопроса AI, который передан отдельным полем activeQuestion: есть ли у него требуемый поручитель. Верни строго JSON {\"decision\":\"accept\"|\"reject\"|\"clarification\"|\"undecided\"}. Ответы «найду», «поищу», «буду искать», «приведу», «организую», «будет человек», обещание найти или привести поручителя означают accept. Отсутствие поручителя или прямой отказ искать — reject. Если клиент уточняет, о каком поручителе речь, зачем он нужен или какие к нему требования (например, «какой такой?», «что за поручитель?», «зачем он?»), — clarification; это не самостоятельный FAQ-вопрос. Нейтральная, несвязанная, оценочная или бессмысленная реплика без ясного смысла — undecided. Не додумывай согласие или отказ. Не добавляй текст."
           },
           { role: "user", content: JSON.stringify({ activeQuestion, lastAssistantReply: lastAssistant, clientReply: currentReply }) }
         ]
@@ -1011,6 +1011,7 @@ export class AgentTurnService {
     // cannot repeat an offer after the client clearly selected parking.
     if (parkingAlternative && explicitlyAcceptsParkingAlternative(currentReply)) return applyDecision("accept");
     if (parkingAlternative && explicitlyStatesGuarantorAvailable(currentReply)) return applyDecision("has_guarantor");
+    if (!parkingAlternative && expressesGuarantorSearchIntent(currentReply)) return applyDecision("accept");
     if (!parkingAlternative && isGuarantorContextClarification(currentReply)) {
       return { ...classifierBase, activeWorkflowClarification: "guarantor" };
     }
@@ -1426,6 +1427,11 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     delete rawModelPatch.requestedAmount;
     if (requiresBelowMinimumConfirmation) delete rawModelPatch.requestedProgram;
   }
+  // The main model can identify an explicit postponement, but it cannot make
+  // a durable pause decision from a vague acknowledgement such as «поищу».
+  // Keep pause persistence behind a narrow server-owned allow-list; otherwise
+  // an unresolved guarantor answer silently stops the whole application.
+  if (rawModelPatch.clientPaused === true && !isExplicitPauseRequest(input)) rawModelPatch.clientPaused = false;
   const acceptedGuarantorParkingAlternative = isActiveGuarantorParkingAlternative(lastAssistantReply, input.facts)
     && rawModelPatch.requestedProgram === "parking";
   const explicitlyInvalidatesProgramme = Object.prototype.hasOwnProperty.call(rawModelPatch, "requestedProgram") && rawModelPatch.requestedProgram === undefined;
@@ -3268,6 +3274,21 @@ function explicitlyAcceptsParkingAlternative(text: string): boolean {
 /** Regex fallback for a direct fact after the semantic parking classifier is unavailable or undecided. */
 function explicitlyStatesGuarantorAvailable(text: string): boolean {
   return /(?:^|\s)(?:у\s+меня\s+)?(?:есть|имеется|будет|найду|приведу)\s+(?:такой\s+)?поручител\p{L}*(?:[.!]?\s*)$/iu.test(text.trim());
+}
+
+/** Regex fallback after the semantic guarantor classifier. This deliberately
+ * covers a standalone promise («поищу») whose omitted noun is supplied by the
+ * active guarantor question. */
+function expressesGuarantorSearchIntent(text: string): boolean {
+  return /^(?:(?:я\s+)?(?:поищу|найду|постараюсь\s+найти|буду\s+искать|организую|приведу)|(?:поищу|найду|буду\s+искать)\s+поручител\p{L}*)[.!\s]*$/iu.test(text.trim());
+}
+
+/** A pause is allowed only for an explicit request to defer the dialogue.
+ * This is a persistence guard for the model's semantic decision, not a
+ * replacement for it. */
+function isExplicitPauseRequest(input: Pick<AgentTurnInput, "text" | "currentTurnMessages">): boolean {
+  const text = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "").trim();
+  return /^(?:потом\s+(?:напиш\p{L}*|отвеч\p{L}*|продолж\p{L}*)|вернусь\s+позже|давайте\s+(?:продолжим\s+)?потом|сейчас\s+(?:некогда|не\s+могу|занят(?:а)?|занят)|подумаю\s+и\s+напишу|пока\s+не\s+решил(?:а)?)[.!\s]*$/iu.test(text);
 }
 
 function guarantorPatchFromClearReply(
