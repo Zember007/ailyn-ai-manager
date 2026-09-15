@@ -29,6 +29,14 @@ describe("KnowledgeService approved resolution", () => {
     expect(answers.map((answer) => answer.key)).toContain("interest_rates_overview");
   });
 
+  it("resolves the conditional guarantor requirement answer", async () => {
+    const service = new KnowledgeService(createMemoryPrisma() as any);
+    const answer = (await service.resolveAll("а поручителя надо", "ru")).find((item) => item.key === "guarantor_requirement");
+
+    expect(answer?.answerRu).toContain("только при займе без изъятия");
+    expect(answer?.answerRu).toContain("Для жителей Бишкека и Чуйской области");
+  });
+
   it("answers what the company does before continuing a document workflow", async () => {
     const service = new KnowledgeService(createMemoryPrisma() as any);
     const answers = await service.resolveAll("Не понял, а чем вы вообще занимаетесь", "ru");

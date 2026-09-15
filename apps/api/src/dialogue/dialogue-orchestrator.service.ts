@@ -3,6 +3,7 @@ import type { ApplicationFacts } from "@ailyn/business-rules";
 import type { NormalizedMoneyValue } from "../ai/ai-provider.interface.js";
 import { AgentTurnService, enforceFirstContactGreeting, isClearMoneyConfirmationRejection, nextRequiredStageQuestion, suppressInactiveGuarantorPrompts, type PendingMoneyClarificationDecision } from "./agent-turn.service.js";
 import { isMaximumLoanKnowledgeQuestion } from "./documentation-retrieval.js";
+import { isContextualKnowledgeFollowUpText } from "./contextual-knowledge-follow-up.js";
 import { attachmentFactsForCurrentStage, deriveStageCompletion, effectiveFactsForTurn, isCarPhotoStagePrompt, selectedProgramLimit } from "./agent-turn-reconciliation.js";
 import type { InboundMessage } from "../channels/channel.interface.js";
 import { SettingsService } from "../settings/settings.service.js";
@@ -922,13 +923,9 @@ export function removeEarlierDuplicateSentences(reply: string): string {
  * continuation or an independent new question. */
 function isContextualKnowledgeFollowUp(messages: Stage1Message[], text: string): boolean {
   const normalized = text.trim();
-  if (!normalized || normalized.length > 160 || !isContextualFollowUpPhrase(normalized)) return false;
+  if (!isContextualKnowledgeFollowUpText(normalized)) return false;
   const lastAssistant = [...messages].reverse().find((message) => message.author === "ai")?.body ?? "";
   return Boolean(lastAssistant.trim());
-}
-
-function isContextualFollowUpPhrase(text: string): boolean {
-  return /^(?:(?:а\s+)?если\s+(?:нет|не\s+получится|нельзя)|(?:а\s+)?что\s+делать(?:\s+дальше)?|(?:а\s+)?как\s+быть|(?:а\s+)?как\s+это\s+связан\p{L}*|(?:а\s+)?почему|(?:а\s+)?зачем|(?:а\s+)?что\s+(?:тогда|теперь)|(?:а\s+)?без\s+этого|(?:а\s+)?и\s+что|такого\s+нет|другого\s+нет|нет\s+такого)[?!.\s]*$/iu.test(text.trim());
 }
 
 // Public compatibility symbols kept while the old orchestration path is removed.

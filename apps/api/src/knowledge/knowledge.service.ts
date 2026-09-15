@@ -97,6 +97,23 @@ export const approvedKnowledgeSeeds: Omit<KnowledgeItemDto, "id">[] = [
     active: true
   },
   {
+    key: "guarantor_requirement",
+    category: "loan_terms",
+    aliases: ["а поручителя надо", "нужен ли поручитель", "поручитель нужен", "требуется ли поручитель", "какой поручитель", "условия поручителя"],
+    answerRu: "Поручитель нужен только при займе без изъятия автомобиля для клиентов, зарегистрированных за пределами Бишкека и Чуйской области. Для жителей Бишкека и Чуйской области, а также при займе со стоянкой, поручитель не требуется.",
+    conditions: {
+      requiredWhen: { requestedProgram: "without_storage", residenceCategory: "OTHER_KG" },
+      notRequiredWhen: [
+        { residenceCategory: "BISHKEK_CHUY" },
+        { requestedProgram: "parking" }
+      ]
+    },
+    priority: 130,
+    status: "approved",
+    version: 1,
+    active: true
+  },
+  {
     key: "power_of_attorney",
     category: "documents",
     aliases: ["по доверенности", "займ по доверенности", "можно займ по доверенности", "оформить займ по доверенности"],

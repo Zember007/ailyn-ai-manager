@@ -383,6 +383,24 @@ describe("single-agent dialogue", () => {
     });
   });
 
+  it.each(["и что делать", "И что делать, если нет"])("keeps %s attached to the preceding UNA policy", async (text) => {
+    const answer = "Без регистрации автомобиля в УНА оформить займ нельзя: сначала нужно поставить его на учёт.";
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      reply: answer, answerFound: true, contextualPolicyRelation: "follow_up"
+    }) } }] }) } as any;
+
+    const output = await new AgentTurnService(client).answerWithKnowledge({
+      messages: [{ author: "ai", body: "Для оформления займа автомобиль должен быть зарегистрирован в УНА.", createdAt: "now" } as any],
+      facts: {}, settings: {}, text, workflowFollowUp: ""
+    });
+
+    expect(output).toMatchObject({ answerFound: true, reply: answer });
+    expect(JSON.parse(client.createChatCompletion.mock.calls[0][0].messages[1].content).contextualPolicy).toMatchObject({
+      key: "previous_assistant_answer",
+      approvedAnswer: "Для оформления займа автомобиль должен быть зарегистрирован в УНА."
+    });
+  });
+
   it("uses only the preceding region-10 policy for a contextual follow-up", async () => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
       reply: "По общему правилу автомобили старше 15 лет рассматриваются на стоянке.",
@@ -1725,6 +1743,64 @@ describe("single-agent dialogue", () => {
     }));
     expect(store.updateFacts).toHaveBeenCalledWith(application, expect.not.objectContaining({ knowledgeRequest: expect.anything() }));
     expect(output.reply).toBe(`Да, на автомобиль устанавливаем GPS/трекер (датчик).\n\n${vehicleStageQuestion}`);
+  });
+
+  it.each(["и что делать", "И что делать, если нет"])("routes %s to knowledge even when the workflow model omits lookup", async (text) => {
+    const application = { id: "app", facts: {}, contactId: "contact", stage: "NEW", status: "need_more_data" } as any;
+    const previousAnswer = "Для оформления займа автомобиль должен быть зарегистрирован в УНА.";
+    const conversation = {
+      id: "conversation",
+      messages: [{ id: "previous", author: "ai", body: previousAnswer, createdAt: "now" }],
+      application,
+      channel: "web-test"
+    } as any;
+    const store = {
+      getOrCreateConversation: vi.fn().mockResolvedValue({ conversation, application }),
+      addMessage: vi.fn().mockResolvedValue({ id: "inbound", author: "client", body: text, createdAt: "now" }),
+      updateFacts: vi.fn().mockResolvedValue([]), saveAgentState: vi.fn(), getApplication: vi.fn().mockResolvedValue(application), getConversation: vi.fn().mockResolvedValue(conversation), addAttachment: vi.fn(), createManagerNotification: vi.fn()
+    } as any;
+    const agent = {
+      run: vi.fn().mockResolvedValue({ result: { ...validResult, leadCardPatch: {} }, reply: "Есть ли у Вас ещё вопросы?", model: "workflow-model", promptVersion: "v1" }),
+      answerWithKnowledge: vi.fn().mockResolvedValue({
+        reply: "Без регистрации автомобиля в УНА оформить займ нельзя: сначала нужно поставить его на учёт.",
+        answerFound: true,
+        model: "knowledge-model"
+      })
+    } as any;
+
+    const output = await new DialogueOrchestratorService(agent, store, { getValues: vi.fn().mockResolvedValue({}) } as any, { log: vi.fn() } as any)
+      .receive({ externalMessageId: "m", channel: "web-test", externalContactId: "c", text, attachments: [], timestamp: new Date() });
+
+    expect(agent.answerWithKnowledge).toHaveBeenCalledWith(expect.objectContaining({
+      text,
+      messages: expect.arrayContaining([expect.objectContaining({ author: "ai", body: previousAnswer })])
+    }));
+    expect(output.reply).toContain("сначала нужно поставить его на учёт");
+    expect(output.reply).not.toBe("Есть ли у Вас ещё вопросы?");
+  });
+
+  it("does not attach an independent rate question to the preceding UNA policy", async () => {
+    const application = { id: "app", facts: {}, contactId: "contact", stage: "NEW", status: "need_more_data" } as any;
+    const conversation = {
+      id: "conversation",
+      messages: [{ id: "previous", author: "ai", body: "Для оформления займа автомобиль должен быть зарегистрирован в УНА.", createdAt: "now" }],
+      application,
+      channel: "web-test"
+    } as any;
+    const store = {
+      getOrCreateConversation: vi.fn().mockResolvedValue({ conversation, application }),
+      addMessage: vi.fn().mockResolvedValue({ id: "inbound", author: "client", body: "какая ставка?", createdAt: "now" }),
+      updateFacts: vi.fn().mockResolvedValue([]), saveAgentState: vi.fn(), getApplication: vi.fn().mockResolvedValue(application), getConversation: vi.fn().mockResolvedValue(conversation), addAttachment: vi.fn(), createManagerNotification: vi.fn()
+    } as any;
+    const agent = {
+      run: vi.fn().mockResolvedValue({ result: { ...validResult, leadCardPatch: {} }, reply: "По ставке отвечу отдельно.", model: "workflow-model", promptVersion: "v1" }),
+      answerWithKnowledge: vi.fn()
+    } as any;
+
+    await new DialogueOrchestratorService(agent, store, { getValues: vi.fn().mockResolvedValue({}) } as any, { log: vi.fn() } as any)
+      .receive({ externalMessageId: "m", channel: "web-test", externalContactId: "c", text: "какая ставка?", attachments: [], timestamp: new Date() });
+
+    expect(agent.answerWithKnowledge).not.toHaveBeenCalled();
   });
 
   it("answers a one-word maximum request at the amount stage without repeating that stage", async () => {

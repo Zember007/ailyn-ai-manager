@@ -32,6 +32,18 @@ describe("selectRelevantDocumentation", () => {
     expect(result.mandatoryAnswer).toBe("Обычно оформление занимает 1 час. Присланные Вами документы помогут нам сократить время выдачи денег.");
   });
 
+  it("includes the conditional guarantor rule for the short guarantor question", () => {
+    const result = prioritizedKnowledgeForQuestion({
+      facts: { requestedProgram: "without_storage", residenceCategory: "BISHKEK_CHUY" },
+      currentMessage: "а поручителя надо",
+      messages: []
+    });
+    const guarantor = result.find((chunk) => chunk.key === "faq_guarantor_requirement");
+
+    expect(guarantor?.approvedAnswer).toContain("Для жителей Бишкека и Чуйской области");
+    expect(guarantor?.approvedAnswer).toContain("поручитель не требуется");
+  });
+
   it("classifies a current-contract balance question to the exact approved redirect", () => {
     const result = selectRelevantDocumentation({ facts: {}, currentMessage: "а вы можете посмотреть сколько я сейчас должен по текущему договору", messages: [] });
     expect(result.commonKnowledge.some((chunk) => chunk.text.includes("Я Айлин — виртуальный помощник"))).toBe(true);

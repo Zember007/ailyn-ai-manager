@@ -9,6 +9,7 @@ import { RouterAiClient } from "../ai/router-ai/router-ai.client.js";
 import type { InboundAttachment } from "../channels/channel.interface.js";
 import { BackendLogsService } from "../logs/backend-logs.service.js";
 import { attachmentFactsForCurrentStage, deriveStageCompletion, effectiveFactsForTurn, isCarPhotoStagePrompt } from "./agent-turn-reconciliation.js";
+import { isContextualKnowledgeFollowUpText } from "./contextual-knowledge-follow-up.js";
 import { hasApprovedKnowledgeMatch, isMaximumLoanKnowledgeQuestion, prioritizedKnowledgeForQuestion, selectRelevantDocumentation } from "./documentation-retrieval.js";
 import { agentTurnResultSchema, dialogueSummarySchema, knowledgeAnswerSchema, type AgentTurnResult } from "./agent-turn.contracts.js";
 import { moneyNormalizationSchema } from "./pipeline.contracts.js";
@@ -194,7 +195,18 @@ export class AgentTurnService {
     signal?: AbortSignal;
   }): Promise<{ reply: string; answerFound: boolean; model: string } | undefined> {
     if (!this.client.isConfigured()) return undefined;
-    const model = this.config.routerAiKnowledgeModel ?? this.config.routerAiTextModel ?? "routerai-knowledge-model-not-configured";
+    const currentMessage = input.text ?? "";
+    const asksAboutGuarantor = /поручител\p{L}*/iu.test(currentMessage)
+      && /(?:нуж\p{L}*|надо|требу\p{L}*|обязател\p{L}*)/iu.test(currentMessage);
+    if (asksAboutGuarantor && input.facts.requestedProgram && input.facts.residenceCategory) {
+      const required = requiresGuarantorForFacts(input.facts);
+      return {
+        reply: required ? "Да, в Вашем случае потребуется поручитель." : "Нет, в Вашем случае поручитель не требуется.",
+        answerFound: true,
+        model: "server-guarantor-rule"
+      };
+    }
+    const model = this.config.routerAiKnowledgeModel ?? "routerai-knowledge-model-not-configured";
     const documentation = selectRelevantDocumentation({
       facts: input.facts,
       currentMessage: input.text,
@@ -371,7 +383,7 @@ export class AgentTurnService {
     signal?: AbortSignal;
   }): Promise<string | undefined> {
     if (!this.client.isConfigured()) return undefined;
-    const model = this.config.routerAiKnowledgeModel ?? this.config.routerAiTextModel ?? "routerai-summary-model-not-configured";
+    const model = this.config.routerAiKnowledgeModel ?? "routerai-summary-model-not-configured";
     try {
       const response = await this.client.createChatCompletion({
         model,
@@ -3510,7 +3522,7 @@ function isLikelyKnowledgeQuestion(text: string): boolean {
  * new message continues it, while the server decides which prior policies are
  * safe to offer as such context. */
 function contextualKnowledgePolicy(messages: Stage1Message[], text: string): ContextualKnowledgePolicy | undefined {
-  if (!isShortContextualQuestion(text)) return undefined;
+  if (!isContextualKnowledgeFollowUpText(text)) return undefined;
   const lastAssistant = [...messages].reverse().find((message) => message.author === "ai")?.body ?? "";
   if (/(?:автомобил[ья]?\s+с\s+)?регион(?:ом)?\s*10.{0,80}(?:не\s+принимаем|не\s+оформля\p{L}*|не\s+сможем\s+продолжить)/iu.test(lastAssistant)) {
     return {
@@ -3518,21 +3530,10 @@ function contextualKnowledgePolicy(messages: Stage1Message[], text: string): Con
       approvedAnswer: "К сожалению, по автомобилю с регионом 10 мы не сможем продолжить оформление. Если у Вас есть другой автомобиль без региона 10, можете сообщить его модель, год выпуска и ориентировочную стоимость."
     };
   }
-  if (isContextualFollowUpPhrase(text) && lastAssistant.trim()) {
+  if (lastAssistant.trim()) {
     return { key: "previous_assistant_answer", approvedAnswer: lastAssistant };
   }
   return undefined;
-}
-
-function isShortContextualQuestion(text: string): boolean {
-  const normalized = text.trim();
-  return normalized.length > 0 && normalized.length <= 160 && (/[?？]/u.test(normalized) || /(?:так\s+)?что\s+делать|почему|зачем|а\s+что\s+теперь|как\s+быть|можно\s+иначе/iu.test(normalized));
-}
-
-/** A follow-up deliberately has no independent subject: its meaning comes
- * from the immediately preceding assistant answer. */
-function isContextualFollowUpPhrase(text: string): boolean {
-  return /^(?:(?:а\s+)?если\s+(?:нет|не\s+получится|нельзя)|(?:а\s+)?что\s+делать(?:\s+дальше)?|(?:а\s+)?как\s+быть|(?:а\s+)?как\s+это\s+связан\p{L}*|(?:а\s+)?почему|(?:а\s+)?зачем|(?:а\s+)?что\s+(?:тогда|теперь)|(?:а\s+)?без\s+этого|(?:а\s+)?и\s+что|такого\s+нет|другого\s+нет|нет\s+такого)[?!.\s]*$/iu.test(text.trim());
 }
 
 function unsupportedKnowledgeFallbacks(text: string): string[] {
