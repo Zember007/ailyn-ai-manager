@@ -366,6 +366,21 @@ describe("single-agent dialogue", () => {
     expect(output.reply).toContain(answer);
   });
 
+  it("returns the canonical UNA answer instead of model-added facts", async () => {
+    const canonicalAnswer = approvedKnowledgeSeeds.find((seed) => seed.key === "vehicle_registration_una")!.answerRu;
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      reply: "Да, для оформления займа в автоломбарде «Молодой» требуется, чтобы автомобиль был зарегистрирован в УНА.",
+      answerFound: true
+    }) } }] }) } as any;
+
+    const output = await new AgentTurnService(client).answerWithKnowledge({
+      messages: [], facts: {}, settings: {}, text: "В УНА нужна регистрация?", workflowFollowUp: ""
+    });
+
+    expect(output).toMatchObject({ answerFound: true, reply: canonicalAnswer });
+    expect(output?.reply).not.toContain("автоломбарде");
+  });
+
   it.each(["а если нет?", "А что делать?", "А как это связано?"])("passes %s to knowledge as a follow-up to the preceding answer", async (text) => {
     const priorAnswer = "Для оформления нужен оригинал свидетельства о регистрации транспортного средства.";
     const adaptedAnswer = "Без оригинала свидетельства о регистрации транспортного средства оформить займ не получится.";

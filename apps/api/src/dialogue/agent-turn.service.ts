@@ -283,14 +283,18 @@ export class AgentTurnService {
         && (parsed.data.answerFound || (!hasSeveralQuestions && Boolean(documentation.mandatoryAnswer)) || (requiredFallbacks.length > 0 && hasSupportedQuestion));
       // The office location is server-owned configuration, including live map
       // links, and therefore remains verbatim. Every knowledge-base response
-      // comes from the dedicated model and is adapted to the current message.
+      // without an exact approved match comes from the dedicated model. For a
+      // matched FAQ, the model is not allowed to author or extend facts: its
+      // server-owned canonical answer is the only client-facing wording.
       const knowledgeReply = contextualPolicy?.key === "region_10_refusal" && parsed.data.contextualPolicyRelation === "follow_up"
         // The policy is server-approved; keep a model from blending in a
         // semantically nearby but unrelated rule such as the 15-year policy.
         ? contextualPolicy.approvedAnswer
+        : documentation.mandatoryAnswer
+          ? documentation.mandatoryAnswer
         : answerFound
           ? removeInternalPricingInstruction(officeLocationResponse ?? ensureGeneralRateCoverage(parsed.data.reply, input.text))
-        : UNKNOWN_KNOWLEDGE_ANSWER;
+          : UNKNOWN_KNOWLEDGE_ANSWER;
       // The maximum range is server-owned, but it is only one answer in a
       // multi-question turn. Keep the canonical range and retain all other
       // independent KB answers (rate, office amenities, vehicle conditions).
