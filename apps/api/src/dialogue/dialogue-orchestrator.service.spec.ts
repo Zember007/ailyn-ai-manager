@@ -381,6 +381,19 @@ describe("single-agent dialogue", () => {
     expect(output?.reply).not.toContain("автоломбарде");
   });
 
+  it("redirects a past-loan information request to the approved contract support answer", async () => {
+    const answer = "Я Айлин — виртуальный помощник по вопросам оформления новых займов. Если у Вас уже оформлен займ, пожалуйста, позвоните по телефону +996 502 108 108 или напишите в WhatsApp +996 776 108 108. Наши специалисты проверят информацию по Вашему договору и помогут решить Ваш вопрос.";
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      reply: "К сожалению, у меня нет достоверной информации.", answerFound: false
+    }) } }] }) } as any;
+
+    const output = await new AgentTurnService(client).answerWithKnowledge({
+      messages: [], facts: {}, settings: {}, text: "Подскажи что в моем прошлом займе по инфе", workflowFollowUp: ""
+    });
+
+    expect(output).toMatchObject({ answerFound: true, reply: answer });
+  });
+
   it.each(["а если нет?", "А что делать?", "А как это связано?"])("passes %s to knowledge as a follow-up to the preceding answer", async (text) => {
     const priorAnswer = "Для оформления нужен оригинал свидетельства о регистрации транспортного средства.";
     const adaptedAnswer = "Без оригинала свидетельства о регистрации транспортного средства оформить займ не получится.";

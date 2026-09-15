@@ -59,7 +59,6 @@ const approvedFaqChunks = approvedKnowledgeSeeds
 // These words identify a conversational form, not a knowledge topic. They
 // must never pull a FAQ into the compact KB packet on their own.
 const genericKnowledgeTokens = new Set(["авто", "автомобиль", "деньги", "займ", "какой", "какая", "какие", "можно", "машина", "сколько"]);
-const MAX_KNOWLEDGE_PACKET_CHUNKS = 8;
 
 /**
  * Server fallback for a product-policy topic expressed in the current client
@@ -109,6 +108,8 @@ export function prioritizedKnowledgeForQuestion(input: {
     (hasExactApprovedFaqAlias(chunk, current) || hasStrongApprovedQuestionMatch(chunk, tokens))
   );
   const contractRules = generatedDocumentationChunks.filter((chunk) => chunk.section === "3.18");
+  // Relevance determines order, not visibility: the knowledge model receives
+  // every approved FAQ and document chunk. The ranked items remain first.
   return uniqueKnowledge([
     ...(existingContractServiceRequest ? contractRules : []),
     ...exactMatchedFaq,
@@ -116,8 +117,10 @@ export function prioritizedKnowledgeForQuestion(input: {
     ...(spouseOwnershipRule ? [spouseOwnershipRule] : []),
     ...(ownershipRegistrationRule ? [ownershipRegistrationRule] : []),
     ...relevantSelectedKnowledge,
-    ...selected.commonKnowledge
-  ]).slice(0, MAX_KNOWLEDGE_PACKET_CHUNKS);
+    ...selected.commonKnowledge,
+    ...availableFaq,
+    ...generatedDocumentationChunks
+  ]);
 }
 
 function uniqueKnowledge(chunks: KnowledgeContextChunk[]): KnowledgeContextChunk[] {
@@ -350,5 +353,5 @@ function isOwnershipRegistrationQuestion(text: string): boolean {
 /** Current-loan servicing belongs to the approved existing-contract redirect,
  * rather than pre-loan FAQ material. */
 function isExistingContractServiceRequest(text: string): boolean {
-  return /(?:действующ\p{L}*|текущ\p{L}*)\s+(?:займ|договор)|(?:сколько|какая)\s+(?:я\s+)?(?:сейчас\s+)?долж(?:ен|на)[^.!?]{0,80}(?:по\s+(?:моему\s+)?(?:текущ\p{L}*\s+)?(?:займу|договор)|у\s+меня)|(?:остат(?:ок|лось)|задолженн\p{L}*|долг\p{L}*)[^.!?]{0,60}(?:по\s+(?:моему\s+)?(?:займу|договор)|у\s+меня)|(?:датчик|gps|гпс)[^.!?]{0,40}(?:не\s+работа|сломал|перестал\p{L}*\s+работа|замен)/iu.test(text);
+  return /(?:действующ\p{L}*|текущ\p{L}*|прошл\p{L}*|предыдущ\p{L}*|стар\p{L}*)\s+(?:займ|договор)|(?:займ|договор)[^.!?]{0,40}(?:действующ\p{L}*|текущ\p{L}*|прошл\p{L}*|предыдущ\p{L}*|стар\p{L}*)|(?:информ\p{L}*|инф[ао])[^.!?]{0,50}(?:мо(?:ем|ём)|сво(?:ем|ём))[^.!?]{0,30}(?:займ|договор)|(?:сколько|какая)\s+(?:я\s+)?(?:сейчас\s+)?долж(?:ен|на)[^.!?]{0,80}(?:по\s+(?:моему\s+)?(?:текущ\p{L}*\s+)?(?:займу|договор)|у\s+меня)|(?:остат(?:ок|лось)|задолженн\p{L}*|долг\p{L}*)[^.!?]{0,60}(?:по\s+(?:моему\s+)?(?:займу|договор)|у\s+меня)|(?:датчик|gps|гпс)[^.!?]{0,40}(?:не\s+работа|сломал|перестал\p{L}*\s+работа|замен)/iu.test(text);
 }

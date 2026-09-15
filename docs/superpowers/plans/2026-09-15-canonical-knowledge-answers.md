@@ -16,21 +16,21 @@
 - Modify: `apps/api/src/dialogue/dialogue-orchestrator.service.spec.ts`
 - Modify: `apps/api/src/dialogue/agent-turn.service.ts:282-297`
 
-- [ ] **Step 1: Write a failing test**
+- [x] **Step 1: Write a failing test**
 
 Mock a knowledge-model reply that adds `«в автоломбарде Молодой»` and call `answerWithKnowledge` for `«В УНА нужна регистрация?»`. Assert the result equals the canonical `vehicle_registration_una.answerRu` string from `approvedKnowledgeSeeds`.
 
-- [ ] **Step 2: Run the focused test to verify failure**
+- [x] **Step 2: Run the focused test to verify failure**
 
 Run: `pnpm vitest run --config vitest.config.ts apps/api/src/dialogue/dialogue-orchestrator.service.spec.ts -t "canonical UNA answer"`
 
 Expected: FAIL because the current implementation returns the model reply.
 
-- [ ] **Step 3: Make `mandatoryAnswer` server-authoritative**
+- [x] **Step 3: Make `mandatoryAnswer` server-authoritative**
 
 In `answerWithKnowledge`, select `documentation.mandatoryAnswer` before any model-authored reply whenever it is present and no special server-owned response overrides it. Continue to use the model output only for non-canonical retrieval and for determining whether an answer was found.
 
-- [ ] **Step 4: Run the focused test to verify success**
+- [x] **Step 4: Run the focused test to verify success**
 
 Run: `pnpm vitest run --config vitest.config.ts apps/api/src/dialogue/dialogue-orchestrator.service.spec.ts -t "canonical UNA answer"`
 
@@ -42,13 +42,13 @@ Expected: PASS.
 - Verify: `apps/api/src/dialogue/dialogue-orchestrator.service.spec.ts`
 - Verify: `apps/api/src/dialogue/agent-turn.service.ts`
 
-- [ ] **Step 1: Run direct approved-FAQ coverage**
+- [x] **Step 1: Run direct approved-FAQ coverage**
 
 Run: `pnpm vitest run --config vitest.config.ts apps/api/src/dialogue/dialogue-orchestrator.service.spec.ts -t "canonical UNA answer|approved orientation|foreign registration|special equipment"`
 
 Expected: PASS.
 
-- [ ] **Step 2: Type-check the API package and inspect whitespace**
+- [x] **Step 2: Type-check the API package and inspect whitespace**
 
 Run: `pnpm --filter @ailyn/api typecheck && git diff --check`
 

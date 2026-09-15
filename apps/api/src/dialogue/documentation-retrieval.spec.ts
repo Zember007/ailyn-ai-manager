@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { hasApprovedKnowledgeMatch, isMaximumLoanKnowledgeQuestion, prioritizedKnowledgeForQuestion, selectRelevantDocumentation } from "./documentation-retrieval.js";
+import { generatedDocumentationChunks } from "./documentation-chunks.generated.js";
+import { approvedKnowledgeSeeds } from "../knowledge/knowledge.service.js";
 
 describe("selectRelevantDocumentation", () => {
   it("matches an approved knowledge alias despite a missing space", () => {
@@ -48,6 +50,27 @@ describe("selectRelevantDocumentation", () => {
     const result = selectRelevantDocumentation({ facts: {}, currentMessage: "а вы можете посмотреть сколько я сейчас должен по текущему договору", messages: [] });
     expect(result.commonKnowledge.some((chunk) => chunk.text.includes("Я Айлин — виртуальный помощник"))).toBe(true);
     expect(result.mandatoryAnswer).toBe("Я Айлин — виртуальный помощник по вопросам оформления новых займов. Если у Вас уже оформлен займ, пожалуйста, позвоните по телефону +996 502 108 108 или напишите в WhatsApp +996 776 108 108. Наши специалисты проверят информацию по Вашему договору и помогут решить Ваш вопрос.");
+  });
+
+  it.each([
+    "Подскажи что в моем прошлом займе по инфе",
+    "информация по моему предыдущему договору",
+    "что с моим старым займом"
+  ])("routes a past loan request to the existing-contract redirect: %s", (currentMessage) => {
+    const result = selectRelevantDocumentation({ facts: {}, currentMessage, messages: [] });
+
+    expect(result.mandatoryAnswer).toBe("Я Айлин — виртуальный помощник по вопросам оформления новых займов. Если у Вас уже оформлен займ, пожалуйста, позвоните по телефону +996 502 108 108 или напишите в WhatsApp +996 776 108 108. Наши специалисты проверят информацию по Вашему договору и помогут решить Ваш вопрос.");
+  });
+
+  it("passes the complete knowledge corpus while keeping a direct match first", () => {
+    const packet = prioritizedKnowledgeForQuestion({ facts: {}, currentMessage: "В УНА нужна регистрация?", messages: [] });
+    const packetKeys = new Set(packet.map((chunk) => chunk.key));
+
+    expect(packet[0]).toMatchObject({ key: "faq_vehicle_registration_una" });
+    for (const chunk of generatedDocumentationChunks) expect(packetKeys).toContain(chunk.key);
+    for (const seed of approvedKnowledgeSeeds.filter((seed) => seed.active && seed.status === "approved" && seed.key !== "unknown_fallback")) {
+      expect(packetKeys).toContain(`faq_${seed.key}`);
+    }
   });
 
   it.each(["Кто ты?", "Ты робот что ли?", "Ты бот?"])("prioritizes existing-contract knowledge for identity question: %s", (currentMessage) => {
