@@ -317,7 +317,10 @@ function hasExactApprovedFaqAlias(chunk: KnowledgeContextChunk, current: string)
   const aliases = "aliases" in chunk && Array.isArray(chunk.aliases) ? chunk.aliases : [];
   const compactCurrent = current.replace(/\s+/gu, "");
   return aliases.some(
-    (alias): alias is string => typeof alias === "string" && alias.trim().length >= 5 && (
+    // Short identifiers such as «УНА» and «GPS» are explicit, unambiguous
+    // FAQ references. Treat them as exact aliases so their server-owned
+    // approved answer wins over any prose produced by the knowledge model.
+    (alias): alias is string => typeof alias === "string" && alias.trim().length >= 3 && (
       current.includes(alias.toLocaleLowerCase("ru-RU"))
       || compactCurrent.includes(alias.toLocaleLowerCase("ru-RU").replace(/\s+/gu, ""))
     )
