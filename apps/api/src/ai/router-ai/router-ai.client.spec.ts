@@ -27,6 +27,7 @@ describe("RouterAiClient timing logs", () => {
     expect(log).toHaveBeenCalledWith("RouterAI chat completion finished", expect.objectContaining({
       event: "routerai.chat_completion",
       operation: "main_agent",
+      requestedModel: "requested-model",
       model: "router-fast-model",
       outcome: "success",
       durationMs: expect.any(Number)
@@ -45,6 +46,7 @@ describe("RouterAiClient timing logs", () => {
     expect(log).toHaveBeenCalledWith("RouterAI chat completion finished", expect.objectContaining({
       event: "routerai.chat_completion",
       operation: "knowledge_answer",
+      requestedModel: "requested-model",
       model: "requested-model",
       outcome: "error",
       durationMs: expect.any(Number),
@@ -66,6 +68,7 @@ describe("RouterAiClient timing logs", () => {
     expect(log).toHaveBeenCalledWith("RouterAI chat completion finished", expect.objectContaining({
       event: "routerai.chat_completion",
       operation: "main_agent",
+      requestedModel: "requested-model",
       model: "requested-model",
       outcome: "aborted",
       durationMs: expect.any(Number)

@@ -70,6 +70,7 @@ export class RouterAiClient {
       this.logger.log("RouterAI chat completion finished", {
         event: "routerai.chat_completion",
         operation: options.operation ?? "unspecified",
+        requestedModel: request.model,
         model: responseModel ?? request.model,
         outcome,
         durationMs: Math.round(performance.now() - startedAt),
