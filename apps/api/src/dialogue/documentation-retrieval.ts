@@ -111,6 +111,9 @@ export function prioritizedKnowledgeForQuestion(input: {
     ...(spouseOwnershipRule ? [spouseOwnershipRule] : []),
     ...(ownershipRegistrationRule ? [ownershipRegistrationRule] : []),
     ...(existingContractServiceRequest ? [] : contractRules),
+    // The knowledge model receives the complete approved FAQ corpus. Its
+    // answer is still constrained by the current question and server-side
+    // fallback guards; broad context must not become permission to invent.
     ...availableFaq,
     ...selected.knowledge,
     ...selected.commonKnowledge

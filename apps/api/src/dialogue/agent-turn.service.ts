@@ -12,14 +12,16 @@ import { attachmentFactsForCurrentStage, deriveStageCompletion, effectiveFactsFo
 import { hasApprovedKnowledgeMatch, isMaximumLoanKnowledgeQuestion, prioritizedKnowledgeForQuestion, selectRelevantDocumentation } from "./documentation-retrieval.js";
 import { agentTurnResultSchema, dialogueSummarySchema, knowledgeAnswerSchema, type AgentTurnResult } from "./agent-turn.contracts.js";
 import { moneyNormalizationSchema } from "./pipeline.contracts.js";
-import { calculateLoanPricing, type LoanPricing, type LoanPricingSettings } from "./loan-pricing.js";
+import { calculateLoanPricing, MINIMUM_VEHICLE_VALUE, type LoanPricing, type LoanPricingSettings } from "./loan-pricing.js";
 import { referencesOtherPersonsVehicle, removeOtherPersonsVehicleFacts } from "./lead-card-ownership.js";
 import { detectMoneyMentions, formatSomMoney, resolveMoneyFacts, roundSomAmount } from "./money-normalization.js";
 import type { Stage1Message } from "./stage1-store.service.js";
 
 const PROMPT_VERSION = "single-agent-v3";
 const NEUTRAL_REPLY = "Извините, сейчас не удалось обработать сообщение. Пожалуйста, напишите ещё раз или обратитесь к сотрудникам компании.";
-const MAX_MODEL_ATTEMPTS = 3;
+// A malformed main-agent payload is repaired by the dedicated JSON
+// normalizer immediately. Retrying the same large prompt only adds latency.
+const MAX_MODEL_ATTEMPTS = 1;
 const MAX_LOG_VALUE_LENGTH = 4000;
 const DEFAULT_OFFICE_ADDRESS = "Б. Молодой Гвардии, 22, Бишкек";
 const DEFAULT_TWO_GIS_URL = "https://go.2gis.com/Y34m4";
@@ -199,6 +201,11 @@ export class AgentTurnService {
       messages: input.messages,
       includeCrossStageMatches: true
     });
+    const requiredFallbacks = unsupportedKnowledgeFallbacks(input.text ?? "");
+    const hasSupportedQuestion = hasSupportedKnowledgeQuestion(input.text ?? "", documentation.mandatoryAnswer);
+    if (requiredFallbacks.length > 0 && !hasSupportedQuestion) {
+      return { reply: requiredFallbacks.join("\n\n"), answerFound: false, model: "server-knowledge-fallback" };
+    }
     const officeLocationResponse = isOfficeLocationQuestion(input.text)
       ? officeLocationReply(input.settings)
       : undefined;
@@ -237,7 +244,8 @@ export class AgentTurnService {
       // Keep the model focused on the approved answer most relevant to this
       // message. The packet always starts with FAQ, then section 3.18 rules,
       // instead of making it search a large, competing corpus by itself.
-      knowledge
+      knowledge,
+      requiredFallbacks
     };
     try {
       throwIfAborted(input.signal);
@@ -258,11 +266,9 @@ export class AgentTurnService {
       // model remains the author of its client-facing formulation, so it can
       // adapt a factual statement to the actual conversational context.
       const hasSeveralQuestions = hasSeveralClientQuestions(input.text ?? "");
-      const unsupportedCompanyServiceQuestion = isUnsupportedCompanyServiceQuestion(input.text ?? "") && !documentation.mandatoryAnswer;
       const ungroundedCreditAnswer = isUngroundedVehicleCreditAnswer(parsed.data.reply, input.text ?? "");
       const answerFound = !ungroundedCreditAnswer
-        && !unsupportedCompanyServiceQuestion
-        && (parsed.data.answerFound || (!hasSeveralQuestions && Boolean(documentation.mandatoryAnswer)));
+        && (parsed.data.answerFound || (!hasSeveralQuestions && Boolean(documentation.mandatoryAnswer)) || (requiredFallbacks.length > 0 && hasSupportedQuestion));
       // The office location is server-owned configuration, including live map
       // links, and therefore remains verbatim. Every knowledge-base response
       // comes from the dedicated model and is adapted to the current message.
@@ -276,9 +282,10 @@ export class AgentTurnService {
       // The maximum range is server-owned, but it is only one answer in a
       // multi-question turn. Keep the canonical range and retain all other
       // independent KB answers (rate, office amenities, vehicle conditions).
+      const replyWithFallbacks = appendKnowledgeFallbacks(knowledgeReply, requiredFallbacks);
       const reply = maximumLoanQuestion && maximumLoanTemplate
-        ? mergeMaximumLoanTemplateWithOtherAnswers(maximumLoanTemplate, knowledgeReply)
-        : knowledgeReply;
+        ? mergeMaximumLoanTemplateWithOtherAnswers(maximumLoanTemplate, replyWithFallbacks)
+        : replyWithFallbacks;
       await this.logs?.log("dialogue.knowledge-model", "Knowledge model response received", {
         conversationId: input.conversationId,
         metadata: { model: response.model ?? model, answerFound }
@@ -435,13 +442,10 @@ export class AgentTurnService {
       let attemptRequest: unknown;
       try {
         throwIfAborted(input.signal);
-        const retryInstruction = attempt > 1
-          ? "\n\nПОВТОРНАЯ ПОПЫТКА: предыдущий ответ не прошёл техническую проверку формата. Верните новый, полностью валидный JSON строго по заданной схеме. Не повторяйте техническое извинение: ответьте клиенту по существу и сохраните только допустимые поля карточки."
-          : "";
         const userMessage = { role: "user" as const, content: buildMessage(input, !retryWithoutImages) };
         const modelRequest = {
           ...request,
-          messages: [{ role: "system" as const, content: retryInstruction ? `${systemPrompt}${retryInstruction}` : systemPrompt }, userMessage]
+          messages: [{ role: "system" as const, content: systemPrompt }, userMessage]
         };
         attemptRequest = modelRequest;
         const response = await this.client.createChatCompletion(modelRequest, { timeoutMs: this.config.routerAiTimeoutMs, signal: input.signal });
@@ -474,13 +478,12 @@ export class AgentTurnService {
           metadata: { attempt, model: request.model, request: attemptRequest, rawModelResponse: agentResponse, error: lastError }
         });
         if (isFetchFailure(error) && input.attachments.some((attachment) => Boolean(attachment.contentBase64))) retryWithoutImages = true;
-        if (attempt < MAX_MODEL_ATTEMPTS) this.logger.warn(`Single-agent attempt ${attempt}/${MAX_MODEL_ATTEMPTS} failed; retrying: ${lastError}`);
       }
     }
     if (lastRawAgentResponse) {
       const repaired = await this.normalizeFailedResponse(input, lastRawAgentResponse, lastError);
       if (repaired) {
-        this.logger.warn(`Cheap JSON normalizer repaired the agent response after ${MAX_MODEL_ATTEMPTS} attempts (model=${repaired.model})`);
+        this.logger.warn(`JSON normalizer repaired the main-agent response after its first failed attempt (model=${repaired.model})`);
         return { result: repaired.result, reply: repaired.result.reply, model: repaired.model, promptVersion: `${PROMPT_VERSION}-normalizer` };
       }
     }
@@ -599,7 +602,6 @@ export class AgentTurnService {
     // deliberately narrow ID/STS-only contract.  A name already persisted on
     // the card, however, belongs to a previous verified turn and is retained.
     const hasClientName = Boolean(input.facts.fullName);
-    const hasOwnerName = Boolean(input.facts.ownerFullName);
     // FIO extraction is independent from document-side recognition and from
     // the current workflow prompt. The client can attach ID/STS immediately
     // after choosing a programme, before the server has sent its document
@@ -616,7 +618,7 @@ export class AgentTurnService {
         reasoning: { enabled: false },
         response_format: { type: "json_object" },
         messages: [
-          { role: "system", content: "Ты — точный классификатор каждого приложенного изображения и OCR документов Кыргызстана. Верни строго JSON {\"fullName\":string|null,\"ownerFullName\":string|null,\"attachments\":[{\"attachmentId\":string,\"type\":\"id_front\"|\"id_back\"|\"vehicle_registration_front\"|\"vehicle_registration_back\"|\"car\"|\"unknown\"|\"poor_quality\",\"documentTypes\":[\"id_front\"|\"id_back\"|\"vehicle_registration_front\"|\"vehicle_registration_back\"],\"status\":\"received\"|\"poor_quality\"}]}. Верни ровно один объект attachments для КАЖДОГО attachmentId из входа. Не пропускай фото: если тип нельзя надёжно определить, поставь unknown; если изображение слишком размыто/тёмное для классификации — poor_quality со status poor_quality. type — основной, самый заметный тип файла. documentTypes — ВСЕ видимые стороны ID и СТС в этом изображении; их может быть несколько, например [\"id_back\",\"vehicle_registration_front\"]. ID — физический ID/паспорт или его экран в Tunduk; СТС — свидетельство о регистрации ТС или его экран в Tunduk; car — видимый автомобиль без документа. Сторону ID/СТС указывай только когда она видна, иначе unknown и пустой documentTypes. Просмотри каждое ID и каждое СТС на всех фото и всегда ищи полное читаемое ФИО: fullName только с лицевой стороны ID/паспорта, ownerFullName только из подписанного поля собственника на СТС. Не переносить ФИО собственника в fullName, не угадывать и не сокращать имя. Не используй имя файла как источник данных и не добавляй текст вне JSON." },
+          { role: "system", content: "Ты — точный классификатор каждого приложенного изображения и OCR документов Кыргызстана. Верни строго JSON {\"fullName\":string|null,\"attachments\":[{\"attachmentId\":string,\"type\":\"id_front\"|\"id_back\"|\"vehicle_registration_front\"|\"vehicle_registration_back\"|\"car\"|\"unknown\"|\"poor_quality\",\"documentTypes\":[\"id_front\"|\"id_back\"|\"vehicle_registration_front\"|\"vehicle_registration_back\"],\"status\":\"received\"|\"poor_quality\"}]}. Верни ровно один объект attachments для КАЖДОГО attachmentId из входа. Не пропускай фото: если тип нельзя надёжно определить, поставь unknown; если изображение слишком размыто/тёмное для классификации — poor_quality со status poor_quality. type — основной, самый заметный тип файла. documentTypes — ВСЕ видимые стороны ID и СТС в этом изображении; их может быть несколько, например [\"id_back\",\"vehicle_registration_front\"]. ID — физический ID/паспорт или его экран в Tunduk; СТС — свидетельство о регистрации ТС или его экран в Tunduk; car — видимый автомобиль без документа. Сторону ID/СТС указывай только когда она видна, иначе unknown и пустой documentTypes. Из документов можно извлечь только полное ФИО клиента с лицевой стороны ID/паспорта: fullName заполняй исключительно кириллицей. Если ФИО написано латиницей, транслитерируй его в кириллицу; заполняй поле только если ФИО читается целиком. Из СТС не извлекай и не передавай никакие данные, включая ФИО собственника, марку, модель, год, номер и регистрацию. Не угадывай и не сокращай ФИО, не используй имя файла как источник данных и не добавляй текст вне JSON." },
           {
             role: "user",
             content: [
@@ -650,14 +652,19 @@ export class AgentTurnService {
             .map((attachment) => [attachment.type, attachment.status === "poor_quality" ? "poor_quality" : "received"])
         ])
       };
+      // An ID/STS scan is never evidence for vehicle or owner facts. The
+      // focused pass is the only document reader allowed to write a fact,
+      // and its one allowed fact is a complete Cyrillic client name from ID.
+      const documentScan = hasRecognizedDocument(extracted.attachments);
+      const safeParsed = documentScan ? removeDocumentDerivedFacts(parsed) : parsed;
+      const fullName = normalizeDocumentFullName(extracted.fullName);
       const patch = {
-        ...(hasClientName || !extracted.fullName ? {} : { fullName: extracted.fullName }),
-        ...(hasOwnerName || !extracted.ownerFullName ? {} : { ownerFullName: extracted.ownerFullName }),
+        ...(hasClientName || !fullName ? {} : { fullName }),
         ...(Object.keys(documents).length > 0 ? { documents } : {})
       };
       return Object.keys(patch).length > 0
-        ? { ...parsed, attachments: focusedAttachments, leadCardPatch: { ...parsed.leadCardPatch, ...patch } }
-        : focusedAttachments === parsed.attachments ? parsed : { ...parsed, attachments: focusedAttachments };
+        ? { ...safeParsed, attachments: focusedAttachments, leadCardPatch: { ...safeParsed.leadCardPatch, ...patch } }
+        : focusedAttachments === safeParsed.attachments ? safeParsed : { ...safeParsed, attachments: focusedAttachments };
     } catch (error) {
       if (input.signal?.aborted) throw error;
       this.logger.warn(`Document identity extraction unavailable: ${formatError(error)}`);
@@ -670,8 +677,14 @@ export class AgentTurnService {
    * deterministic phrases below are its outage/undecided fallback. */
   private async resolveDivorcePurchaseTiming(parsed: AgentTurnResult, input: AgentTurnInput): Promise<AgentTurnResult> {
     const lastAssistant = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
-    if (input.facts.familyStatus !== "divorced" || !isDivorcePurchaseTimingQuestion(lastAssistant)) return parsed;
     const clientReply = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "").trim();
+    // A client can correct the old divorce status while answering this
+    // question. "В текущем браке" describes the present official status,
+    // not the date of purchase in the previous marriage.
+    if (currentMarriageStatusCorrection(clientReply)) {
+      return { ...parsed, leadCardPatch: { ...parsed.leadCardPatch, familyStatus: "married" } };
+    }
+    if (input.facts.familyStatus !== "divorced" || !isDivorcePurchaseTimingQuestion(lastAssistant)) return parsed;
     if (!clientReply) return parsed;
     const apply = (duringMarriage: boolean) => ({
       ...parsed,
@@ -753,6 +766,14 @@ export class AgentTurnService {
     const fallbackChoice = singleProgrammeOffer
       ? singleProgrammeLimitChoiceFromClearReply(clientReply)
       : limitChoiceFromClearReply(clientReply);
+    // A direct FAQ such as «а кофе есть в офисе?» does not answer the limit
+    // offer. The main agent already routes it to knowledge; do not add a
+    // second, sequential classifier request just to rediscover "undecided".
+    // Keep the classifier for an actual programme/limit choice, including
+    // conversational forms without an explicit programme name.
+    if ((isExplicitQuestionText(clientReply) || isLikelyKnowledgeQuestion(clientReply))
+      && fallbackChoice === "undecided"
+      && programFromExplicitReply(clientReply) === undefined) return parsed;
     if (!this.client.isConfigured()) return fallbackChoice === "undecided" ? parsed : { ...parsed, limitChoice: fallbackChoice };
     try {
       const response = await this.client.createChatCompletion({
@@ -808,7 +829,7 @@ export class AgentTurnService {
         model: this.config.routerAiTextModel ?? "routerai-text-model-not-configured",
         temperature: 0, max_tokens: 40, reasoning: { enabled: false }, response_format: { type: "json_object" },
         messages: [
-          { role: "system", content: "Определи, изменяет ли клиент программу займа в текущей реплике, независимо от текущего этапа. Верни строго JSON {\"program\":\"without_storage\"|\"parking\"|null,\"hasOtherStageAnswer\":boolean,\"question\":string|null}. Выбор определяется по смыслу, не только по точному названию: «давай стоянку тогда», «на стоянку», «со стоянкой», «оставить на парковке», «пускай у вас авто останется», «пускай у вас будет машина», «могу без машины обойтись», «машину могу оставить у вас», «авто может остаться у вас» означают parking. «без изъятия», «оставить машину у себя», «мне нужно авто у себя», «мне надо ездить на машине», «чтобы авто у меня осталось», «машина должна быть у меня», «не могу без машины» означают without_storage. Считай это выбором только когда клиент утверждает, где ему нужен автомобиль, а не задаёт отвлечённый или условный вопрос. Короткие «без» и «со» интерпретируй только после прямого вопроса о программе. Если в реплике есть вопрос или явный ответ на другой этап, поставь hasOtherStageAnswer=true и верни question, если он есть. Не придумывай выбор." },
+          { role: "system", content: "Определи, изменяет ли клиент программу займа в текущей реплике, независимо от текущего этапа. Верни строго JSON {\"program\":\"without_storage\"|\"parking\"|null,\"hasOtherStageAnswer\":boolean,\"question\":string|null}. Выбор определяется по смыслу, не только по точному названию: «давай стоянку тогда», «на стоянку», «со стоянкой», «оставить на парковке», «пускай у вас авто останется», «пускай у вас будет машина», «могу без машины обойтись», «машину могу оставить у вас», «авто может остаться у вас» означают parking. «без изъятия», «с правом пользования», «тогда с правом пользования», «оставить машину у себя», «мне нужно авто у себя», «мне надо ездить на машине», «чтобы авто у меня осталось», «машина должна быть у меня», «не могу без машины» означают without_storage: клиент сохраняет автомобиль у себя и может им пользоваться. Считай это выбором только когда клиент утверждает, где ему нужен автомобиль, а не задаёт отвлечённый или условный вопрос. Короткие «без» и «со» интерпретируй только после прямого вопроса о программе. Если в реплике есть вопрос или явный ответ на другой этап, поставь hasOtherStageAnswer=true и верни question, если он есть. Не придумывай выбор." },
           { role: "user", content: JSON.stringify({ currentStageQuestion: lastAssistant, clientReply }) }
         ]
       }, { timeoutMs: this.config.routerAiTimeoutMs, signal: input.signal });
@@ -1155,10 +1176,10 @@ function explicitSingleMoneyRole(text: string | undefined): "requestedAmount" | 
 function explicitlyMentionsCurrency(text: string | undefined, currency: Exclude<NormalizedMoneyValue["currency"], "KGS">): boolean {
   const source = text ?? "";
   const patterns = {
-    USD: /(?:\busd\b|\$|доллар)/iu,
-    EUR: /(?:\beur(?:o)?s?\b|€|евро)/iu,
-    KZT: /(?:\bkzt\b|₸|тенге)/iu,
-    RUB: /(?:\brub\b|₽|руб)/iu
+    USD: /(?:\busd\b|\$|dollars?|bucks?|дол+ар|дол(?!\p{L})|бакс)/iu,
+    EUR: /(?:\beur(?:o)?s?\b|€|евр)/iu,
+    KZT: /(?:\bkzt\b|₸|тенг)/iu,
+    RUB: /(?:\brub(?:les?)?\b|₽|руб)/iu
   };
   return patterns[currency].test(source);
 }
@@ -1336,7 +1357,12 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   // Identity is an approved FAQ topic as well. It must take the knowledge
   // route even when it arrives while a workflow question is pending.
   const identityQuestion = isIdentityQuestion(input);
-  const approvedKnowledgeTopic = identityQuestion || hasApprovedKnowledgeMatch(semanticText ?? "");
+  const relationshipEligibilityQuestion = isRelationshipEligibilityQuestion(semanticText ?? "");
+  // Questions about facts previously saved in this client's application are
+  // answered by the knowledge model from the server-provided lead card. They
+  // must not be consumed as answers to whichever collection stage is active.
+  const leadCardQuestion = isLeadCardQuestion(semanticText ?? "");
+  const approvedKnowledgeTopic = relationshipEligibilityQuestion || leadCardQuestion || identityQuestion || hasApprovedKnowledgeMatch(semanticText ?? "");
   const modelMarksCurrentStageUnrelated = parsed.currentStageResponse === "unrelated";
   const stageResponse = !approvedKnowledgeTopic && !modelMarksCurrentStageUnrelated && (Boolean(workflowStageClarification) || modelCurrentStageClarification || activeWorkflowClarification || inactiveGuarantorClarification || parkingAlternativeGuarantorAnswer || (isResponseToLastWorkflowQuestion(input) && modelKnowledgeRequest?.required !== true));
   // The main model semantically detects natural-language questions which do
@@ -1349,9 +1375,10 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     && !maximumLoanQuestion
     && loanQuestionKind === "none"
     && !asksProgrammeDetails(semanticText ?? "");
-  const relationshipEligibilityQuestion = isRelationshipEligibilityQuestion(semanticText ?? "");
-  const mayNeedKnowledge = !relationshipEligibilityQuestion && !programSelectionOnly && (
-    approvedKnowledgeTopic
+  const mayNeedKnowledge = !programSelectionOnly && (
+    relationshipEligibilityQuestion
+    || leadCardQuestion
+    || approvedKnowledgeTopic
     ||
     modelKnowledgeRequest?.required === true
     || maximumLoanQuestion
@@ -1370,7 +1397,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   // FAQ.  Do not let the generic one-word guard discard it before retrieval.
   const knowledgeRequest = (!approvedKnowledgeTopic && ((bareNonQuestion && !maximumLoanQuestion) || (!maximumLoanQuestion && stageResponse))) || !mayNeedKnowledge
     ? undefined
-    : modelKnowledgeRequest ?? (maximumLoanQuestion || approvedKnowledgeTopic || ownershipRegistrationQuestion || independentOfficeQuestion || isExplicitQuestionText(semanticText ?? "")
+    : modelKnowledgeRequest ?? (relationshipEligibilityQuestion || maximumLoanQuestion || leadCardQuestion || approvedKnowledgeTopic || ownershipRegistrationQuestion || independentOfficeQuestion || isExplicitQuestionText(semanticText ?? "")
       ? { required: true as const, reason: "missing_approved_answer" as const }
       : isLikelyKnowledgeQuestion(semanticText ?? "")
         ? { required: true as const, reason: "missing_approved_answer" as const }
@@ -1561,9 +1588,6 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   const waitingForVehicleValueNotice = waitingForVehicleValueReply(input, effectiveFacts);
   const vehicleNeedClarification = ambiguousVehicleNeedReply(input, effectiveFacts);
   const familyNotice = familyTransitionNotice(input, input.facts, effectiveFacts);
-  const relationshipEligibilityAnswer = relationshipEligibilityQuestion
-    ? relationshipEligibilityAnswerForFacts(semanticText ?? "", effectiveFacts)
-    : undefined;
   const visitNotice = visitConfirmationNotice(input, input.facts, effectiveFacts);
   const visitTimeRecorded = visitTimeRecordedReply(input, input.facts, effectiveFacts);
   const visitProgress = visitProgressReply(input.facts, effectiveFacts);
@@ -1591,6 +1615,10 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   const accidentNotDrivableNotice = !input.facts.accidentNotDrivable && effectiveFacts.accidentNotDrivable
     ? "Автомобиль после серьёзного ДТП и не на ходу не принимается как подходящий залог."
     : undefined;
+  const vehicleValueBelowMinimumNotice = typeof effectiveFacts.vehicleValue === "number"
+    && effectiveFacts.vehicleValue < MINIMUM_VEHICLE_VALUE
+    ? "К сожалению, мы не можем принять данный автомобиль в залог, так как его рыночная стоимость должна составлять не менее 300 000 сом."
+    : undefined;
   const foreignVehicleRegistrationNotice = isForeignVehicleRegistration(effectiveFacts)
     ? "К сожалению, нет. Мы принимаем в залог только автомобили, зарегистрированные в Кыргызской Республике."
     : undefined;
@@ -1616,11 +1644,8 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   // visit branch. The calculation itself is server-owned; after answering,
   // the normal workflow appender returns to the outstanding action.
   const optionalStageDeclineNotice = optionalStageDeclineNoticeForTurn(input.facts, effectiveFacts);
-  // A direct question about spouse/guarantor requirements is answered from
-  // the card before a fallible model label such as current-stage
-  // clarification can return the client to the pending visit prompt.
-  const directAnswerWithoutRepeatedStage = unsupportedVehicleTypeNotice ?? region10RefusalNotice ?? foreignVehicleRegistrationNotice ?? foreignCitizenNotice ?? relationshipEligibilityAnswer ?? workflowStageClarification ?? accidentNotDrivableNotice ?? visitNotice ?? completionNotice ?? attachmentAcceptanceNotice ?? optionalStageDeclineNotice ?? visitNonWorkingDay ?? visitTimeRecorded ?? visitProgress ?? visitTimeUnavailable ?? visitTimeClarification ?? residenceLimitNotice ?? programmeChangeGuarantorNotice ?? acceptedLimitNotice ?? (region10Answer ? [region10Answer, olderVehicleNotice].filter(Boolean).join("\n\n") : undefined) ?? olderVehicleNotice ?? spouseVisitAnswer(input) ?? familyNotice ?? unknownVehicleValueNotice ?? waitingForVehicleValueNotice;
-  const terminalRefusalAnswer = unsupportedVehicleTypeNotice ?? region10RefusalNotice ?? foreignVehicleRegistrationNotice ?? foreignCitizenNotice ?? accidentNotDrivableNotice;
+  const directAnswerWithoutRepeatedStage = vehicleValueBelowMinimumNotice ?? unsupportedVehicleTypeNotice ?? region10RefusalNotice ?? foreignVehicleRegistrationNotice ?? foreignCitizenNotice ?? workflowStageClarification ?? accidentNotDrivableNotice ?? visitNotice ?? completionNotice ?? attachmentAcceptanceNotice ?? optionalStageDeclineNotice ?? visitNonWorkingDay ?? visitTimeRecorded ?? visitProgress ?? visitTimeUnavailable ?? visitTimeClarification ?? residenceLimitNotice ?? programmeChangeGuarantorNotice ?? acceptedLimitNotice ?? (region10Answer ? [region10Answer, olderVehicleNotice].filter(Boolean).join("\n\n") : undefined) ?? olderVehicleNotice ?? familyNotice ?? unknownVehicleValueNotice ?? waitingForVehicleValueNotice;
+  const terminalRefusalAnswer = vehicleValueBelowMinimumNotice ?? unsupportedVehicleTypeNotice ?? region10RefusalNotice ?? foreignVehicleRegistrationNotice ?? foreignCitizenNotice ?? accidentNotDrivableNotice;
   const directAnswer = directAnswerWithoutRepeatedStage ?? repeatedStageReply;
   // A direct approved FAQ outranks all free-form model prose. This prevents
   // plausible but unsupported claims such as a parking location or credit
@@ -1647,15 +1672,12 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     && loanQuestionKind === "none"
     ? parsed.contextualAcknowledgement
     : undefined;
-  const workflowFollowUp = pauseNotice || unsupportedVehicleTypeNotice || region10RefusalNotice || foreignVehicleRegistrationNotice || foreignCitizenNotice || accidentNotDrivableNotice || rejectedMoneyClarification || belowMinimumReply || visitTimeRecorded || visitProgress || visitTimeUnavailable || visitTimeClarification || visitNonWorkingDay || hasPendingMoneyCurrencyClarification(internalReply)
+  const workflowFollowUp = pauseNotice || vehicleValueBelowMinimumNotice || unsupportedVehicleTypeNotice || region10RefusalNotice || foreignVehicleRegistrationNotice || foreignCitizenNotice || accidentNotDrivableNotice || rejectedMoneyClarification || belowMinimumReply || visitTimeRecorded || visitProgress || visitTimeUnavailable || visitTimeClarification || visitNonWorkingDay || hasPendingMoneyCurrencyClarification(internalReply)
     ? undefined
     : serverWorkflowFollowUp(loanQuestionKind, effectiveFacts, stageCompletion, requestedAmountLimit, workflowSelectedLimitNotice);
   const answerBeforeWorkflow = isLoanRateQuestion(loanQuestionKind)
     ? ""
-    // The server can answer spouse/guarantor eligibility from known facts.
-    // That direct question must not be hidden by a model's mistaken label of
-    // the same turn as a clarification of the pending visit stage.
-    : pauseNotice ?? relationshipEligibilityAnswer ?? workflowStageClarification ?? workflowClarificationAnswer ?? mandatoryKnowledgeAnswer ?? contextualAcknowledgement?.text ?? directAnswer ?? removeIncorrectResidenceClarificationProse(
+    : pauseNotice ?? workflowStageClarification ?? workflowClarificationAnswer ?? mandatoryKnowledgeAnswer ?? contextualAcknowledgement?.text ?? directAnswer ?? removeIncorrectResidenceClarificationProse(
       removeForbiddenMetaPhrases(dropUnsupportedFallbackForNonQuestion(replaceUnsupportedFallbackWithApprovedAnswer(guardedModelReply, mandatoryKnowledgeAnswer, input), semanticText)),
       input,
       effectiveFacts
@@ -1670,11 +1692,9 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   // the explanation with the same question the client just queried.
   const responsePlan = terminalRefusalAnswer
     ? terminalRefusalAnswer
-    : relationshipEligibilityAnswer
-      ? appendRequiredWorkflowFollowUp(relationshipEligibilityAnswer, workflowFollowUp)
-      : workflowStageClarification
-        ? appendRequiredWorkflowFollowUp(workflowStageClarification, workflowFollowUp)
-        : appendRequiredWorkflowFollowUp(
+    : workflowStageClarification
+      ? appendRequiredWorkflowFollowUp(workflowStageClarification, workflowFollowUp)
+      : appendRequiredWorkflowFollowUp(
           (contextualAcknowledgement ? undefined : repeatedStageReply) ?? appendContinuationAfterRegion10PolicyQuestion(
             removeModelWorkflowQuestion(removeQuestionsForKnownLeadFacts(removeUnaskedProgramDetails(removeRepeatedProgramExplanation(enforceFirstContactGreeting(serverSafeAnswer, input), effectiveFacts, input), input, programSelectionOnly), effectiveFacts, input.facts)),
             input,
@@ -1694,7 +1714,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
       ? { stage: "PAUSED", status: "target_reached", nextAction: "pause" }
       : existingContractServiceRequest
         ? { stage: "EXISTING_CONTRACT_REDIRECT", status: "redirect_existing_contract", nextAction: "redirect_existing_contract" }
-        : accidentNotDrivableNotice
+        : vehicleValueBelowMinimumNotice || accidentNotDrivableNotice
           ? { stage: "REFUSED", status: "refuse", nextAction: "none" }
           : unsupportedVehicleTypeNotice || region10RefusalNotice || foreignCitizenNotice
             ? { stage: "REFUSED", status: "refuse", nextAction: "none" }
@@ -2868,60 +2888,31 @@ function ambiguousVehicleNeedReply(input: Pick<AgentTurnInput, "text" | "current
     : undefined;
 }
 
-const SPOUSE_VISIT_ANSWER = "Возьмите с собой супругу (супруга) для нотариального оформления согласия. Если согласие у Вас будет на руках, присутствие супруги (супруга) необязательно.";
-
 function isRelationshipEligibilityQuestion(text: string): boolean {
   const mentionsRelationship = /(?:^|[^\p{L}])(?:жен(?:а|у|ы|е|ой|ою)?|муж(?:а|у|ем|ья)?|супруг\p{L}*|поручител\p{L}*)(?=$|[^\p{L}])/iu.test(text);
   if (!mentionsRelationship) return false;
-  if (/(?:нуж\p{L}*|надо|брать|привез|приех|нужен|нужна|есть\s+ли)/iu.test(text)) return true;
+  if (/(?:нуж\p{L}*|надо|брать|привез|приех|нужен|нужна|есть\s+ли|какой|какая|требован|услови)/iu.test(text)) return true;
   // «А поручителя?» is a natural short continuation of an attendance
   // question. Treat it as a question even though its verb was omitted.
   return /^\s*(?:а\s+)?поручител\p{L}*\s*[?!.…]*\s*$/iu.test(text);
 }
 
-/** These two conditions belong to the current application facts, not to KB.
- * Keep a useful conditional answer when the card is incomplete and state the
- * exact obligation only once programme/residence or family status is known. */
-function relationshipEligibilityAnswerForFacts(text: string, facts: ApplicationFacts): string {
-  const asksSpouse = /(?:^|[^\p{L}])(?:жен(?:а|у|ы|е|ой|ою)?|муж(?:а|у|ем|ья)?|супруг\p{L}*)(?=$|[^\p{L}])/iu.test(text);
-  const asksGuarantor = /поручител\p{L}*/iu.test(text);
-  const answers: string[] = [];
-  if (asksSpouse) {
-    if (!facts.familyStatus || facts.familyStatus === "unknown") {
-      answers.push("Если Вы состоите в браке, потребуется нотариальное согласие супруги или супруга. Его можно оформить при визите у нотариуса в нашем здании; для этого нужно приехать вместе с супругой или супругом.");
-    } else if (facts.familyStatus === "married") {
-      answers.push(facts.spouseConsentReady === true
-        ? "Если нотариальное согласие уже будет у Вас на руках, супругу или супруга брать не нужно."
-        : "Да, если нотариального согласия ещё нет, возьмите с собой супругу или супруга для его оформления при визите. Его можно оформить у нотариуса в нашем здании.");
-    } else {
-      answers.push("Нет, при Вашем семейном положении согласие супруга или супруги не требуется, поэтому брать его или её не нужно.");
-    }
-  }
-  if (asksGuarantor) {
-    const programmeAndResidenceKnown = Boolean(facts.requestedProgram && facts.residenceCategory);
-    if (!programmeAndResidenceKnown) {
-      answers.push("Поручитель нужен только для программы без изъятия автомобиля при прописке за пределами Бишкека и Чуйской области.");
-    } else if (requiresGuarantorForFacts(facts)) {
-      answers.push("Да, в Вашем случае нужен поручитель.");
-    } else {
-      answers.push("Нет, в Вашем случае поручитель не требуется.");
-    }
-  }
-  return answers.join("\n\n");
-}
-
-function spouseVisitAnswer(input: Pick<AgentTurnInput, "text" | "currentTurnMessages">): string | undefined {
-  const text = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "").toLocaleLowerCase("ru-RU");
-  // Do not use a bare `жен…` stem: it is contained in «нужен». The family
-  // relation must appear as a standalone, inflected spouse word.
-  const mentionsSpouse = /(?:^|[^\p{L}])(?:жен(?:а|у|ы|е|ой|ою)?|муж(?:а|у|ем|ья)?|супруг\p{L}*)(?=$|[^\p{L}])/iu.test(text);
-  const asksAboutAttendance = /(?:нуж\p{L}*|брать|привез|приех|визит|вместе|присутств)/iu.test(text);
-  return mentionsSpouse && asksAboutAttendance ? SPOUSE_VISIT_ANSWER : undefined;
-}
-
 function isIdentityQuestion(input: Pick<AgentTurnInput, "text" | "currentTurnMessages">): boolean {
   const text = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "").toLocaleLowerCase("ru-RU");
   return /(?:кто\s+(?:ты|вы)(?:\s+(?:такой|такая))?|чем\s+(?:(?:ты|вы)\s+)?занима(?:ешься|етесь)|зачем\s+(?:ты|вы)|(?:ты|вы)\s+(?:бот|робот|ии)|(?:это|ты|вы)\s+(?:ai|ии)|жив(?:ой|ая)|настоящ(?:ий|ая))/iu.test(text);
+}
+
+/**
+ * Detect a request to recall this client's saved application details. This is
+ * deliberately separate from company FAQ routing: the answer comes from the
+ * server-owned `leadCard`, including when the requested fact is still absent.
+ */
+function isLeadCardQuestion(text: string): boolean {
+  const normalized = text.trim().toLocaleLowerCase("ru-RU");
+  if (!normalized) return false;
+  const asksToRecall = /(?:напомн\p{L}*|(?:какой|какая|какого|сколько|где|когда)[^?!]{0,30}(?:у\s+меня|я\s+(?:указал|выбрал|сообщил|назвал))|(?:у\s+меня|я\s+(?:указал|выбрал|сообщил|назвал))[^?!]{0,30}(?:какой|какая|какого|сколько|где|когда)|(?:моя|мой|моё|мое)[^?!]{0,30}(?:какой|какая|какого|сколько|где|когда))/iu.test(normalized);
+  const mentionsLeadFact = /(?:моя|моей|мою|моём|моем|у\s+меня|я\s+(?:указал|выбрал|сообщил|назвал)|авто(?:мобил\p{L}*)?|машин\p{L}*|марка|модель|год(?:а|у)?|стоимост\p{L}*|сумм\p{L}*\s+займ\p{L}*|пропис\p{L}*|место\s+жительств\p{L}*|программ\p{L}*|семейн\p{L}*\s+положен\p{L}*|документ\p{L}*|дата|время\s+(?:визит|запис)|визит)/iu.test(normalized);
+  return mentionsLeadFact && (asksToRecall || /[?？]/u.test(normalized));
 }
 
 /** The source FAQ contains two adjacent document cases. Select the one the
@@ -2955,7 +2946,7 @@ function isExplicitExistingContractRequest(text: string): boolean {
   return /(?:действующ(?:ий|ему)\s+(?:займ|договор)|текущ\p{L}*\s+(?:займ|договор)|(?:сколько|какая)\s+(?:я\s+)?(?:сейчас\s+)?долж(?:ен|на)[^.!?]{0,80}(?:по\s+(?:моему\s+)?(?:текущ\p{L}*\s+)?(?:займу|договор)|у\s+меня)|(?:остат(?:ок|лось)|задолженн\p{L}*|долг\p{L}*)[^.!?]{0,60}(?:по\s+(?:моему\s+)?(?:займу|договор)|у\s+меня)|(?:проверьте|проверить)[^.!?]{0,60}оплат|(?:я\s+)?оплатил(?:а)?\b|реквизит\p{L}*[^.!?]{0,60}(?:оплат|договор)|(?:вернуть|забрать)[^.!?]{0,60}документ|(?:не\s+работает|перестал\p{L}*\s+работать)[^.!?]{0,60}(?:gps|гпс|датчик)|(?:gps|гпс|датчик)[^.!?]{0,40}(?:не\s+работа|сломал|перестал\p{L}*\s+работа|замен))/iu.test(text);
 }
 
-function residencePatchFromExplicitClientText(input: Pick<AgentTurnInput, "text" | "currentTurnMessages" | "messages">, patch: Partial<ApplicationFacts>, previousFacts: ApplicationFacts, modelAssertedResidence: boolean): Partial<ApplicationFacts> {
+function residencePatchFromExplicitClientText(input: Pick<AgentTurnInput, "text" | "currentTurnMessages" | "messages">, patch: Partial<ApplicationFacts>, previousFacts: ApplicationFacts, _modelAssertedResidence: boolean): Partial<ApplicationFacts> {
   const text = input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text;
   const lastAssistant = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
   const explicitChuyCategory = explicitChuyResidenceCategory(text);
@@ -3006,7 +2997,11 @@ function residencePatchFromExplicitClientText(input: Pick<AgentTurnInput, "text"
   const explicitlyMentionsResidence = /(?:пропис\p{L}*|зарегистрир\p{L}*|регистрац\p{L}*|место\s+жительств\p{L}*)/iu.test(text ?? "");
   if ((isGuarantorQuestion(lastAssistant) || isGuarantorParkingAlternativeQuestion(lastAssistant)) && !localityInGuarantorReply && !explicitlyMentionsResidence) return {};
   const isResidenceCollectionStage = isResidenceCollectionQuestion(lastAssistant);
-  const isResidenceUpdate = modelAssertedResidence || isResidenceUpdateTurn(text ?? "", lastAssistant, previousFacts);
+  // A model marker is not evidence of a correction. A saved locality may be
+  // changed only when the current client text itself is a residence update;
+  // otherwise a stale or hallucinated `residenceStatement` could overwrite
+  // a correctly recorded place on a later workflow or summary refresh.
+  const isResidenceUpdate = isResidenceUpdateTurn(text ?? "", lastAssistant, previousFacts);
   const clientLocality = localityInGuarantorReply ?? resolveKyrgyzstanLocality(text);
   // The main model can provide a spelling hint only after an explicit
   // residence statement/correction in this turn. It cannot turn an unrelated
@@ -3130,6 +3125,9 @@ function familyPatchFromClearReply(input: Pick<AgentTurnInput, "text" | "current
   const text = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "").trim().toLocaleLowerCase("ru-RU");
   const lastAssistant = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
   const patch: Partial<ApplicationFacts> = {};
+  // A present-tense correction takes precedence over an earlier divorce in
+  // the same message and over the previous divorce-purchase question.
+  if (currentMarriageStatusCorrection(text)) return { familyStatus: "married" };
   // Once the client is already recorded as divorced, the question about when
   // the car was bought has a different meaning from the family-status
   // question. A short answer such as «в браке» describes the purchase, not a
@@ -3172,6 +3170,12 @@ function familyPatchFromClearReply(input: Pick<AgentTurnInput, "text" | "current
     if (/(?:согласие|нотариальн).{0,40}(?:готов|есть\s+на\s+руках|оформил[а-яё]*)/iu.test(text)) patch.spouseConsentReady = true;
   }
   return patch;
+}
+
+/** Detects an explicit statement that the client is married now, rather than
+ * a historical mention of marriage or divorce. */
+function currentMarriageStatusCorrection(text: string): boolean {
+  return /(?:сейчас|текущ\p{L}*|опять|снова).{0,35}(?:жен\p{L}*|замуж\p{L}*|(?:в\s+)?браке)|(?:жен\p{L}*|замуж\p{L}*).{0,35}(?:сейчас|текущ\p{L}*|опять|снова)/iu.test(text);
 }
 
 function isOfficeConsentQuestion(text: string): boolean {
@@ -3489,7 +3493,7 @@ function requiresKnowledgeAnswer(input: Pick<AgentTurnInput, "text" | "currentTu
   return isIdentityQuestion(input)
     || isLikelyKnowledgeQuestion(text)
     || isOfficeLocationQuestion(text)
-    || /(?:датчик|gps|гпс|трекер|стоянк|парковк|вещ|багаж|в\s+кредит|в\s+залоге|арест|ограничени)/iu.test(text)
+    || /(?:датчик|gps|гпс|трекер|стоянк|парковк|вещ|багаж|в\s+кредит|в\s+залоге|арест|ограничени|после\s+ремонт|не\s+езд(?:ит|иет)|не\s+едет|не\s*на\s*ходу)/iu.test(text)
     || patch.vehicleInCredit === true
     || patch.vehiclePledged === true
     || patch.vehicleArrested === true
@@ -3531,15 +3535,25 @@ function isContextualFollowUpPhrase(text: string): boolean {
   return /^(?:(?:а\s+)?если\s+(?:нет|не\s+получится|нельзя)|(?:а\s+)?что\s+делать(?:\s+дальше)?|(?:а\s+)?как\s+быть|(?:а\s+)?как\s+это\s+связан\p{L}*|(?:а\s+)?почему|(?:а\s+)?зачем|(?:а\s+)?что\s+(?:тогда|теперь)|(?:а\s+)?без\s+этого|(?:а\s+)?и\s+что|такого\s+нет|другого\s+нет|нет\s+такого)[?!.\s]*$/iu.test(text.trim());
 }
 
-/** A broad office/amenities snippet must never be used to invent a service
- * the approved material does not mention (for example an in-house mechanic). */
-function isUnsupportedCompanyServiceQuestion(text: string): boolean {
-  const normalized = text.trim();
-  if (isOfficeLocationQuestion(normalized)) return false;
-  // Questions about an amenity or workshop service need their own approved
-  // article. A nearby fact (tea, Wi-Fi, inspection) is never evidence for
-  // kvas, repairs, tyre work, or vehicle modifications.
-  return /(?:свой|ваш|есть)\s+(?:мастер\p{L}*|механик\p{L}*|автосервис\p{L}*|сервис\p{L}*|ремонт\p{L}*|шиномонтаж\p{L}*|квас|напит(?:ок|ки)|еда|перекус|улучшенн\p{L}*\s+электрон\p{L}*)|(?:мастер\p{L}*|механик\p{L}*|автосервис\p{L}*|шиномонтаж\p{L}*|квас|накач(?:ать|ива\p{L}*)\s+шин\p{L}*|установ\p{L}*.{0,40}электрон\p{L}*|ставите.{0,40}электрон\p{L}*|можете.{0,40}накач(?:ать|ива\p{L}*)|ремонт\p{L}*).{0,100}(?:есть|имеется|у\s+вас|можете|ставите|делаете)|(?:можете|ставите).{0,60}(?:шин\p{L}*.{0,20}накач|электрон\p{L}*)/iu.test(normalized);
+function unsupportedKnowledgeFallbacks(text: string): string[] {
+  const fallbacks: string[] = [];
+  if (/(?:номинал\p{L}*|купюр\p{L}*|по\s*\d[\d\s]*\s*сом)/iu.test(text)) {
+    fallbacks.push("По номиналу купюр у меня нет достоверной информации. Это можно уточнить у менеджера при визите.");
+  }
+  if (/(?:водк\p{L}*|алкогол\p{L}*|спиртн\p{L}*)/iu.test(text)) {
+    fallbacks.push("По этому вопросу у меня нет достоверной информации. Это можно уточнить у менеджера при визите.");
+  }
+  return fallbacks;
+}
+
+function hasSupportedKnowledgeQuestion(text: string, mandatoryAnswer: string | undefined): boolean {
+  return Boolean(mandatoryAnswer)
+    || /(?:чай|кофе|стоянк|парковк|адрес|где\s+вы\s+находитесь|график|режим\s+работы)/iu.test(text);
+}
+
+function appendKnowledgeFallbacks(reply: string, fallbacks: string[]): string {
+  const missing = fallbacks.filter((fallback) => !reply.includes(fallback));
+  return [...new Set([reply.trim(), ...missing].filter(Boolean))].join("\n\n");
 }
 
 /**
@@ -3815,7 +3829,7 @@ function modelMoneyPatchForTurn(patch: Partial<ApplicationFacts>, input: Pick<Ag
   if (onlyMention?.roleCandidate === "requestedAmount" || onlyMention?.roleCandidate === "vehicleValue") {
     return result;
   }
-  const foreignCurrencyMentioned = /(?:\busd\b|\$|dollars?|доллар|\beur(?:o)?s?\b|€|евро|\bkzt\b|₸|тенге|\brub\b|₽|руб)/iu.test(input.text ?? "");
+  const foreignCurrencyMentioned = /(?:\busd\b|\$|dollars?|bucks?|дол+ар|дол(?!\p{L})|бакс|\beur(?:o)?s?\b|€|евр|\bkzt\b|₸|тенг|\brub(?:les?)?\b|₽|руб)/iu.test(input.text ?? "");
   // For KGS-only turns the main agent is the fast-path money parser. It
   // understands conversational spellings and returns the normalized number;
   // foreign currency remains exclusive to the dedicated converter.
@@ -3889,6 +3903,7 @@ function programFromExplicitReply(text: string): "without_storage" | "parking" |
 
 /** Conservative fallback when the semantic classifier is unavailable or returns no decision. */
 function programFromVehiclePossessionPreference(text: string): "without_storage" | "parking" | undefined {
+  if (/прав(?:о|а)м\s+пользован\p{L}*/iu.test(text)) return "without_storage";
   if (/(?:пускай|пусть)\s+у\s+вас\s+(?:буд\p{L}*\s+)?(?:авто|автомобил\p{L}*|машин\p{L}*)|(?:пускай|пусть)[^.!?\n]{0,35}(?:авто|автомобил\p{L}*|машин\p{L}*)[^.!?\n]{0,35}(?:у\s+вас|остан|оста[её]т)|могу\s+без\s+(?:авто|автомобил\p{L}*|машин\p{L}*)\s+обойтись|(?:авто|автомобил\p{L}*|машин\p{L}*)[^.!?\n]{0,35}(?:могу|можно)[^.!?\n]{0,25}остав(?:ить|аться)[^.!?\n]{0,25}(?:у\s+вас|на\s+(?:стоянк|парковк))/iu.test(text)) return "parking";
   if (/(?:мне\s+(?:нужно|надо)[^.!?\n]{0,35}(?:ездить\s+на\s+машин\p{L}*|авто\s+у\s+себя|машин\p{L}*\s+у\s+себя)|чтобы\s+(?:авто|автомобил\p{L}*|машин\p{L}*)[^.!?\n]{0,25}(?:у\s+меня\s+)?остал|(?:авто|автомобил\p{L}*|машин\p{L}*)[^.!?\n]{0,25}(?:долж(?:ен|на|но)|нуж(?:ен|на|но))[^.!?\n]{0,25}у\s+меня|не\s+могу\s+без\s+(?:авто|автомобил\p{L}*|машин\p{L}*))/iu.test(text)) return "without_storage";
   return undefined;
@@ -3986,13 +4001,12 @@ type DocumentAttachmentType = "id_front" | "id_back" | "vehicle_registration_fro
 
 function parseDocumentIdentityExtraction(value: string | undefined): {
   fullName?: string;
-  ownerFullName?: string;
   documents: Partial<Record<"id_front" | "id_back" | "vehicle_registration_front" | "vehicle_registration_back", boolean>>;
   attachments: Array<{ attachmentId: string; type: RecognizedAttachmentType; status: RecognizedAttachmentStatus; documentTypes: DocumentAttachmentType[] }>;
   hasAttachmentClassification: boolean;
 } {
   const payload = parseAgentJson(value);
-  const name = (key: "fullName" | "ownerFullName") => {
+  const name = (key: "fullName") => {
     const candidate = payload[key];
     return typeof candidate === "string" && candidate.trim().length > 2 && candidate.trim().length <= 200 ? candidate.trim() : undefined;
   };
@@ -4032,11 +4046,48 @@ function parseDocumentIdentityExtraction(value: string | undefined): {
     : [];
   return {
     fullName: name("fullName"),
-    ownerFullName: name("ownerFullName"),
     documents,
     attachments,
     hasAttachmentClassification: Array.isArray(rawAttachments)
   };
+}
+
+function isCyrillicFullName(value: string | undefined): boolean {
+  return typeof value === "string" && /^[\p{Script=Cyrillic}]+(?:[ -][\p{Script=Cyrillic}]+){1,3}$/u.test(value.trim());
+}
+
+function normalizeDocumentFullName(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const trimmed = value.trim();
+  if (isCyrillicFullName(trimmed)) return trimmed;
+  if (!/^[A-Za-z]+(?:[ -][A-Za-z]+){1,3}$/u.test(trimmed)) return undefined;
+  const digraphs: Array<[RegExp, string]> = [
+    [/shch/giu, "щ"], [/yo/giu, "ё"], [/zh/giu, "ж"], [/kh/giu, "х"], [/ts/giu, "ц"],
+    [/ch/giu, "ч"], [/sh/giu, "ш"], [/yu/giu, "ю"], [/ya/giu, "я"], [/ye/giu, "е"]
+  ];
+  const letters: Record<string, string> = {
+    a: "а", b: "б", c: "к", d: "д", e: "е", f: "ф", g: "г", h: "х", i: "и", j: "й",
+    k: "к", l: "л", m: "м", n: "н", o: "о", p: "п", q: "к", r: "р", s: "с", t: "т",
+    u: "у", v: "в", w: "в", x: "кс", y: "й", z: "з"
+  };
+  let transliterated = trimmed.toLocaleLowerCase("en-US");
+  for (const [pattern, replacement] of digraphs) transliterated = transliterated.replace(pattern, replacement);
+  transliterated = transliterated
+    .replace(/[a-z]/gu, (letter: string) => letters[letter] ?? letter)
+    .replace(/(^|[ -])[\p{Script=Cyrillic}]/gu, (letter: string) => letter.toLocaleUpperCase("ru-RU"));
+  return isCyrillicFullName(transliterated) ? transliterated : undefined;
+}
+
+function hasRecognizedDocument(attachments: Array<{ type: RecognizedAttachmentType; documentTypes: DocumentAttachmentType[] }>): boolean {
+  return attachments.some((attachment) => isDocumentAttachmentType(attachment.type) || attachment.documentTypes.length > 0);
+}
+
+function removeDocumentDerivedFacts(parsed: AgentTurnResult): AgentTurnResult {
+  const { fullName: _fullName, ownerFullName: _ownerFullName, phone: _phone,
+    vehicleRegistrationCountry: _vehicleRegistrationCountry, vehicleRegistrationRegion: _vehicleRegistrationRegion,
+    vehicleType: _vehicleType, vehicleMake: _vehicleMake, vehicleModel: _vehicleModel,
+    vehicleYear: _vehicleYear, vehicleValue: _vehicleValue, ...leadCardPatch } = parsed.leadCardPatch;
+  return { ...parsed, leadCardPatch };
 }
 
 function isDocumentAttachmentType(type: RecognizedAttachmentType): type is "id_front" | "id_back" | "vehicle_registration_front" | "vehicle_registration_back" {
@@ -4273,7 +4324,6 @@ function normalizeAgentPayload(payload: Record<string, unknown>, currentFacts: A
   }
   const leadCardPatch = payload.leadCardPatch;
   if (leadCardPatch && typeof leadCardPatch === "object" && !Array.isArray(leadCardPatch)) {
-    const carriedFacts = Object.fromEntries(Object.entries(currentFacts).filter(([key, value]) => permittedLeadCardKeys.has(key) && value !== undefined));
     const rawPatch = leadCardPatch as Record<string, unknown>;
     // `limitChoice` is transient routing metadata, not a lead fact. Some
     // otherwise correct model replies put it next to the chosen program in
@@ -4285,8 +4335,10 @@ function normalizeAgentPayload(payload: Record<string, unknown>, currentFacts: A
     // The model sometimes mirrors derived/top-level fields (for example
     // preliminaryLimit) inside leadCardPatch. They are not application facts,
     // so drop them instead of rejecting an otherwise usable turn.
+    // `leadCardPatch` is a delta for this client turn. Do not copy current
+    // facts into it: doing so gives a normalizer authority to rewrite old
+    // values while it is only supposed to repair this response's JSON.
     const patch = {
-      ...carriedFacts,
       ...Object.fromEntries(Object.entries(rawPatch).filter(([key]) =>
         !serverOnlyLeadFactKeys.has(key) && (permittedLeadCardKeys.has(key) || key in leadCardAliases)
       ))

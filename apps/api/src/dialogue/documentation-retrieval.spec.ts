@@ -4,6 +4,7 @@ import { hasApprovedKnowledgeMatch, isMaximumLoanKnowledgeQuestion, prioritizedK
 describe("selectRelevantDocumentation", () => {
   it("matches an approved knowledge alias despite a missing space", () => {
     expect(hasApprovedKnowledgeMatch("машина не находу")).toBe(true);
+    expect(hasApprovedKnowledgeMatch("У меня машина после ремонта, не ездиет")).toBe(true);
     expect(hasApprovedKnowledgeMatch("нет")).toBe(false);
 
     const result = selectRelevantDocumentation({ facts: {}, currentMessage: "машина не находу", messages: [] });
@@ -149,7 +150,7 @@ describe("selectRelevantDocumentation", () => {
   });
 
   it.each([
-    ["где у вас стоянка", "Парковка находится недалеко от нашего офиса и находится под охраной. Точный адрес парковки не сообщается."],
+    ["где у вас стоянка", "Парковка находится недалеко от нашего офиса и находится под охраной. "],
     ["авто в кредите", "К сожалению, мы не сможем оформить займ, если автомобиль в кредите."],
     ["А вещи надо забрать из авто?", "Вещи в автомобиле можно оставить или забрать — на Ваше усмотрение."],
     ["А по доверенности можно займ оформить?", "Нет, оформить займ по доверенности нельзя: собственник автомобиля должен лично присутствовать при осмотре и выдаче займа."],

@@ -10,13 +10,14 @@ import { BackendLogsService } from "../logs/backend-logs.service.js";
 import { Stage1StoreService, type Stage1Application, type Stage1Conversation, type Stage1Message } from "./stage1-store.service.js";
 import { DeferredIntegrationsService } from "./deferred-integrations.service.js";
 import { detectMoneyMentions, formatMoney, formatSomMoney, resolveMoneyFacts, roundSomAmount, type ForeignMoneyCurrencyCode } from "./money-normalization.js";
-import { calculateLoanPricing, calculateLoanRangeDisplayMaximums } from "./loan-pricing.js";
+import { calculateLoanPricing, calculateLoanRangeDisplayMaximums, MINIMUM_VEHICLE_VALUE } from "./loan-pricing.js";
 import { referencesOtherPersonsVehicle } from "./lead-card-ownership.js";
 
 export interface DialogueResult { conversation: Stage1Conversation; application: Stage1Application; reply: string; validation: { passed: boolean; errors: string[] }; routerAiModel: string; promptVersion: string; needsKnowledgeLookup?: boolean; summaryNeedsRefresh?: boolean; }
 export interface DialogueReceiveOptions { signal?: AbortSignal; deferReplyPersistence?: boolean; }
 const managerDeltaFactKeys = new Set(["requestedAmount", "requestedProgram", "visitDate", "visitTime", "vehicleValue", "vehicleMake", "vehicleModel", "vehicleYear", "fullName", "phone"]);
 const ANSWER_MAXIMUM_AFTER_PREREQUISITES = "answer_maximum_after_prerequisites";
+const VEHICLE_VALUE_BELOW_MINIMUM_REPLY = "К сожалению, мы не можем принять данный автомобиль в залог, так как его рыночная стоимость должна составлять не менее 300 000 сом.";
 
 @Injectable()
 export class DialogueOrchestratorService {
@@ -94,6 +95,11 @@ export class DialogueOrchestratorService {
       currencyFacts: currencyFactsForTurn,
       attachmentFacts: {}
     });
+    // Currency conversion completes before this boundary. Do not let a model,
+    // knowledge answer, or later workflow composer bypass the collateral
+    // minimum once the server has a KGS vehicle value.
+    const vehicleValueBelowMinimum = typeof normalizedFacts.vehicleValue === "number"
+      && normalizedFacts.vehicleValue < MINIMUM_VEHICLE_VALUE;
     await this.logs.log("dialogue.money-resolution", "Money values resolved for lead card", {
       conversationId: conversation.id,
       metadata: {
@@ -133,7 +139,7 @@ export class DialogueOrchestratorService {
     // calculation template. It must reach that path even when the workflow
     // model failed to set `needsKnowledgeLookup`; otherwise the stage prompt
     // below replaces the answer the client actually asked for.
-    if (((knowledgeRequest?.required ?? turn.result?.needsKnowledgeLookup) || maximumLoanQuestion || contextualKnowledgeFollowUp) && turn.result) {
+    if (!vehicleValueBelowMinimum && ((knowledgeRequest?.required ?? turn.result?.needsKnowledgeLookup) || maximumLoanQuestion || contextualKnowledgeFollowUp) && turn.result) {
       const { knowledgeRequest: _knowledgeRequest, ...turnFacts } = turn.result.leadCardPatch;
       const factsForWorkflow = { ...normalizedFacts, ...turnFacts };
       const canonicalWorkflowFollowUp = nextRequiredStageQuestion(
@@ -201,6 +207,9 @@ export class DialogueOrchestratorService {
     // selected all facts, calculations, canonical workflow text and (when
     // needed) the approved knowledge answer, so the output model receives a
     // closed plan and cannot choose a new stage or invent a condition.
+    // TEMP: responsePlan rendering is disabled for latency testing. Keep this
+    // block intact so it can be restored after comparing production timings.
+    /*
     const renderClientReply = (this.agent as Partial<Pick<AgentTurnService, "renderClientReply">>).renderClientReply;
     // The limit is a closed server calculation, not prose that benefits from
     // rewording. In particular, a formatter must never keep only the later
@@ -224,6 +233,23 @@ export class DialogueOrchestratorService {
           ...(rendered.rendered ? { model: rendered.model, promptVersion: `${turn.promptVersion}+output` } : {})
         };
       }
+    }
+    */
+    if (vehicleValueBelowMinimum) {
+      const refusalState = { stage: "REFUSED" as const, status: "refuse" as const, nextAction: "none" };
+      turn = {
+        ...turn,
+        reply: VEHICLE_VALUE_BELOW_MINIMUM_REPLY,
+        ...(turn.result ? {
+          result: {
+            ...turn.result,
+            reply: VEHICLE_VALUE_BELOW_MINIMUM_REPLY,
+            needsKnowledgeLookup: false,
+            leadCardPatch: { ...turn.result.leadCardPatch, vehicleValue: normalizedFacts.vehicleValue },
+            dialogueState: refusalState
+          }
+        } : {})
+      };
     }
     throwIfAborted(options.signal);
     // Only commit client messages after all cancellable inference succeeded.
@@ -309,13 +335,15 @@ export class DialogueOrchestratorService {
     // same instruction. Deduplicate at the final delivery boundary so the
     // persisted and returned message are identical.
     const plannedReply = ensureNonEmptyClientReply(
-      stripUnrequestedAssistanceOffers(removeEarlierDuplicateSentences(renderClientReply ? turn.reply : composeReply(turn.reply, currency.clientText))),
+      stripUnrequestedAssistanceOffers(removeEarlierDuplicateSentences(composeReply(turn.reply, currency.clientText))),
       application.facts
     );
     // Knowledge lookup replaces the main-turn response with its own approved
     // answer. Re-apply the compliance greeting at the final delivery boundary
     // so the first visible reply always has it, including FAQ/KB paths.
-    const reply = enforceFirstContactGreeting(plannedReply, {
+    const reply = vehicleValueBelowMinimum
+      ? VEHICLE_VALUE_BELOW_MINIMUM_REPLY
+      : enforceFirstContactGreeting(plannedReply, {
       messages: conversation.messages,
       text,
       currentTurnMessages,
@@ -331,14 +359,13 @@ export class DialogueOrchestratorService {
     // This is a mutable private snapshot, not a one-time visit artifact.
     // Refresh it after every persisted lead-card change so managers see the
     // current application before documents or a visit are complete.
-    const summarizeDialogue = (this.agent as Partial<Pick<AgentTurnService, "summarizeDialogue">>).summarizeDialogue;
-    if (summarizeDialogue && changedFactKeys.length > 0) {
-      const summary = await summarizeDialogue.call(this.agent, {
+    if (changedFactKeys.length > 0) {
+      this.refreshDialogueSummary({
         conversationId: conversation.id,
+        applicationId: application.id,
         facts: application.facts,
         messages: [...turnMessages, { id: "pending-ai-summary", author: "ai", body: reply, attachmentIds: [], attachments: [], createdAt: new Date().toISOString() }]
       });
-      if (summary) await this.store.saveDialogueSummary(application.id, summary);
     }
     const refreshedConversation = (await this.store.getConversation(conversation.id)) ?? conversation;
     const refreshedApplication = (await this.store.getApplication(application.id)) ?? refreshedConversation.application ?? application;
@@ -363,19 +390,38 @@ export class DialogueOrchestratorService {
       }
     });
     if (options?.refreshSummary) {
-      const summarizeDialogue = (this.agent as Partial<Pick<AgentTurnService, "summarizeDialogue">>).summarizeDialogue;
-      if (summarizeDialogue) {
-        const summary = await summarizeDialogue.call(this.agent, {
-          conversationId: result.conversation.id,
-          facts: result.application.facts,
-          messages: [{ id: "pending-ai-summary", author: "ai", body: visibleReply, attachmentIds: [], attachments: [], createdAt: new Date().toISOString() }]
-        });
-        if (summary) await this.store.saveDialogueSummary(result.application.id, summary);
-      }
+      this.refreshDialogueSummary({
+        conversationId: result.conversation.id,
+        applicationId: result.application.id,
+        facts: result.application.facts,
+        messages: [{ id: "pending-ai-summary", author: "ai", body: visibleReply, attachmentIds: [], attachments: [], createdAt: new Date().toISOString() }]
+      });
     }
     const conversation = (await this.store.getConversation(result.conversation.id)) ?? result.conversation;
     const application = (await this.store.getApplication(result.application.id)) ?? conversation.application ?? result.application;
     return { ...result, conversation, application, reply: visibleReply };
+  }
+
+  /** Summary is useful to staff, but must never delay the client reply. */
+  private refreshDialogueSummary(input: {
+    conversationId: string;
+    applicationId: string;
+    facts: ApplicationFacts;
+    messages: Stage1Message[];
+  }): void {
+    const summarizeDialogue = (this.agent as Partial<Pick<AgentTurnService, "summarizeDialogue">>).summarizeDialogue;
+    if (!summarizeDialogue) return;
+    void (async () => {
+      const summary = await summarizeDialogue.call(this.agent, {
+        conversationId: input.conversationId,
+        facts: input.facts,
+        messages: input.messages
+      });
+      if (summary) await this.store.saveDialogueSummary(input.applicationId, summary);
+    })().catch((error: unknown) => void this.logs.warn("dialogue.summary-model", "Background dialogue summary persistence failed", {
+      conversationId: input.conversationId,
+      metadata: { error: error instanceof Error ? error.message : String(error) }
+    }));
   }
 }
 
@@ -464,7 +510,8 @@ function hasMaximumLoanPrerequisites(facts: ApplicationFacts): boolean {
  * workflow composer. It also protects a persisted legacy KB answer.
  */
 export function replaceMaximumLimitPlaceholders(reply: string, facts: ApplicationFacts, settings: object): string {
-  if (!/MAX_LIMIT_(?:WITHOUT|PARK)/iu.test(reply)) return reply;
+  const containsMaximumRange = /(?:MAX_LIMIT_(?:WITHOUT|PARK)|(?:Без\s+изъятия|Со\s+стоянкой)\s*:\s*от\s+50\s*000\s+сом\s+до)/iu.test(reply);
+  if (!containsMaximumRange) return reply;
   const displayMaximums = calculateLoanRangeDisplayMaximums(facts, settings);
   const withoutTemplate = /(?:Какая\s+максимальная\s+сумма\s+возможна\?\s*)?Без\s+изъятия:\s*от\s+50\s*000\s+сом\s+до\s+MAX_LIMIT_WITHOUT\s+сом[.!?]?\s*/giu;
   const parkingTemplate = /Со\s+стоянкой:\s*от\s+50\s*000\s+сом\s+до\s+MAX_LIMIT_PARK\s+сом[.!?]?\s*/giu;
@@ -483,6 +530,10 @@ export function replaceMaximumLimitPlaceholders(reply: string, facts: Applicatio
   const answerWithoutTemplate = reply
     .replace(withoutTemplate, "")
     .replace(parkingTemplate, "")
+    // A model can corrupt a placeholder (for example leave only `som`).
+    // Before all calculation prerequisites exist, no client-facing range may
+    // survive in any spelling.
+    .replace(/(?:^|\n)\s*(?:Без\s+изъятия|Со\s+стоянкой)\s*:\s*от\s+50\s*000\s+сом\s+до[^\n]*/giu, "")
     // This heading belongs to the two ranges and must not be delivered on
     // its own after the missing-data explanation.
     .replace(/(?:^|\n)\s*Для\s+вас\s+доступно:\s*(?=\n|$)/giu, "\n")
@@ -640,7 +691,7 @@ function shortRequestedAmountFromActiveQuestion(text: string, expectedField: "ve
     && !/(?:тыс|тыщ|млн|миллион|лям|\d\s*[кk](?=\s|$))/iu.test(mention.sourceText)
     ? mention
     : undefined;
-  const match = text.trim().match(/^(?:(?:мне\s+)?(?:надо|нужно|хочу|требуется|давай(?:те)?|беру)\s+)?(\d{2,3})(?:\s+(?:сом\p{L}*|доллар\p{L}*|евро|тенге|руб\p{L}*|USD|EUR|KZT|RUB))?[.!\s]*$/iu);
+  const match = text.trim().match(/^(?:(?:мне\s+)?(?:надо|нужно|хочу|требуется|давай(?:те)?|беру)\s+)?(\d{2,3})(?:\s+(?:сом\p{L}*|дол+ар\p{L}*|евро|тенге|руб\p{L}*|USD|EUR|KZT|RUB))?[.!\s]*$/iu);
   const thousands = shorthandMention?.normalizedAmount ?? Number(match?.[1]);
   if (!Number.isInteger(thousands) || thousands < 50) return undefined;
   return { field: "requestedAmount", amount: thousands * 1_000, currency: shorthandMention?.currency ?? "KGS", confidence: 0.99 };
@@ -748,7 +799,7 @@ function moneyValueFromClarificationDecision(text: string, messages: Stage1Messa
 
 function explicitForeignCurrencyOnly(text: string): ForeignMoneyCurrencyCode | undefined {
   const source = text.trim().toLocaleLowerCase("ru-RU");
-  if (/^(?:в\s+)?(?:usd|\$|доллар\p{L}*)[.!\s]*$/u.test(source)) return "USD";
+  if (/^(?:в\s+)?(?:usd|\$|дол+ар\p{L}*)[.!\s]*$/u.test(source)) return "USD";
   if (/^(?:в\s+)?(?:eur(?:o)?|€|евро)[.!\s]*$/u.test(source)) return "EUR";
   if (/^(?:в\s+)?(?:kzt|₸|тенге)[.!\s]*$/u.test(source)) return "KZT";
   if (/^(?:в\s+)?(?:rub|₽|руб\p{L}*)[.!\s]*$/u.test(source)) return "RUB";
@@ -756,7 +807,7 @@ function explicitForeignCurrencyOnly(text: string): ForeignMoneyCurrencyCode | u
 }
 
 function isPendingMoneyCurrencyClarificationQuestion(text: string): boolean {
-  const amount = "\\d[\\d\\s.,]*(?:тыс\\p{L}*|млн\\p{L}*)?\\s*(?:сом\\p{L}*|доллар\\p{L}*|евро|тенге|руб\\p{L}*)";
+  const amount = "\\d[\\d\\s.,]*(?:тыс\\p{L}*|млн\\p{L}*)?\\s*(?:сом\\p{L}*|дол+ар\\p{L}*|евро|тенге|руб\\p{L}*)";
   const confirmation = "(?:верно|правильно|имели\\s+в\\s+виду|это\\s+сумм\\p{L}*)";
   return new RegExp(`(?:${amount}[^?]{0,80}${confirmation}|${confirmation}[^?]{0,80}${amount})\\s*\\?`, "iu").test(text);
 }

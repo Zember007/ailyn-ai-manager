@@ -2,7 +2,9 @@ import { Injectable } from "@nestjs/common";
 import type { InboundMessage } from "../channels/channel.interface.js";
 import { DialogueOrchestratorService, type DialogueResult } from "./dialogue-orchestrator.service.js";
 
-const COALESCE_WINDOW_MS = 650;
+// Keeps naturally consecutive client messages together without adding a
+// noticeable delay to an ordinary single-message reply.
+const COALESCE_WINDOW_MS = 250;
 
 type Deferred = { resolve: (result: DialogueResult) => void; reject: (error: unknown) => void };
 type PendingTurn = {

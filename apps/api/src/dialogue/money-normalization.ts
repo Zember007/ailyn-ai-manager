@@ -31,7 +31,7 @@ export interface ResolvedMoneyFacts {
 // Emergency fallback and numeric post-processing only. Do not expand this into
 // a natural-language understanding layer; RouterAI owns flexible wording.
 const moneyPattern =
-  /(?:(\$|€|₸|₽|usd|eur(?:o)?s?|kzt|kgs?\.?|rub|dollars?|доллар(?:ов|а|ы)?|евро|тенге|сом(?:а|ов)?|руб(?:ль|ля|лей)?)\s*)?(\d{1,3}(?:[ \u00a0.,]\d{3})+|\d+(?:[.,]\d+)?)(?:\s*)(млн|миллион(?:а|ов)?|лям(?:а|ов)?|тыс(?:яч[аи]?)?|тыщ|[kк])?(?:\s*)(\$|€|₸|₽|usd|eur(?:o)?s?|kzt|kgs?\.?|rub|dollars?|доллар(?:ов|а|ы)?|евро|тенге|сом(?:а|ов)?|руб(?:ль|ля|лей)?)?/giu;
+  /(?:(\$|€|₸|₽|usd|dollars?|bucks?|eur(?:o)?s?|kzt|kgs?\.?|rub(?:les?)?|дол+ар(?:ов|а|ы)?|дол(?!\p{L})|бакс\p{L}*|евр\p{L}*|тенг\p{L}*|сом\p{L}*|руб\p{L}*)\s*)?(\d{1,3}(?:[ \u00a0.,]\d{3})+|\d+(?:[.,]\d+)?)(?:\s*)(млн|миллион(?:а|ов)?|лям(?:а|ов)?|тыс(?:яч[аи]?)?|тыщ|[kк])?(?:\s*)(\$|€|₸|₽|usd|dollars?|bucks?|eur(?:o)?s?|kzt|kgs?\.?|rub(?:les?)?|дол+ар(?:ов|а|ы)?|дол(?!\p{L})|бакс\p{L}*|евр\p{L}*|тенг\p{L}*|сом\p{L}*|руб\p{L}*)?/giu;
 // A request such as "1 млн дадите?" is a requested loan, never an implied
 // vehicle value merely because the message also names a car and its year.
 const requestedCuePattern = /(нуж\p{L}*|надо|сумм|займ|получить|оформить|хочу|хотел(?:ось)?|надобно|требуется|потреб(?:уется|овалось|ую)|дайте|выдайте|дадите)/iu;
@@ -257,11 +257,11 @@ function moneyMentionStart(mention: MoneyMention): number {
 function normalizeCurrency(value: string | undefined): MoneyCurrencyCode | undefined {
   if (!value) return undefined;
   const normalized = value.toLocaleLowerCase("ru-RU").replace(/\./g, "");
-  if (normalized === "$" || normalized === "usd" || normalized.startsWith("доллар")) return "USD";
-  if (normalized === "€" || normalized === "eur" || normalized === "euro" || normalized === "euros" || normalized === "евро") return "EUR";
-  if (normalized === "₸" || normalized === "kzt" || normalized === "тенге") return "KZT";
-  if (normalized === "₽" || normalized === "rub" || normalized.startsWith("руб")) return "RUB";
-  if (normalized.startsWith("сом") || normalized === "kgs" || normalized === "kgs") return "KGS";
+  if (normalized === "$" || /^(?:usd|dollars?|bucks?|дол+ар\p{L}*|дол|бакс\p{L}*)$/u.test(normalized)) return "USD";
+  if (normalized === "€" || /^(?:eur(?:o)?s?|евр\p{L}*)$/u.test(normalized)) return "EUR";
+  if (normalized === "₸" || /^(?:kzt|тенг\p{L}*)$/u.test(normalized)) return "KZT";
+  if (normalized === "₽" || /^(?:rub(?:les?)?|руб\p{L}*)$/u.test(normalized)) return "RUB";
+  if (/^сом\p{L}*$/u.test(normalized) || normalized === "kgs") return "KGS";
   return undefined;
 }
 

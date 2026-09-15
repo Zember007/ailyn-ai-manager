@@ -59,6 +59,23 @@ describe("money normalization", () => {
     ]));
   });
 
+  it.each([
+    ["10к дол", "USD"],
+    ["10к баксов", "USD"],
+    ["$10k", "USD"],
+    ["10к евр", "EUR"],
+    ["€10k", "EUR"],
+    ["10к тенге", "KZT"],
+    ["₸10k", "KZT"],
+    ["10к руб", "RUB"],
+    ["₽10k", "RUB"],
+    ["10к сомов", "KGS"]
+  ])("recognizes common currency alias %s", (text, currency) => {
+    expect(detectMoneyMentions(text)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ normalizedAmount: 10_000, currency })
+    ]));
+  });
+
   it("falls back to larger-as-value smaller-as-requested for two ambiguous amounts", () => {
     const result = resolveMoneyFacts({
       text: "500 тыс и 1.2 млн",
@@ -202,6 +219,27 @@ describe("money normalization", () => {
     expect(result.requestedAmountCurrency).toBe("USD");
     expect(result.vehicleValue).toBe(20_000);
     expect(result.vehicleValueCurrency).toBe("USD");
+  });
+
+  it("recognises a misspelled dollar price as USD collateral value", () => {
+    const result = resolveMoneyFacts({
+      text: "нужен займ. Есть Омода 2002 госда стоит 10 тыс доллларов. Сколько дадите",
+      currentFacts: {}
+    });
+
+    expect(result.vehicleValue).toBe(10_000);
+    expect(result.vehicleValueCurrency).toBe("USD");
+    expect(result.requestedAmount).toBeUndefined();
+  });
+
+  it("recognises a 210-thousand vehicle price as KGS collateral value", () => {
+    const result = resolveMoneyFacts({
+      text: "нужен займ. Есть Омода 2002 года стоит 210 тыс. Сколько дадите",
+      currentFacts: {}
+    });
+
+    expect(result.vehicleValue).toBe(210_000);
+    expect(result.vehicleValueCurrency).toBeUndefined();
   });
 
   it("assigns a standalone approximate price to the only pending money field", () => {

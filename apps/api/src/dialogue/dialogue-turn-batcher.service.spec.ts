@@ -16,7 +16,7 @@ describe("DialogueTurnBatcherService", () => {
     const second = batcher.enqueue({ ...common, externalMessageId: "2", text: "2022 года" });
     const third = batcher.enqueue({ ...common, externalMessageId: "3", text: "стоит 2 млн" });
 
-    await vi.advanceTimersByTimeAsync(650);
+    await vi.advanceTimersByTimeAsync(250);
 
     expect(orchestrator.receiveBatch).toHaveBeenCalledTimes(3);
     expect(orchestrator.receiveBatch.mock.calls.map(([batch]: [any[]]) => batch.map((message) => message.text))).toEqual([
@@ -45,9 +45,9 @@ describe("DialogueTurnBatcherService", () => {
       const common = { channel: "web-test" as const, externalContactId: "client", externalConversationId: "chat", attachments: [], timestamp: new Date() };
 
       const first = batcher.enqueue({ ...common, externalMessageId: "1", text: "Камри" });
-      await vi.advanceTimersByTimeAsync(650);
+      await vi.advanceTimersByTimeAsync(250);
       const second = batcher.enqueue({ ...common, externalMessageId: "2", text: "2022 года" });
-      await vi.advanceTimersByTimeAsync(650);
+      await vi.advanceTimersByTimeAsync(250);
 
       expect(orchestrator.receiveBatch).toHaveBeenCalledTimes(3);
       expect(orchestrator.receiveBatch.mock.calls.map(([batch]: [any[]]) => batch.map((message) => message.externalMessageId))).toEqual([
@@ -63,7 +63,7 @@ describe("DialogueTurnBatcherService", () => {
     vi.useFakeTimers();
     try {
       const replies = [
-        "Парковка находится недалеко от нашего офиса и находится под охраной. Точный адрес парковки не сообщается. Сумма 700 000 сом по этой программе не проходит. Могу продолжить либо на сумму до 600 000 сом.",
+        "Парковка находится недалеко от нашего офиса и находится под охраной. Сумма 700 000 сом по этой программе не проходит. Могу продолжить либо на сумму до 600 000 сом.",
         "Поняла.\n\nПо программе со стоянкой доступно до 1 090 000 сом.\n\nПожалуйста, отправьте фото ID и свидетельства о регистрации автомобиля с обеих сторон.",
         "Фотографии получены.\n\nПожалуйста, отправьте 2–3 фотографии автомобиля."
       ];
@@ -78,9 +78,9 @@ describe("DialogueTurnBatcherService", () => {
       const first = batcher.enqueue({ ...common, externalMessageId: "1", text: "а стоянка у вас где", attachments: [] });
       const second = batcher.enqueue({ ...common, externalMessageId: "2", text: "да давай стоянку", attachments: [] });
       const third = batcher.enqueue({ ...common, externalMessageId: "3", attachments: [{ id: "id", mimeType: "image/jpeg" }] });
-      await vi.advanceTimersByTimeAsync(650);
+      await vi.advanceTimersByTimeAsync(250);
 
-      const expected = "Парковка находится недалеко от нашего офиса и находится под охраной. Точный адрес парковки не сообщается.\n\nФотографии получены.\n\nПожалуйста, отправьте 2–3 фотографии автомобиля.";
+      const expected = "Парковка находится недалеко от нашего офиса и находится под охраной.\n\nФотографии получены.\n\nПожалуйста, отправьте 2–3 фотографии автомобиля.";
       await expect(Promise.all([first, second, third])).resolves.toEqual([
         { ...finalResult, reply: expected }, { ...finalResult, reply: expected }, { ...finalResult, reply: expected }
       ]);
@@ -111,7 +111,7 @@ describe("DialogueTurnBatcherService", () => {
       const first = batcher.enqueue({ ...common, externalMessageId: "1", text: "а кофе есть" });
       const second = batcher.enqueue({ ...common, externalMessageId: "2", text: "с собоакой можноэ" });
       const third = batcher.enqueue({ ...common, externalMessageId: "3", text: "сколько по максимому" });
-      await vi.advanceTimersByTimeAsync(650);
+      await vi.advanceTimersByTimeAsync(250);
 
       const expected = [
         "Да, у нас можно выпить кофе.",
@@ -131,7 +131,7 @@ describe("DialogueTurnBatcherService", () => {
     vi.useFakeTimers();
     try {
       const replies = [
-        "Парковка находится недалеко от нашего офиса и находится под охраной. Точный адрес парковки не сообщается. И Вам потребуется поручитель:\n- возраст от 25 лет\n- проживает в г. Бишкек или Чуйской области\n- должен лично присутствовать при выдаче займа и имеет с собой ID (паспорт)\nУ Вас есть такой поручитель?",
+        "Парковка находится недалеко от нашего офиса и находится под охраной.  И Вам потребуется поручитель:\n- возраст от 25 лет\n- проживает в г. Бишкек или Чуйской области\n- должен лично присутствовать при выдаче займа и имеет с собой ID (паспорт)\nУ Вас есть такой поручитель?",
         "Поняла.\n\nПо программе со стоянкой доступно до 1 090 000 сом.\n\nПожалуйста, отправьте фото ID и свидетельства о регистрации автомобиля с обеих сторон."
       ];
       const finalResult = { reply: replies[1] } as any;
@@ -144,9 +144,9 @@ describe("DialogueTurnBatcherService", () => {
 
       const first = batcher.enqueue({ ...common, externalMessageId: "1", text: "а где стоянка", attachments: [] });
       const second = batcher.enqueue({ ...common, externalMessageId: "2", text: "давайте стоянку", attachments: [] });
-      await vi.advanceTimersByTimeAsync(650);
+      await vi.advanceTimersByTimeAsync(250);
 
-      const expected = "Парковка находится недалеко от нашего офиса и находится под охраной. Точный адрес парковки не сообщается.\n\nПоняла.\n\nПо программе со стоянкой доступно до 1 090 000 сом.\n\nПожалуйста, отправьте фото ID и свидетельства о регистрации автомобиля с обеих сторон.";
+      const expected = "Парковка находится недалеко от нашего офиса и находится под охраной. \n\nПоняла.\n\nПо программе со стоянкой доступно до 1 090 000 сом.\n\nПожалуйста, отправьте фото ID и свидетельства о регистрации автомобиля с обеих сторон.";
       await expect(Promise.all([first, second])).resolves.toEqual([{ ...finalResult, reply: expected }, { ...finalResult, reply: expected }]);
       expect(orchestrator.publishDeferredBatchReply).toHaveBeenCalledWith(expect.anything(), expected, "2");
     } finally {
@@ -204,9 +204,9 @@ describe("DialogueTurnBatcherService", () => {
       const common = { channel: "web-test" as const, externalContactId: "client", externalConversationId: "chat", attachments: [], timestamp: new Date() };
 
       const first = batcher.enqueue({ ...common, externalMessageId: "A", text: "Камри" });
-      await vi.advanceTimersByTimeAsync(650);
+      await vi.advanceTimersByTimeAsync(250);
       const second = batcher.enqueue({ ...common, externalMessageId: "B", text: "2022 года" });
-      await vi.advanceTimersByTimeAsync(650);
+      await vi.advanceTimersByTimeAsync(250);
 
       await expect(Promise.all([first, second])).resolves.toHaveLength(2);
       expect(agent.run).toHaveBeenCalledTimes(3);

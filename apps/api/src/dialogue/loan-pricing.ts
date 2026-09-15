@@ -1,6 +1,7 @@
 import { resolveKyrgyzstanLocality, type ApplicationFacts, type ResidenceCategory } from "@ailyn/business-rules";
 
 const PUBLIC_LIMIT_STEP = 10_000;
+export const MINIMUM_VEHICLE_VALUE = 300_000;
 type LoanResidenceCategory = Exclude<ResidenceCategory, "FOREIGN">;
 
 export type LoanPricingSettings = Partial<{
@@ -24,7 +25,7 @@ export type LoanPricing = {
     rawMax: number | null;
     /** Client-safe maximum, rounded down to the nearest 10,000 KGS. */
     publicMax: number | null;
-    reason?: "residence_unknown" | "vehicle_value_unknown" | "vehicle_value_below_other_region_minimum";
+    reason?: "residence_unknown" | "vehicle_value_unknown" | "vehicle_value_below_minimum" | "vehicle_value_below_other_region_minimum" | "calculated_limit_below_minimum";
   };
   parking: {
     available: boolean;
@@ -34,7 +35,7 @@ export type LoanPricing = {
     publicMax: number | null;
     monthlyRate: number;
     dailyParkingFee: number;
-    reason?: "residence_unknown" | "vehicle_value_unknown";
+    reason?: "residence_unknown" | "vehicle_value_unknown" | "vehicle_value_below_minimum" | "calculated_limit_below_minimum";
   };
 };
 
@@ -67,6 +68,18 @@ export function calculateLoanPricing(facts: ApplicationFacts, settings: LoanPric
     };
   }
 
+  // A public maximum rounded to zero is never a valid offer. Cars below this
+  // collateral floor are refused before programme calculations begin.
+  if (value < MINIMUM_VEHICLE_VALUE) {
+    return {
+      minimumLoan,
+      clientFacingMaximumField: "publicMax",
+      residence,
+      withoutStorage: { available: false, rawMax: null, publicMax: null, reason: "vehicle_value_below_minimum" },
+      parking: { ...unavailableParking, reason: "vehicle_value_below_minimum" }
+    };
+  }
+
   const parkingRawMax = Math.min(value * numberSetting(settings.parkingPercent, 0.5), numberSetting(settings.parkingLimit, 2_000_000));
   // Both programmes receive a calculated range once vehicle value and
   // residence are known. The regional cap, rather than a second minimum
@@ -79,14 +92,23 @@ export function calculateLoanPricing(facts: ApplicationFacts, settings: LoanPric
     )
   );
 
+  const withoutStoragePublicMax = publicMaximum(withoutStorageRawMax);
+  const parkingPublicMax = publicMaximum(parkingRawMax);
+  const unavailableCalculatedLimit = (): { available: false; rawMax: null; publicMax: null; reason: "calculated_limit_below_minimum" } => ({
+    // Keep the raw value out of the client payload as well: no branch may
+    // turn a zero or below-minimum amount into a visible offer.
+    available: false, rawMax: null, publicMax: null, reason: "calculated_limit_below_minimum"
+  });
   return {
     minimumLoan,
     clientFacingMaximumField: "publicMax",
     residence,
-    withoutStorage: typeof withoutStorageRawMax === "number"
-      ? { available: true, rawMax: withoutStorageRawMax, publicMax: publicMaximum(withoutStorageRawMax) }
-      : withoutStorageRawMax,
-    parking: { available: true, rawMax: parkingRawMax, publicMax: publicMaximum(parkingRawMax), monthlyRate: 2.4, dailyParkingFee: 130 }
+    withoutStorage: withoutStoragePublicMax >= minimumLoan
+      ? { available: true, rawMax: withoutStorageRawMax, publicMax: withoutStoragePublicMax }
+      : unavailableCalculatedLimit(),
+    parking: parkingPublicMax >= minimumLoan
+      ? { available: true, rawMax: parkingRawMax, publicMax: parkingPublicMax, monthlyRate: 2.4, dailyParkingFee: 130 }
+      : { ...unavailableCalculatedLimit(), monthlyRate: 2.4, dailyParkingFee: 130 }
   };
 }
 
@@ -102,7 +124,7 @@ export function calculateLoanRangeDisplayMaximums(facts: ApplicationFacts, setti
 } {
   const residence = resolveResidence(facts);
   const value = positiveFinite(facts.vehicleValue);
-  if (!residence || !value) return { withoutStorage: null, parking: null };
+  if (!residence || !value || value < MINIMUM_VEHICLE_VALUE) return { withoutStorage: null, parking: null };
   const withoutStorageRawMax = Math.min(
     value * numberSetting(settings.withoutStoragePercent, 0.4),
     numberSetting(

@@ -60,4 +60,21 @@ describe("calculateLoanPricing", () => {
       parkingDailyFee: { value: 95, blocked: true }
     } as any).parking).toMatchObject({ monthlyRate: 2.4, dailyParkingFee: 130 });
   });
+
+  it("never exposes a zero maximum for a vehicle below the collateral minimum", () => {
+    const pricing = calculateLoanPricing({ vehicleValue: 10_000, residenceRegion: "Бишкек" });
+
+    expect(pricing.withoutStorage).toEqual({ available: false, rawMax: null, publicMax: null, reason: "vehicle_value_below_minimum" });
+    expect(pricing.parking).toMatchObject({ available: false, rawMax: null, publicMax: null, reason: "vehicle_value_below_minimum" });
+  });
+
+  it("marks a zero calculated programme limit unavailable instead of offering 0 som", () => {
+    const pricing = calculateLoanPricing({ vehicleValue: 1_000_000, residenceRegion: "Бишкек" }, {
+      withoutStoragePercent: 0,
+      parkingPercent: 0
+    });
+
+    expect(pricing.withoutStorage).toEqual({ available: false, rawMax: null, publicMax: null, reason: "calculated_limit_below_minimum" });
+    expect(pricing.parking).toMatchObject({ available: false, rawMax: null, publicMax: null, reason: "calculated_limit_below_minimum" });
+  });
 });
