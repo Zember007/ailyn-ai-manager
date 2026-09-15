@@ -1,4 +1,4 @@
-import { Injectable } from "@nestjs/common";
+import { Injectable, Logger } from "@nestjs/common";
 import type { ApplicationFacts } from "@ailyn/business-rules";
 import type { NormalizedMoneyValue } from "../ai/ai-provider.interface.js";
 import { AgentTurnService, enforceFirstContactGreeting, isClearMoneyConfirmationRejection, nextRequiredStageQuestion, suppressInactiveGuarantorPrompts, type PendingMoneyClarificationDecision } from "./agent-turn.service.js";
@@ -19,8 +19,14 @@ const managerDeltaFactKeys = new Set(["requestedAmount", "requestedProgram", "vi
 const ANSWER_MAXIMUM_AFTER_PREREQUISITES = "answer_maximum_after_prerequisites";
 const VEHICLE_VALUE_BELOW_MINIMUM_REPLY = "К сожалению, мы не можем принять данный автомобиль в залог, так как его рыночная стоимость должна составлять не менее 300 000 сом.";
 
+function formatTimingError(error: unknown): string {
+  return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+}
+
 @Injectable()
 export class DialogueOrchestratorService {
+  private readonly logger = new Logger(DialogueOrchestratorService.name);
+
   constructor(private readonly agent: AgentTurnService, private readonly store: Stage1StoreService, private readonly settings: SettingsService, private readonly logs: BackendLogsService, private readonly integrations?: DeferredIntegrationsService) {}
 
   async receive(message: InboundMessage): Promise<DialogueResult> {
@@ -28,6 +34,30 @@ export class DialogueOrchestratorService {
   }
 
   async receiveBatch(messages: InboundMessage[], options: DialogueReceiveOptions = {}): Promise<DialogueResult> {
+    const startedAt = performance.now();
+    let result: DialogueResult | undefined;
+    let error: unknown;
+    try {
+      result = await this.receiveBatchInternal(messages, options);
+      return result;
+    } catch (caught) {
+      error = caught;
+      throw caught;
+    } finally {
+      this.logger.log("Dialogue turn finished", {
+        event: "dialogue.turn",
+        channel: messages[0]?.channel ?? "unknown",
+        conversationId: result?.conversation.id,
+        model: result?.routerAiModel ?? "not_reached",
+        messageCount: messages.length,
+        outcome: result ? "success" : options.signal?.aborted ? "aborted" : "error",
+        durationMs: Math.round(performance.now() - startedAt),
+        ...(error ? { error: formatTimingError(error) } : {})
+      });
+    }
+  }
+
+  private async receiveBatchInternal(messages: InboundMessage[], options: DialogueReceiveOptions = {}): Promise<DialogueResult> {
     if (messages.length === 0) throw new Error("dialogue_batch_empty");
     const firstMessage = messages[0]!;
     const lastMessage = messages.at(-1)!;

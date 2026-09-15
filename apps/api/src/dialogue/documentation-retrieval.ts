@@ -56,6 +56,11 @@ const approvedFaqChunks = approvedKnowledgeSeeds
     text: item.answerRu
   }));
 
+// These words identify a conversational form, not a knowledge topic. They
+// must never pull a FAQ into the compact KB packet on their own.
+const genericKnowledgeTokens = new Set(["авто", "автомобиль", "деньги", "займ", "какой", "какая", "какие", "можно", "машина", "сколько"]);
+const MAX_KNOWLEDGE_PACKET_CHUNKS = 8;
+
 /**
  * Server fallback for a product-policy topic expressed in the current client
  * message. It deliberately ignores dialogue history: old assistant text must
@@ -71,21 +76,21 @@ export function hasApprovedKnowledgeMatch(text: string): boolean {
 /**
  * Gives the knowledge model a short, ordered evidence packet instead of a
  * large undifferentiated document dump. FAQ answers have the highest
- * priority; section 3.18 is always included next because it owns questions
- * about an already issued loan. The remaining entries are retrieved for the
- * current message only.
+ * priority. Section 3.18 is added only for a request about an already issued
+ * loan; every other entry must be relevant to the current message.
  */
 export function prioritizedKnowledgeForQuestion(input: {
   facts: ApplicationFacts;
   currentMessage?: string;
   messages: Stage1Message[];
 }): KnowledgeContextChunk[] {
-  const selected = selectRelevantDocumentation({ ...input, includeCrossStageMatches: true, maxChunks: 8 });
+  const selected = selectRelevantDocumentation({ ...input, includeCrossStageMatches: true, maxChunks: 4 });
   const current = (input.currentMessage ?? "").toLocaleLowerCase("ru-RU");
   const tokens = new Set(current.match(/[\p{L}\p{N}]{3,}/gu) ?? []);
   const spouseProxyContext = isSpouseProxyContext(current);
   const ownershipRegistrationQuestion = isOwnershipRegistrationQuestion(current);
   const existingContractServiceRequest = isExistingContractServiceRequest(current);
+  const relevantSelectedKnowledge = selected.knowledge.filter((chunk) => hasRetrievalTopic(chunk, tokens, current, ownershipRegistrationQuestion));
   const spouseOwnershipRule = spouseProxyContext
     ? generatedDocumentationChunks.find((chunk) => chunk.section === "4.27")
     : undefined;
@@ -101,7 +106,7 @@ export function prioritizedKnowledgeForQuestion(input: {
   // actually owns the question.
   const exactMatchedFaq = availableFaq.filter((chunk) => hasExactApprovedFaqAlias(chunk, current));
   const matchedFaq = availableFaq.filter((chunk) =>
-    (hasExactApprovedFaqAlias(chunk, current) || matchesApprovedQuestion(chunk, tokens))
+    (hasExactApprovedFaqAlias(chunk, current) || hasStrongApprovedQuestionMatch(chunk, tokens))
   );
   const contractRules = generatedDocumentationChunks.filter((chunk) => chunk.section === "3.18");
   return uniqueKnowledge([
@@ -110,14 +115,9 @@ export function prioritizedKnowledgeForQuestion(input: {
     ...matchedFaq,
     ...(spouseOwnershipRule ? [spouseOwnershipRule] : []),
     ...(ownershipRegistrationRule ? [ownershipRegistrationRule] : []),
-    ...(existingContractServiceRequest ? [] : contractRules),
-    // The knowledge model receives the complete approved FAQ corpus. Its
-    // answer is still constrained by the current question and server-side
-    // fallback guards; broad context must not become permission to invent.
-    ...availableFaq,
-    ...selected.knowledge,
+    ...relevantSelectedKnowledge,
     ...selected.commonKnowledge
-  ]);
+  ]).slice(0, MAX_KNOWLEDGE_PACKET_CHUNKS);
 }
 
 function uniqueKnowledge(chunks: KnowledgeContextChunk[]): KnowledgeContextChunk[] {
@@ -238,6 +238,13 @@ function scoreChunk(chunk: DocumentationChunk, index: number, stages: Documentat
   return stageScore + keywordScore + targetedSectionScore + Math.max(0, 1 - index / 10_000);
 }
 
+function hasRetrievalTopic(chunk: DocumentationChunk, tokens: Set<string>, current: string, ownershipRegistrationQuestion: boolean): boolean {
+  return chunk.keywords.some((keyword) => tokens.has(keyword) && !genericKnowledgeTokens.has(keyword))
+    || (chunk.key.startsWith("faq_") && hasExactApprovedFaqAlias(chunk, current))
+    || matchesDirectQuestion(chunk, current)
+    || (ownershipRegistrationQuestion && chunk.key === "docx_0105");
+}
+
 function findChunk(predicate: (chunk: DocumentationChunk) => boolean): DocumentationChunk | undefined {
   return generatedDocumentationChunks.find(predicate);
 }
@@ -292,6 +299,12 @@ function approvedQuestionScore(chunk: KnowledgeContextChunk, tokens: Set<string>
 
 function matchesApprovedQuestion(chunk: KnowledgeContextChunk, tokens: Set<string>): boolean {
   return approvedQuestionScore(chunk, tokens) > 0;
+}
+
+function hasStrongApprovedQuestionMatch(chunk: KnowledgeContextChunk, tokens: Set<string>): boolean {
+  // One shared word such as «можно» or «деньги» is insufficient to include
+  // an FAQ in the compact KB packet. Exact aliases remain eligible separately.
+  return approvedQuestionScore(chunk, tokens) >= 60;
 }
 
 function approvedFaqScore(chunk: KnowledgeContextChunk, tokens: Set<string>, current: string): number {

@@ -47,7 +47,7 @@ export class RouterAiProvider implements AiProvider {
             { role: "user", content: JSON.stringify(input) }
           ]
         },
-        { timeoutMs: getStage1Timeout(this.config.routerAiTimeoutMs, 30_000) }
+        { operation: "stage1_extraction", timeoutMs: getStage1Timeout(this.config.routerAiTimeoutMs, 30_000) }
       );
       const parsed = extractionSchema.safeParse(prepareExtractionPayload(JSON.parse(response.choices?.[0]?.message?.content ?? "{}")));
       if (!parsed.success) throw new Error("RouterAI extraction response does not match structured schema");
@@ -91,7 +91,7 @@ export class RouterAiProvider implements AiProvider {
             { role: "user", content: JSON.stringify(input) }
           ]
         },
-        { timeoutMs: getStage1Timeout(this.config.routerAiTimeoutMs, 30_000) }
+        { operation: "stage1_response_generation", timeoutMs: getStage1Timeout(this.config.routerAiTimeoutMs, 30_000) }
       );
       const parsed = responseGenerationSchema.safeParse(JSON.parse(response.choices?.[0]?.message?.content ?? "{}"));
       if (!parsed.success) throw new Error("RouterAI response does not match structured schema");
@@ -129,7 +129,7 @@ export class RouterAiProvider implements AiProvider {
             { role: "user", content: buildVisionMessage(input) }
           ]
         },
-        { timeoutMs: getStage1Timeout(this.config.routerAiTimeoutMs, 30_000) }
+        { operation: "stage1_vision", timeoutMs: getStage1Timeout(this.config.routerAiTimeoutMs, 30_000) }
       );
       const result = normalizeVisionResult(JSON.parse(response.choices?.[0]?.message?.content ?? "{}"));
       // A filename explicitly identifying a passport/ID is a safe fallback for

@@ -108,6 +108,21 @@ describe("selectRelevantDocumentation", () => {
     });
   });
 
+  it("sends only the matched FAQ rather than the complete approved FAQ corpus", () => {
+    const packet = prioritizedKnowledgeForQuestion({ facts: {}, currentMessage: "Можно деньги на карту?", messages: [] });
+
+    expect(packet.some((chunk) => chunk.key === "faq_cash_only")).toBe(true);
+    expect(packet.some((chunk) => chunk.key === "faq_gps_requirement")).toBe(false);
+    expect(packet.length).toBeLessThanOrEqual(8);
+  });
+
+  it("keeps a strong multi-token FAQ match in the compact KB packet", () => {
+    const packet = prioritizedKnowledgeForQuestion({ facts: {}, currentMessage: "Можно оформить займ по временной регистрации?", messages: [] });
+
+    expect(packet.some((chunk) => chunk.key === "faq_temporary_residence")).toBe(true);
+    expect(packet.length).toBeLessThanOrEqual(8);
+  });
+
   it("retrieves the approved temporary-registration FAQ for a semantic wording", () => {
     const result = selectRelevantDocumentation({ facts: {}, currentMessage: "Можно оформить займ по временной регистрации?", messages: [] });
     expect(result.knowledge[0]).toMatchObject({
