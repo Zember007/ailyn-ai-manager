@@ -458,7 +458,7 @@ export class AgentTurnService {
             metadata: { attempt, model: response.model ?? request.model, request: attemptRequest, rawModelResponse: rawAgentResponse }
           });
         }
-        const payload = normalizeAgentPayload(parseAgentJson(typeof rawAgentResponse === "string" ? rawAgentResponse : undefined), input.facts, input.attachments);
+        const payload = normalizeAgentPayload(parseAgentJson(typeof rawAgentResponse === "string" ? rawAgentResponse : undefined), input.attachments);
         const parsed = agentTurnResultSchema.safeParse(payload);
         if (!parsed.success) {
           const issues = parsed.error.issues.map((issue) => `${issue.path.join(".") || "root"}: ${issue.message}`).join("; ");
@@ -1104,7 +1104,7 @@ export class AgentTurnService {
         ]
       }, { operation: "response_normalization", timeoutMs: this.config.routerAiTimeoutMs, signal: input.signal });
       const content = response.choices?.[0]?.message?.content;
-      const payload = normalizeAgentPayload(parseAgentJson(typeof content === "string" ? content : undefined), input.facts, input.attachments);
+      const payload = normalizeAgentPayload(parseAgentJson(typeof content === "string" ? content : undefined), input.attachments);
       const parsed = agentTurnResultSchema.safeParse(payload);
       if (!parsed.success) {
         await this.logs?.warn("dialogue.response-normalizer", "Response normalizer output failed schema validation", {
@@ -4285,7 +4285,7 @@ function normalizeModelAttachments(value: unknown, inboundAttachments: InboundAt
   });
 }
 
-function normalizeAgentPayload(payload: Record<string, unknown>, currentFacts: ApplicationFacts = {}, inboundAttachments: InboundAttachment[] = []): Record<string, unknown> {
+function normalizeAgentPayload(payload: Record<string, unknown>, inboundAttachments: InboundAttachment[] = []): Record<string, unknown> {
   // These fields are agent bookkeeping rather than client facts. Repair
   // harmless shorthand so a good client answer is not discarded merely
   // because a model used a human label instead of the JSON enum.

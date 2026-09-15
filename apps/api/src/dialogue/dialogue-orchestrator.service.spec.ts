@@ -3,7 +3,6 @@ import { readFileSync } from "node:fs";
 import { AgentTurnService, nextRequiredStageQuestion, OLDER_VEHICLE_PROGRAM_NOTICE } from "./agent-turn.service.js";
 import { agentStageInstructions } from "./agent-stage-instructions.js";
 import { DialogueOrchestratorService, composeReply, removeEarlierDuplicateSentences, replaceMaximumLimitPlaceholders, resolveForeignCurrencyFacts, resolveNormalizedMoneyFacts, stripUnrequestedAssistanceOffers, workflowFollowUpAfterKnowledge } from "./dialogue-orchestrator.service.js";
-import { generatedDocumentationChunks } from "./documentation-chunks.generated.js";
 import { approvedKnowledgeSeeds } from "../knowledge/knowledge.service.js";
 
 process.env.DATABASE_URL ??= "postgresql://test:test@localhost:5432/ailyn";
