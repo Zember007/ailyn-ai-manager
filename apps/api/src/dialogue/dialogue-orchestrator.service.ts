@@ -280,10 +280,12 @@ export class DialogueOrchestratorService {
         const responsePlan = maximumLoanQuestion
           ? stripWorkflowQuestionsFromMaximumAnswer(knowledge.reply)
           : knowledge.reply;
-        // A KB answer supplements a new-loan workflow; it does not replace
-        // the next server-owned collection question. Non-new-loan first
-        // contacts are explicitly classified by the KB model and stop here.
-        const continuesNewLoanWorkflow = knowledge.requestScope === "new_loan"
+        // A KB answer supplements an application already in progress. Its
+        // own topic (for example, tea or coffee) must not end collection of
+        // the next missing fact. Scope can stop the workflow only on the very
+        // first client contact, before an application conversation exists.
+        const continuesNewLoanWorkflow = conversation.messages.length > 0
+          || knowledge.requestScope === "new_loan"
           || (knowledge.requestScope === undefined && !knowledge.shouldUseReply);
         const reply = appendWorkflowFollowUp(
           responsePlan,

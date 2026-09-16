@@ -147,6 +147,15 @@ describe("single-agent dialogue", () => {
     )).toBe("Понимаю, что ситуация может быть неприятной.");
   });
 
+  it("repeats the current stage question after a KB answer only when it was not the last stage prompt", () => {
+    const question = "Подскажите, пожалуйста, ориентировочную стоимость автомобиля.";
+
+    expect(appendWorkflowFollowUp("Да, для клиентов есть чай и кофе.", question, "Максимальную сумму рассчитаем после оценки автомобиля.")).toBe(
+      "Да, для клиентов есть чай и кофе.\n\nПодскажите, пожалуйста, ориентировочную стоимость автомобиля."
+    );
+    expect(appendWorkflowFollowUp("Да, для клиентов есть чай и кофе.", question, question)).toBe("Да, для клиентов есть чай и кофе.");
+  });
+
   it("answers a short why-question from the active vehicle stage instead of unrelated knowledge", async () => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
       ...validResult,
@@ -5977,6 +5986,39 @@ describe("single-agent dialogue", () => {
       currentTime: new Date("2026-09-16T11:47:25.000Z")
     }));
     expect(output.reply).toContain("Обычно менеджер связывается с клиентами в течение часа.");
+  });
+
+  it("continues an active application after an unrelated KB question", async () => {
+    const stageQuestion = "Подскажите, пожалуйста, ориентировочную стоимость автомобиля.";
+    const application = { id: "app", facts: { vehicleModel: "Camry", vehicleYear: 2018 }, contactId: "contact", stage: "COLLECTING_VALUE", status: "need_more_data" } as any;
+    const conversation = {
+      id: "conversation",
+      application,
+      channel: "web-test",
+      messages: [
+        { author: "client", body: "Камри 2018, а сколько по максимуму дадите", createdAt: "first" },
+        { author: "ai", body: "Максимальную сумму смогу рассчитать после оценки автомобиля.", createdAt: "second" }
+      ]
+    } as any;
+    const store = {
+      getOrCreateConversation: vi.fn().mockResolvedValue({ conversation, application }),
+      addMessage: vi.fn().mockResolvedValue({ id: "message", author: "client", body: "", createdAt: "now" }),
+      updateFacts: vi.fn().mockResolvedValue([]), saveAgentState: vi.fn(), getApplication: vi.fn().mockResolvedValue(application), getConversation: vi.fn().mockResolvedValue(conversation), addAttachment: vi.fn(), createManagerNotification: vi.fn()
+    } as any;
+    const agent = {
+      run: vi.fn().mockResolvedValue({
+        result: { ...validResult, reply: stageQuestion, leadCardPatch: {} },
+        reply: stageQuestion, model: "workflow-model", promptVersion: "v1"
+      }),
+      answerWithKnowledge: vi.fn().mockResolvedValue({
+        reply: "Да, для наших клиентов есть чай и кофе.", answerFound: true, shouldUseReply: true, requestScope: "not_new_loan", model: "knowledge-model"
+      })
+    } as any;
+
+    const output = await new DialogueOrchestratorService(agent, store, { getValues: vi.fn().mockResolvedValue({}) } as any, { log: vi.fn() } as any)
+      .receive({ externalMessageId: "coffee", channel: "web-test", externalContactId: "contact", text: "А кофе чай есть?", attachments: [], timestamp: new Date() });
+
+    expect(output.reply).toBe(`Да, для наших клиентов есть чай и кофе.\n\n${stageQuestion}`);
   });
 
   it("shows the KB fallback for an explicit question instead of resuming the application workflow", async () => {
