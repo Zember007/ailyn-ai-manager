@@ -6126,6 +6126,135 @@ describe("single-agent dialogue", () => {
     expect(output.reply).not.toContain(stageQuestion);
   });
 
+  it("uses the approved existing-contract redirect when normalization already marked the turn as a redirect", async () => {
+    const stageQuestion = "Подскажите, пожалуйста, ориентировочную стоимость автомобиля, модель и год выпуска автомобиля.";
+    const redirect = "Я Айлин — виртуальный помощник по вопросам оформления новых займов. Если у Вас уже оформлен займ, пожалуйста, позвоните по телефону +996 502 108 108 или напишите в WhatsApp +996 776 108 108. Наши специалисты проверят информацию по Вашему договору и помогут решить Ваш вопрос.";
+    const application = { id: "app", facts: {}, contactId: "contact", stage: "NEW", status: "need_more_data" } as any;
+    const conversation = { id: "conversation", application, channel: "web-test", messages: [] } as any;
+    const store = {
+      getOrCreateConversation: vi.fn().mockResolvedValue({ conversation, application }),
+      addMessage: vi.fn().mockResolvedValue({ id: "message", author: "client", body: "", createdAt: "now" }),
+      updateFacts: vi.fn().mockResolvedValue([]), saveAgentState: vi.fn(), getApplication: vi.fn().mockResolvedValue(application), getConversation: vi.fn().mockResolvedValue(conversation), addAttachment: vi.fn(), createManagerNotification: vi.fn()
+    } as any;
+    const agent = {
+      run: vi.fn().mockResolvedValue({
+        result: {
+          ...validResult,
+          reply: `${firstContactGreeting}\n\n${redirect}\n\n${stageQuestion}`,
+          leadCardPatch: {},
+          dialogueState: { stage: "EXISTING_CONTRACT_REDIRECT", status: "redirect_existing_contract", nextAction: "redirect_existing_contract" }
+        },
+        reply: `${firstContactGreeting}\n\n${redirect}\n\n${stageQuestion}`,
+        model: "workflow-model",
+        promptVersion: "v1"
+      }),
+      answerWithKnowledge: vi.fn()
+    } as any;
+
+    const output = await new DialogueOrchestratorService(agent, store, { getValues: vi.fn().mockResolvedValue({}) } as any, { log: vi.fn() } as any)
+      .receive({ externalMessageId: "debt", channel: "web-test", externalContactId: "contact", text: "У меня какая задолженность перед вами", attachments: [], timestamp: new Date() });
+
+    expect(agent.answerWithKnowledge).not.toHaveBeenCalled();
+    expect(output.reply).toBe(redirect);
+    expect(output.reply).not.toContain(firstContactGreeting);
+    expect(output.reply).not.toContain(stageQuestion);
+  });
+
+  it("keeps an existing-loan answer standalone even when the KB misclassifies its scope", async () => {
+    const stageQuestion = "Подскажите, пожалуйста, ориентировочную стоимость автомобиля.";
+    const redirect = "Я Айлин — виртуальный помощник по вопросам оформления новых займов. Если у Вас уже оформлен займ, пожалуйста, позвоните по телефону +996 502 108 108 или напишите в WhatsApp +996 776 108 108. Наши специалисты проверят информацию по Вашему договору и помогут решить Ваш вопрос.";
+    const application = { id: "app", facts: {}, contactId: "contact", stage: "NEW", status: "need_more_data" } as any;
+    const conversation = { id: "conversation", application, channel: "web-test", messages: [] } as any;
+    const store = {
+      getOrCreateConversation: vi.fn().mockResolvedValue({ conversation, application }),
+      addMessage: vi.fn().mockResolvedValue({ id: "message", author: "client", body: "", createdAt: "now" }),
+      updateFacts: vi.fn().mockResolvedValue([]), saveAgentState: vi.fn(), getApplication: vi.fn().mockResolvedValue(application), getConversation: vi.fn().mockResolvedValue(conversation), addAttachment: vi.fn(), createManagerNotification: vi.fn()
+    } as any;
+    const agent = {
+      run: vi.fn().mockResolvedValue({
+        result: { ...validResult, reply: stageQuestion, leadCardPatch: {} },
+        reply: stageQuestion, model: "workflow-model", promptVersion: "v1"
+      }),
+      answerWithKnowledge: vi.fn().mockResolvedValue({ reply: redirect, answerFound: true, shouldUseReply: true, requestScope: "new_loan", model: "knowledge-model" })
+    } as any;
+
+    const output = await new DialogueOrchestratorService(agent, store, { getValues: vi.fn().mockResolvedValue({}) } as any, { log: vi.fn() } as any)
+      .receive({ externalMessageId: "payment", channel: "web-test", externalContactId: "contact", text: "а сколько я на сегодня должен вам", attachments: [], timestamp: new Date() });
+
+    expect(output.reply).toBe(redirect);
+    expect(output.reply).not.toContain(firstContactGreeting);
+    expect(output.reply).not.toContain(stageQuestion);
+  });
+
+  it("starts the workflow for an explicit infinitive new-loan request", async () => {
+    const stageQuestion = "Подскажите, пожалуйста, ориентировочную стоимость автомобиля.";
+    const knowledgeReply = "Оформление доступно после проверки автомобиля.";
+    const application = { id: "app", facts: {}, contactId: "contact", stage: "NEW", status: "need_more_data" } as any;
+    const conversation = { id: "conversation", application, channel: "web-test", messages: [] } as any;
+    const store = {
+      getOrCreateConversation: vi.fn().mockResolvedValue({ conversation, application }),
+      addMessage: vi.fn().mockResolvedValue({ id: "message", author: "client", body: "", createdAt: "now" }),
+      updateFacts: vi.fn().mockResolvedValue([]), saveAgentState: vi.fn(), getApplication: vi.fn().mockResolvedValue(application), getConversation: vi.fn().mockResolvedValue(conversation), addAttachment: vi.fn(), createManagerNotification: vi.fn()
+    } as any;
+    const agent = {
+      run: vi.fn().mockResolvedValue({ result: { ...validResult, reply: stageQuestion, leadCardPatch: {} }, reply: stageQuestion, model: "workflow-model", promptVersion: "v1" }),
+      answerWithKnowledge: vi.fn().mockResolvedValue({ reply: knowledgeReply, answerFound: true, shouldUseReply: true, requestScope: "not_new_loan", model: "knowledge-model" })
+    } as any;
+
+    const output = await new DialogueOrchestratorService(agent, store, { getValues: vi.fn().mockResolvedValue({}) } as any, { log: vi.fn() } as any)
+      .receive({ externalMessageId: "new-loan", channel: "web-test", externalContactId: "contact", text: "Оформить новый займ", attachments: [], timestamp: new Date() });
+
+    expect(output.reply).toContain(firstContactGreeting);
+    expect(output.reply).toContain(knowledgeReply);
+    expect(output.reply).toContain("Подскажите, пожалуйста,");
+  });
+
+  it("starts the workflow when the first KB question includes an uploaded document", async () => {
+    const stageQuestion = "Подскажите, пожалуйста, ориентировочную стоимость автомобиля.";
+    const knowledgeReply = "По программе со стоянкой ставка составляет 2,4% в месяц.";
+    const application = { id: "app", facts: {}, contactId: "contact", stage: "NEW", status: "need_more_data" } as any;
+    const conversation = { id: "conversation", application, channel: "web-test", messages: [] } as any;
+    const store = {
+      getOrCreateConversation: vi.fn().mockResolvedValue({ conversation, application }),
+      addMessage: vi.fn().mockResolvedValue({ id: "message", author: "client", body: "", createdAt: "now" }),
+      updateFacts: vi.fn().mockResolvedValue([]), saveAgentState: vi.fn(), getApplication: vi.fn().mockResolvedValue(application), getConversation: vi.fn().mockResolvedValue(conversation), addAttachment: vi.fn(), createManagerNotification: vi.fn()
+    } as any;
+    const agent = {
+      run: vi.fn().mockResolvedValue({ result: { ...validResult, reply: stageQuestion, leadCardPatch: {}, attachments: [{ attachmentId: "id-front", type: "id_front", status: "received" }] }, reply: stageQuestion, model: "workflow-model", promptVersion: "v1" }),
+      answerWithKnowledge: vi.fn().mockResolvedValue({ reply: knowledgeReply, answerFound: true, shouldUseReply: true, requestScope: "not_new_loan", model: "knowledge-model" })
+    } as any;
+
+    const output = await new DialogueOrchestratorService(agent, store, { getValues: vi.fn().mockResolvedValue({}) } as any, { log: vi.fn() } as any)
+      .receive({ externalMessageId: "rate-with-id", channel: "web-test", externalContactId: "contact", text: "Какая ставка?", attachments: [{ id: "id-front", mimeType: "image/jpeg" }], timestamp: new Date() });
+
+    expect(output.reply).toContain(firstContactGreeting);
+    expect(output.reply).toContain(knowledgeReply);
+    expect(output.reply).toContain("Подскажите, пожалуйста,");
+  });
+
+  it("keeps subsequent KB-only questions outside the workflow until a new-loan signal appears", async () => {
+    const stageQuestion = "Подскажите, пожалуйста, ориентировочную стоимость автомобиля.";
+    const knowledgeReply = "По программе без изъятия ставка определяется индивидуально после осмотра автомобиля.";
+    const application = { id: "app", facts: { language: "ru" }, contactId: "contact", stage: "NEW", status: "need_more_data", agentState: { nextAction: "continue", cardSummary: "", intent: "new_loan" } } as any;
+    const conversation = { id: "conversation", application, channel: "web-test", messages: [{ author: "client", body: "Какая ставка?", createdAt: "now" }, { author: "ai", body: knowledgeReply, createdAt: "now" }] } as any;
+    const store = {
+      getOrCreateConversation: vi.fn().mockResolvedValue({ conversation, application }),
+      addMessage: vi.fn().mockResolvedValue({ id: "message", author: "client", body: "", createdAt: "now" }),
+      updateFacts: vi.fn().mockResolvedValue([]), saveAgentState: vi.fn(), getApplication: vi.fn().mockResolvedValue(application), getConversation: vi.fn().mockResolvedValue(conversation), addAttachment: vi.fn(), createManagerNotification: vi.fn()
+    } as any;
+    const agent = {
+      run: vi.fn().mockResolvedValue({ result: { ...validResult, reply: stageQuestion, leadCardPatch: {} }, reply: stageQuestion, model: "workflow-model", promptVersion: "v1" }),
+      answerWithKnowledge: vi.fn().mockResolvedValue({ reply: knowledgeReply, answerFound: true, shouldUseReply: true, requestScope: "new_loan", model: "knowledge-model" })
+    } as any;
+
+    const output = await new DialogueOrchestratorService(agent, store, { getValues: vi.fn().mockResolvedValue({}) } as any, { log: vi.fn() } as any)
+      .receive({ externalMessageId: "rate-again", channel: "web-test", externalContactId: "contact", text: "Какая ставка?", attachments: [], timestamp: new Date() });
+
+    expect(output.reply).toBe(knowledgeReply);
+    expect(output.reply).not.toContain(stageQuestion);
+    expect(store.saveAgentState).toHaveBeenCalledWith(application, expect.objectContaining({ newLoanStarted: false }));
+  });
+
   it("instructs the KB to distinguish standalone first-message questions from existing-loan servicing", () => {
     const prompt = readFileSync(new URL("../ai/prompts/knowledge-agent.system.md", import.meta.url), "utf8");
 

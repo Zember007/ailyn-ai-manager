@@ -19,6 +19,7 @@ export interface DialogueReceiveOptions { signal?: AbortSignal; deferReplyPersis
 const managerDeltaFactKeys = new Set(["requestedAmount", "requestedProgram", "visitDate", "visitTime", "vehicleValue", "vehicleMake", "vehicleModel", "vehicleYear", "fullName", "phone"]);
 const ANSWER_MAXIMUM_AFTER_PREREQUISITES = "answer_maximum_after_prerequisites";
 const VEHICLE_VALUE_BELOW_MINIMUM_REPLY = "К сожалению, мы не можем принять данный автомобиль в залог, так как его рыночная стоимость должна составлять не менее 300 000 сом.";
+const EXISTING_CONTRACT_REDIRECT_REPLY = "Я Айлин — виртуальный помощник по вопросам оформления новых займов. Если у Вас уже оформлен займ, пожалуйста, позвоните по телефону +996 502 108 108 или напишите в WhatsApp +996 776 108 108. Наши специалисты проверят информацию по Вашему договору и помогут решить Ваш вопрос.";
 
 function formatTimingError(error: unknown): string {
   return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
@@ -47,6 +48,31 @@ function isTerminalApplicationHistory(application: Stage1Application): boolean {
     || application.stage === "TARGET_REACHED_DOCUMENTS"
     || application.stage === "TARGET_REACHED_VISIT"
     || application.stage === "PAUSED";
+}
+
+const newLoanOpeningFactKeys = new Set<keyof ApplicationFacts>([
+  "fullName", "phone", "citizenship", "residenceRegion", "residenceText", "residenceCategory",
+  "vehicleRegistrationCountry", "vehicleRegistrationRegion", "vehicleType", "vehicleMake", "vehicleModel", "vehicleYear", "vehicleValue",
+  "requestedAmount", "requestedProgram", "borrowerIsOwner", "ownerFullName", "ownerResidenceRegion", "ownerFamilyStatus", "ownerCanVisit",
+  "familyStatus", "vehicleBoughtDuringMarriage", "documents"
+]);
+
+function opensNewLoanApplication(
+  text: string,
+  leadPatch: Partial<ApplicationFacts>,
+  moneyFacts: Partial<ApplicationFacts>,
+  hasInboundAttachments = false
+): boolean {
+  const explicitNewLoanIntent = /(?:(?:хочу|нуж(?:ен|на|ны)|планирую|собираюсь|можно).{0,40}(?:оформить|получить|взять)?\s*(?:нов(?:ый|ую)\s+)?(?:займ|деньг)|(?:оформить|получить|взять)\s+(?:нов(?:ый|ую)\s+)?(?:займ|деньг))/iu.test(text);
+  if (explicitNewLoanIntent) return true;
+  if (hasInboundAttachments) return true;
+  return Object.entries({ ...leadPatch, ...moneyFacts })
+    .some(([key, value]) => newLoanOpeningFactKeys.has(key as keyof ApplicationFacts) && value !== undefined);
+}
+
+function hasNewLoanOpeningFacts(facts: Partial<ApplicationFacts>): boolean {
+  return Object.entries(facts)
+    .some(([key, value]) => newLoanOpeningFactKeys.has(key as keyof ApplicationFacts) && value !== undefined);
 }
 
 @Injectable()
@@ -194,13 +220,28 @@ export class DialogueOrchestratorService {
     // Terminal refusals and complete visit confirmations are closed
     // server-owned replies. The knowledge model must not replace them with
     // a repeated stage question or an unrelated FAQ answer.
+    const existingContractServiceRequest = isExistingContractServiceRequest(text);
+    const existingContractRedirect = existingContractServiceRequest
+      || turn.result?.dialogueState.status === "redirect_existing_contract";
     let serverOwnsReply = turn.result?.dialogueState.status === "refuse"
-      || turn.result?.dialogueState.status === "redirect_existing_contract"
+      || existingContractRedirect
       || Boolean(
         turn.result?.leadCardPatch.visitDate
         && turn.result?.leadCardPatch.visitTime
         && /записываю\s+вас\s+на/iu.test(turn.reply)
       );
+    // Servicing an existing contract never opens a new-loan workflow. The
+    // normalizer may have reconstructed its reply after a model schema error;
+    // that fallback can contain a greeting and an unrelated stage question.
+    // Deliver the canonical approved redirect directly and do not require a
+    // second KB call to clean up an already-classified servicing request.
+    if (existingContractRedirect) {
+      turn = {
+        ...turn,
+        reply: EXISTING_CONTRACT_REDIRECT_REPLY,
+        ...(turn.result ? { result: { ...turn.result, reply: EXISTING_CONTRACT_REDIRECT_REPLY } } : {})
+      };
+    }
     if (repeatLoanStarted) {
       serverOwnsReply = true;
       const reply = "Поняла, оформляем новую заявку. Ваши личные данные у нас уже сохранены. Окончательное решение и сумма определяются после проверки автомобиля и документов. Для нового оформления пришлите, пожалуйста, актуальные фото автомобиля и свидетельство о регистрации ТС с обеих сторон. Также уточните марку, модель, год выпуска и ориентировочную стоимость автомобиля.";
@@ -224,8 +265,10 @@ export class DialogueOrchestratorService {
     // classification, so its approved reply must not be polluted by the
     // new-loan compliance greeting at the final delivery boundary.
     let suppressFirstContactGreeting = false;
+    let newLoanWorkflowStarted = Boolean(application.agentState?.newLoanStarted)
+      || hasNewLoanOpeningFacts(application.facts)
+      || repeatLoanStarted;
     const currentMaximumLoanQuestion = isMaximumLoanKnowledgeQuestion(text);
-    const existingContractServiceRequest = isExistingContractServiceRequest(text);
     const deferredMaximumLoanAnswer = !existingContractServiceRequest
       && application.agentState?.nextAction === ANSWER_MAXIMUM_AFTER_PREREQUISITES
       && Boolean(turn.result)
@@ -240,6 +283,7 @@ export class DialogueOrchestratorService {
     // `knowledgeRequest` flag cannot be a permission boundary for KB lookup.
     {
       const { knowledgeRequest: _knowledgeRequest, ...turnFacts } = turn.result?.leadCardPatch ?? {};
+      newLoanWorkflowStarted ||= opensNewLoanApplication(text, turnFacts, currencyFactsForTurn, attachments.length > 0);
       const factsForWorkflow = { ...normalizedFacts, ...turnFacts };
       const canonicalWorkflowFollowUp = nextRequiredStageQuestion(
         factsForWorkflow,
@@ -285,8 +329,8 @@ export class DialogueOrchestratorService {
       // answer that the KB explicitly found. Stage facts are protected by the
       // KB's `answerFound: false` workflow sentinel instead.
       if (knowledge?.answerFound || knowledge?.shouldUseReply) {
-        suppressFirstContactGreeting = conversation.messages.length === 0
-          && (knowledge.requestScope === "not_new_loan" || knowledge.requestScope === "unknown");
+        const standaloneKnowledgeTurn = !newLoanWorkflowStarted;
+        suppressFirstContactGreeting = standaloneKnowledgeTurn;
         receivedMaximumLoanTemplate = hasMaximumLoanPlaceholders(knowledge.reply);
         // The knowledge model is the only author of factual company answers.
         // Never prefix it with the workflow model's prose: that prose may be
@@ -307,9 +351,7 @@ export class DialogueOrchestratorService {
         // consent flag, but those gaps must never be appended to a KB answer
         // during a post-scenario test question.
         const continuesNewLoanWorkflow = !isTerminalApplicationHistory(application)
-          && (conversation.messages.length > 0
-          || knowledge.requestScope === "new_loan"
-          || (knowledge.requestScope === undefined && !knowledge.shouldUseReply));
+          && !standaloneKnowledgeTurn;
         const reply = appendWorkflowFollowUp(
           responsePlan,
           knowledge.answerFound && continuesNewLoanWorkflow
@@ -424,7 +466,8 @@ export class DialogueOrchestratorService {
           : {}),
         cardSummary: turnResult.cardSummary,
         intent: turnResult.intent,
-        preliminaryLimit
+        preliminaryLimit,
+        newLoanStarted: newLoanWorkflowStarted
       });
       application = (await this.store.getApplication(application.id)) ?? application;
       const initial = Boolean(turnResult.targetEvent) && !application.facts.handedToManager;

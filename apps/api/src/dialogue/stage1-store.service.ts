@@ -37,7 +37,7 @@ export interface Stage1Application {
   facts: ApplicationFacts;
   factHistory: { key: string; previousValue: unknown; newValue: unknown; changedAt: string }[];
   decision?: DecisionResult;
-  agentState?: { nextAction: string; cardSummary: string; intent: string; preliminaryLimit?: number | null };
+  agentState?: { nextAction: string; cardSummary: string; intent: string; preliminaryLimit?: number | null; newLoanStarted?: boolean };
   previousApplicationId?: string;
   /** Latest private lead-card summary. It is intentionally not part of facts. */
   dialogueSummary?: string;
@@ -420,7 +420,7 @@ export class Stage1StoreService {
     });
   }
 
-  async saveAgentState(application: Stage1Application, state: { stage: ApplicationStage; status: DecisionResult["status"]; nextAction: string; cardSummary: string; intent: string; preliminaryLimit?: number | null }): Promise<void> {
+  async saveAgentState(application: Stage1Application, state: { stage: ApplicationStage; status: DecisionResult["status"]; nextAction: string; cardSummary: string; intent: string; preliminaryLimit?: number | null; newLoanStarted?: boolean }): Promise<void> {
     const current = await this.prisma.application.findUnique({ where: { id: application.id }, select: { metadata: true } });
     const metadata = asRecord(current?.metadata);
     const previousAgentState = asRecord(metadata.agentState);
@@ -428,7 +428,8 @@ export class Stage1StoreService {
     // family, visit) do not recalculate it, so an omitted/null field from the
     // model must not erase the confirmed value from the application state.
     const preliminaryLimit = state.preliminaryLimit ?? (typeof previousAgentState.preliminaryLimit === "number" ? previousAgentState.preliminaryLimit : undefined);
-    const agentState = { ...state, ...(preliminaryLimit === undefined ? {} : { preliminaryLimit }) };
+    const newLoanStarted = state.newLoanStarted === true || previousAgentState.newLoanStarted === true;
+    const agentState = { ...state, ...(preliminaryLimit === undefined ? {} : { preliminaryLimit }), ...(newLoanStarted ? { newLoanStarted: true } : {}) };
     await this.prisma.application.update({
       where: { id: application.id },
       data: { state: state.stage as ApplicationState, metadata: toJson({ ...metadata, status: state.status, agentState }) }
