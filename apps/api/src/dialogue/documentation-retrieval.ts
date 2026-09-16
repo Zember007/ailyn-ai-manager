@@ -7,6 +7,11 @@ import { approvedKnowledgeSeeds } from "../knowledge/knowledge.service.js";
 type DocumentationChunk = (typeof generatedDocumentationChunks)[number];
 type KnowledgeContextChunk = DocumentationChunk | (typeof approvedFaqChunks)[number];
 type DocumentationStage = DocumentationChunk["primaryStage"];
+export type KnowledgePromptChunk = {
+  key: string;
+  section: string;
+  text: string;
+};
 const stageInstructionsByStage: Partial<Record<DocumentationStage, string>> = agentStageInstructions;
 
 /**
@@ -56,10 +61,6 @@ const approvedFaqChunks = approvedKnowledgeSeeds
     text: item.answerRu
   }));
 
-// These words identify a conversational form, not a knowledge topic. They
-// must never pull a FAQ into the compact KB packet on their own.
-const genericKnowledgeTokens = new Set(["авто", "автомобиль", "деньги", "займ", "какой", "какая", "какие", "можно", "машина", "сколько"]);
-
 /**
  * Server fallback for a product-policy topic expressed in the current client
  * message. It deliberately ignores dialogue history: old assistant text must
@@ -72,55 +73,32 @@ export function hasApprovedKnowledgeMatch(text: string): boolean {
   return approvedFaqChunks.some((chunk) => hasExactApprovedFaqAlias(chunk, current));
 }
 
-/**
- * Gives the knowledge model a short, ordered evidence packet instead of a
- * large undifferentiated document dump. FAQ answers have the highest
- * priority. Section 3.18 is added only for a request about an already issued
- * loan; every other entry must be relevant to the current message.
- */
+/** Gives the knowledge model the complete approved corpus. Relevance scoring
+ * is deliberately not a permission boundary: the model must resolve natural
+ * wording from meaning, or honestly report that no approved answer exists. */
 export function prioritizedKnowledgeForQuestion(input: {
   facts: ApplicationFacts;
   currentMessage?: string;
   messages: Stage1Message[];
 }): KnowledgeContextChunk[] {
-  const selected = selectRelevantDocumentation({ ...input, includeCrossStageMatches: true, maxChunks: 4 });
-  const current = (input.currentMessage ?? "").toLocaleLowerCase("ru-RU");
-  const tokens = new Set(current.match(/[\p{L}\p{N}]{3,}/gu) ?? []);
-  const spouseProxyContext = isSpouseProxyContext(current);
-  const ownershipRegistrationQuestion = isOwnershipRegistrationQuestion(current);
-  const existingContractServiceRequest = isExistingContractServiceRequest(current);
-  const relevantSelectedKnowledge = selected.knowledge.filter((chunk) => hasRetrievalTopic(chunk, tokens, current, ownershipRegistrationQuestion));
-  const spouseOwnershipRule = spouseProxyContext
-    ? generatedDocumentationChunks.find((chunk) => chunk.section === "4.27")
-    : undefined;
-  const ownershipRegistrationRule = ownershipRegistrationQuestion
-    ? generatedDocumentationChunks.find((chunk) => chunk.key === "docx_0105")
-    : undefined;
-  const availableFaq = spouseProxyContext || existingContractServiceRequest
-    ? approvedFaqChunks.filter((chunk) => chunk.key !== "faq_power_of_attorney" && (!existingContractServiceRequest || chunk.key !== "faq_gps_requirement"))
-    : approvedFaqChunks;
-  // An exact client alias is stronger than a shared stopword in another FAQ
-  // (for example «ты робот что ли?» and the word «что» in a documents alias).
-  // Keep it first so the knowledge agent receives the approved article that
-  // actually owns the question.
-  const exactMatchedFaq = availableFaq.filter((chunk) => hasExactApprovedFaqAlias(chunk, current));
-  const matchedFaq = availableFaq.filter((chunk) =>
-    (hasExactApprovedFaqAlias(chunk, current) || hasStrongApprovedQuestionMatch(chunk, tokens))
-  );
-  const contractRules = generatedDocumentationChunks.filter((chunk) => chunk.section === "3.18");
-  // Relevance determines order, not visibility: the knowledge model receives
-  // every approved FAQ and document chunk. The ranked items remain first.
-  return uniqueKnowledge([
-    ...(existingContractServiceRequest ? contractRules : []),
-    ...exactMatchedFaq,
-    ...matchedFaq,
-    ...(spouseOwnershipRule ? [spouseOwnershipRule] : []),
-    ...(ownershipRegistrationRule ? [ownershipRegistrationRule] : []),
-    ...relevantSelectedKnowledge,
-    ...selected.commonKnowledge,
-    ...availableFaq,
-    ...generatedDocumentationChunks
-  ]);
+  void input;
+  return uniqueKnowledge([...approvedFaqChunks, ...generatedDocumentationChunks]);
+}
+
+/**
+ * Keeps every approved rule while removing retrieval-only metadata from the
+ * model packet. Keywords, aliases, stages, parent contexts and duplicate FAQ
+ * fields are server implementation details; sending them inflated the packet
+ * beyond the model's context limit before it could answer a client.
+ */
+export function compactKnowledgeForPrompt(chunks: KnowledgeContextChunk[]): KnowledgePromptChunk[] {
+  return chunks.map((chunk) => ({
+    key: chunk.key,
+    section: chunk.section,
+    text: "approvedQuestion" in chunk && "approvedAnswer" in chunk
+      ? `${chunk.approvedQuestion}\n${chunk.approvedAnswer}`
+      : chunk.text
+  }));
 }
 
 function uniqueKnowledge(chunks: KnowledgeContextChunk[]): KnowledgeContextChunk[] {
@@ -241,13 +219,6 @@ function scoreChunk(chunk: DocumentationChunk, index: number, stages: Documentat
   return stageScore + keywordScore + targetedSectionScore + Math.max(0, 1 - index / 10_000);
 }
 
-function hasRetrievalTopic(chunk: DocumentationChunk, tokens: Set<string>, current: string, ownershipRegistrationQuestion: boolean): boolean {
-  return chunk.keywords.some((keyword) => tokens.has(keyword) && !genericKnowledgeTokens.has(keyword))
-    || (chunk.key.startsWith("faq_") && hasExactApprovedFaqAlias(chunk, current))
-    || matchesDirectQuestion(chunk, current)
-    || (ownershipRegistrationQuestion && chunk.key === "docx_0105");
-}
-
 function findChunk(predicate: (chunk: DocumentationChunk) => boolean): DocumentationChunk | undefined {
   return generatedDocumentationChunks.find(predicate);
 }
@@ -304,12 +275,6 @@ function matchesApprovedQuestion(chunk: KnowledgeContextChunk, tokens: Set<strin
   return approvedQuestionScore(chunk, tokens) > 0;
 }
 
-function hasStrongApprovedQuestionMatch(chunk: KnowledgeContextChunk, tokens: Set<string>): boolean {
-  // One shared word such as «можно» or «деньги» is insufficient to include
-  // an FAQ in the compact KB packet. Exact aliases remain eligible separately.
-  return approvedQuestionScore(chunk, tokens) >= 60;
-}
-
 function approvedFaqScore(chunk: KnowledgeContextChunk, tokens: Set<string>, current: string): number {
   const aliasMatches = chunk.keywords.filter((keyword) => tokens.has(keyword)).length;
   const phraseMatch = hasExactApprovedFaqAlias(chunk, current);
@@ -352,6 +317,6 @@ function isOwnershipRegistrationQuestion(text: string): boolean {
 
 /** Current-loan servicing belongs to the approved existing-contract redirect,
  * rather than pre-loan FAQ material. */
-function isExistingContractServiceRequest(text: string): boolean {
-  return /(?:действующ\p{L}*|текущ\p{L}*|прошл\p{L}*|предыдущ\p{L}*|стар\p{L}*)\s+(?:займ|договор)|(?:займ|договор)[^.!?]{0,40}(?:действующ\p{L}*|текущ\p{L}*|прошл\p{L}*|предыдущ\p{L}*|стар\p{L}*)|(?:информ\p{L}*|инф[ао])[^.!?]{0,50}(?:мо(?:ем|ём)|сво(?:ем|ём))[^.!?]{0,30}(?:займ|договор)|(?:сколько|какая)\s+(?:я\s+)?(?:сейчас\s+)?долж(?:ен|на)[^.!?]{0,80}(?:по\s+(?:моему\s+)?(?:текущ\p{L}*\s+)?(?:займу|договор)|у\s+меня)|(?:остат(?:ок|лось)|задолженн\p{L}*|долг\p{L}*)[^.!?]{0,60}(?:по\s+(?:моему\s+)?(?:займу|договор)|у\s+меня)|(?:датчик|gps|гпс)[^.!?]{0,40}(?:не\s+работа|сломал|перестал\p{L}*\s+работа|замен)/iu.test(text);
+export function isExistingContractServiceRequest(text: string): boolean {
+  return /(?:действующ\p{L}*|текущ\p{L}*|прошл\p{L}*|предыдущ\p{L}*|стар\p{L}*)\s+(?:займ|договор)|(?:займ|договор)[^.!?]{0,40}(?:действующ\p{L}*|текущ\p{L}*|прошл\p{L}*|предыдущ\p{L}*|стар\p{L}*)|(?:у\s+меня|мо[йяеё]|сво[йяеё])[^.!?]{0,45}(?:займ|договор|плат[её]ж|оплат\p{L}*|долг|задолженн\p{L}*)|(?:уже\s+)?(?:был|есть|оформлен)\p{L}*[^.!?]{0,35}(?:займ|договор)|(?:информ\p{L}*|инф[ао])[^.!?]{0,50}(?:мо(?:ем|ём)|сво(?:ем|ём))[^.!?]{0,30}(?:займ|договор)|скольк\p{L}*[^.!?]{0,60}долж\p{L}*|(?:скольк\p{L}*|какую\s+сумм\p{L}*)[^.!?]{0,60}(?:оплат\p{L}*|погас\p{L}*)|(?:оплат\p{L}*|погас\p{L}*|(?:заех\p{L}*|приех\p{L}*)[^.!?]{0,30}оплат\p{L}*)[^.!?]{0,80}скольк\p{L}*[^.!?]{0,50}привез\p{L}*|(?:остат(?:ок|лось)|задолженн\p{L}*|долг\p{L}*)[^.!?]{0,60}(?:по\s+(?:моему\s+)?(?:займу|договор)|у\s+меня)|(?:проверьте|проверить)[^.!?]{0,60}оплат|(?:я\s+)?оплатил(?:а)?\b|реквизит\p{L}*[^.!?]{0,60}(?:оплат|договор)|(?:вернуть|забрать)[^.!?]{0,60}документ|(?:когда|через\s+скольк\p{L}*|можно|хочу|смогу)[^.!?]{0,50}(?:вернуть|забрать|получить)[^.!?]{0,30}(?:сво[йяеё]|мо[йяеё])[^.!?]{0,20}(?:авто|автомобил\p{L}*|машин\p{L}*)|(?:(?:датчик|gps|гпс|трекер|маяч(?:ок|к\p{L}*))[^.!?]{0,40}(?:не\s+работа|отвал\p{L}*|слет\p{L}*|сломал|перестал\p{L}*\s+работа|отключ\p{L}*|замен)|(?:не\s+работа|отвал\p{L}*|слет\p{L}*|сломал|перестал\p{L}*\s+работа|отключ\p{L}*|замен)[^.!?]{0,40}(?:датчик|gps|гпс|трекер|маяч(?:ок|к\p{L}*)))/iu.test(text);
 }

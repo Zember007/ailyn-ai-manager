@@ -2,6 +2,7 @@ import { Injectable } from "@nestjs/common";
 import type { ApplicationFacts, ApplicationStage, DecisionResult } from "@ailyn/business-rules";
 import type { ApplicationState, MessageAuthor, MessageChannel, Prisma } from "@prisma/client";
 import { PrismaService } from "../database/prisma.service.js";
+import { persistentClientFacts } from "./repeat-loan.js";
 
 export interface Stage1Attachment {
   id: string;
@@ -37,6 +38,7 @@ export interface Stage1Application {
   factHistory: { key: string; previousValue: unknown; newValue: unknown; changedAt: string }[];
   decision?: DecisionResult;
   agentState?: { nextAction: string; cardSummary: string; intent: string; preliminaryLimit?: number | null };
+  previousApplicationId?: string;
   /** Latest private lead-card summary. It is intentionally not part of facts. */
   dialogueSummary?: string;
   createdAt: string;
@@ -229,6 +231,60 @@ export class Stage1StoreService {
     return this.mapApplication(reloaded ?? saved);
   }
 
+  async findLatestClosedApplication(contactId: string): Promise<Stage1Application | undefined> {
+    const application = await this.prisma.application.findFirst({
+      where: { contactId, state: "CLOSED" },
+      orderBy: { updatedAt: "desc" },
+      include: applicationInclude()
+    });
+    return application ? this.mapApplication(application) : undefined;
+  }
+
+  async createRepeatLoanApplication(conversation: Stage1Conversation, closedApplication: Stage1Application): Promise<Stage1Application> {
+    if (closedApplication.contactId !== conversation.contactId) {
+      throw new Error("repeat_loan_application_contact_mismatch");
+    }
+    const idempotencyKey = `repeat-loan-${closedApplication.id}`;
+    const existing = await this.prisma.application.findUnique({ where: { idempotencyKey }, include: applicationInclude() });
+    if (existing) return this.mapApplication(existing);
+    const clientProfile = await this.loadClientProfile(conversation.contactId);
+    const repeatFacts = mergePersistentClientFacts(persistentClientFacts(closedApplication.facts), clientProfile);
+    let saved: ApplicationWithRelations | undefined;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        saved = await this.prisma.$transaction(async (transaction) => {
+          const publicId = await this.nextPublicApplicationId(transaction);
+          return transaction.application.create({
+            data: {
+              publicId,
+              contactId: conversation.contactId,
+              conversationId: conversation.id,
+              state: "NEW",
+              idempotencyKey,
+              metadata: toJson({ status: "need_more_data", previousApplicationId: closedApplication.id }),
+              facts: { create: persistentFactRows(repeatFacts, conversation.contactId) },
+              factHistory: { create: persistentFactHistoryRows(repeatFacts) }
+            },
+            include: applicationInclude()
+          });
+        }, { isolationLevel: "Serializable" });
+        break;
+      } catch (error) {
+        const concurrentlyCreated = await this.prisma.application.findUnique({ where: { idempotencyKey }, include: applicationInclude() });
+        if (concurrentlyCreated) return this.mapApplication(concurrentlyCreated);
+        if (attempt === 2 || !isRetriableApplicationIdConflict(error)) throw error;
+      }
+    }
+    if (!saved) throw new Error("repeat_loan_application_creation_failed");
+    await this.prisma.conversation.update({
+      where: { id: conversation.id },
+      data: { updatedAt: new Date() }
+    });
+    await this.recordAudit("application.created_after_closed_loan", "Application", saved.id, { previousApplicationId: closedApplication.id });
+    const reloaded = await this.loadApplication(saved.id);
+    return this.mapApplication(reloaded ?? saved);
+  }
+
   async addMessage(conversation: Stage1Conversation, message: Omit<Stage1Message, "id" | "createdAt">): Promise<Stage1Message> {
     const saved = await this.prisma.message.create({
       data: {
@@ -324,6 +380,9 @@ export class Stage1StoreService {
       changedKeys.push(key);
     }
     await this.prisma.application.update({ where: { id: application.id }, data: { updatedAt: new Date() } });
+    if (hasPersistentClientChanges(incoming)) {
+      await this.saveClientProfile(application.contactId, { ...application.facts, ...incoming });
+    }
     return changedKeys;
   }
 
@@ -447,6 +506,27 @@ export class Stage1StoreService {
     });
   }
 
+  private async saveClientProfile(contactId: string, facts: ApplicationFacts): Promise<void> {
+    if (!contactId) return;
+    const profile = persistentClientFacts(facts);
+    const current = await this.prisma.contact.findUnique({ where: { id: contactId }, select: { metadata: true } });
+    const metadata = asRecord(current?.metadata);
+    await this.prisma.contact.update({
+      where: { id: contactId },
+      data: {
+        ...(profile.fullName ? { fullName: profile.fullName } : {}),
+        ...(profile.phone ? { phone: profile.phone } : {}),
+        metadata: toJson({ ...metadata, clientProfile: profile })
+      }
+    });
+  }
+
+  private async loadClientProfile(contactId: string): Promise<Partial<ApplicationFacts>> {
+    if (!contactId) return {};
+    const contact = await this.prisma.contact.findUnique({ where: { id: contactId }, select: { metadata: true } });
+    return persistentClientFacts(asRecord(asRecord(contact?.metadata).clientProfile) as ApplicationFacts);
+  }
+
   private mapConversation(conversation: NonNullable<ConversationWithRelations>): Stage1Conversation {
     const latestApplication = [...conversation.applications].sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())[0];
     const application = latestApplication ? this.mapApplication(latestApplication) : undefined;
@@ -491,6 +571,7 @@ export class Stage1StoreService {
       })),
       decision: metadata.decision as DecisionResult | undefined,
       agentState: metadata.agentState as Stage1Application["agentState"],
+      previousApplicationId: typeof metadata.previousApplicationId === "string" ? metadata.previousApplicationId : undefined,
       dialogueSummary: application.dialogueSummary ?? undefined,
       createdAt: application.createdAt.toISOString(),
       updatedAt: application.updatedAt.toISOString()
@@ -606,6 +687,37 @@ function factsFromRows(rows: { key: string; value: unknown }[]): ApplicationFact
     (facts as Record<string, unknown>)[row.key] = row.value;
   }
   return facts;
+}
+
+function hasPersistentClientChanges(incoming: Partial<ApplicationFacts>): boolean {
+  return ["fullName", "phone", "residenceRegion", "residenceText", "residenceCategory", "familyStatus", "documents"]
+    .some((key) => incoming[key as keyof ApplicationFacts] !== undefined);
+}
+
+function mergePersistentClientFacts(
+  closedApplicationFacts: Partial<ApplicationFacts>,
+  clientProfile: Partial<ApplicationFacts>
+): Partial<ApplicationFacts> {
+  const merged = { ...closedApplicationFacts, ...clientProfile };
+  const documents = { ...(closedApplicationFacts.documents ?? {}), ...(clientProfile.documents ?? {}) };
+  return Object.keys(documents).length > 0 ? { ...merged, documents } : merged;
+}
+
+function persistentFactRows(facts: Partial<ApplicationFacts>, contactId: string) {
+  return Object.entries(facts).map(([key, value]) => ({
+    contactId,
+    key,
+    value: toJson(value),
+    source: "web_test"
+  }));
+}
+
+function persistentFactHistoryRows(facts: Partial<ApplicationFacts>) {
+  return Object.entries(facts).map(([key, value]) => ({
+    key,
+    newValue: toJson(value),
+    source: "web_test"
+  }));
 }
 
 function toPrismaChannel(channel: "web-test" | "wazzup"): MessageChannel {

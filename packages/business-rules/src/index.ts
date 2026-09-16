@@ -61,6 +61,7 @@ export type ApplicationStage =
   | "TARGET_REACHED_VISIT"
   | "REFUSED"
   | "PAUSED"
+  | "CLOSED"
   | "EXISTING_CONTRACT_REDIRECT";
 
 export interface ApplicationFacts {

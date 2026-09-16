@@ -10,7 +10,7 @@ import type { InboundAttachment } from "../channels/channel.interface.js";
 import { BackendLogsService } from "../logs/backend-logs.service.js";
 import { attachmentFactsForCurrentStage, deriveStageCompletion, effectiveFactsForTurn, isCarPhotoStagePrompt } from "./agent-turn-reconciliation.js";
 import { isContextualKnowledgeFollowUpText } from "./contextual-knowledge-follow-up.js";
-import { hasApprovedKnowledgeMatch, isMaximumLoanKnowledgeQuestion, prioritizedKnowledgeForQuestion, selectRelevantDocumentation } from "./documentation-retrieval.js";
+import { compactKnowledgeForPrompt, hasApprovedKnowledgeMatch, isExistingContractServiceRequest, isMaximumLoanKnowledgeQuestion, prioritizedKnowledgeForQuestion, selectRelevantDocumentation } from "./documentation-retrieval.js";
 import { agentTurnResultSchema, dialogueSummarySchema, knowledgeAnswerSchema, type AgentTurnResult } from "./agent-turn.contracts.js";
 import { moneyNormalizationSchema } from "./pipeline.contracts.js";
 import { calculateLoanPricing, MINIMUM_VEHICLE_VALUE, type LoanPricing, type LoanPricingSettings } from "./loan-pricing.js";
@@ -28,6 +28,31 @@ const DEFAULT_OFFICE_ADDRESS = "Б. Молодой Гвардии, 22, Бишк�
 const DEFAULT_TWO_GIS_URL = "https://go.2gis.com/Y34m4";
 const DEFAULT_GOOGLE_MAPS_URL = "https://maps.app.goo.gl/9xiWLVvdyRgn3Sx4A";
 const UNKNOWN_KNOWLEDGE_ANSWER = "К сожалению, у меня нет достоверной информации по этому вопросу. Когда Вы приедете, сотрудники с удовольствием подскажут Вам.";
+// JSON mode validates only that the response is an object, so `{}` is valid
+// there. The KB contract must instead be enforced by the provider before the
+// response reaches the Zod boundary.
+const KNOWLEDGE_RESPONSE_JSON_SCHEMA = {
+  name: "knowledge_response",
+  strict: true,
+  schema: {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      reply: { type: "string" },
+      answerFound: { type: "boolean" },
+      questionUnderstood: { type: "boolean" },
+      sourceKeys: { type: "array", items: { type: "string" } },
+      requestScope: { type: "string", enum: ["new_loan", "not_new_loan", "unknown"] },
+      contextualPolicyRelation: {
+        anyOf: [
+          { type: "string", enum: ["follow_up", "new_question"] },
+          { type: "null" }
+        ]
+      }
+    },
+    required: ["reply", "answerFound", "questionUnderstood", "sourceKeys", "requestScope", "contextualPolicyRelation"]
+  }
+} as const;
 export const OLDER_VEHICLE_PROGRAM_NOTICE = "По общему правилу мы принимаем в залог автомобили старше 15 лет только на стоянку, но если вы планируете получить займ без изъятия, то мы готовы рассмотреть вашу заявку индивидуально.";
 type ContextualKnowledgePolicy = { key: "region_10_refusal" | "previous_assistant_answer"; approvedAnswer: string };
 // The complete lead card keeps durable facts, while a compact recent tail is
@@ -191,9 +216,12 @@ export class AgentTurnService {
     text?: string;
     currentTurnMessages?: Array<{ index: number; text: string }>;
     workflowFollowUp: string;
+    isFirstClientMessage?: boolean;
+    /** Time of the inbound message for time-dependent approved answers. */
+    currentTime?: Date;
     conversationId?: string;
     signal?: AbortSignal;
-  }): Promise<{ reply: string; answerFound: boolean; model: string } | undefined> {
+  }): Promise<{ reply: string; answerFound: boolean; shouldUseReply?: boolean; requestScope?: "new_loan" | "not_new_loan" | "unknown"; model: string } | undefined> {
     if (!this.client.isConfigured()) return undefined;
     const currentMessage = input.text ?? "";
     const asksAboutGuarantor = /поручител\p{L}*/iu.test(currentMessage)
@@ -216,7 +244,12 @@ export class AgentTurnService {
     const requiredFallbacks = unsupportedKnowledgeFallbacks(input.text ?? "");
     const hasSupportedQuestion = hasSupportedKnowledgeQuestion(input.text ?? "", documentation.mandatoryAnswer);
     if (requiredFallbacks.length > 0 && !hasSupportedQuestion) {
-      return { reply: requiredFallbacks.join("\n\n"), answerFound: false, model: "server-knowledge-fallback" };
+      return {
+        reply: requiredFallbacks.join("\n\n"),
+        answerFound: false,
+        shouldUseReply: isExplicitQuestionText(input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? ""),
+        model: "server-knowledge-fallback"
+      };
     }
     const officeLocationResponse = isOfficeLocationQuestion(input.text)
       ? officeLocationReply(input.settings)
@@ -238,11 +271,16 @@ export class AgentTurnService {
     });
     const context = {
       currentMessage: input.text ?? "",
+      isFirstClientMessage: input.isFirstClientMessage === true,
       currentTurnMessages: input.currentTurnMessages ?? (input.text === undefined ? [] : [{ index: 1, text: input.text }]),
-      history: activeWorkflowHistory(input.messages),
+      currentTime: input.currentTime?.toISOString(),
+      // KB answers may depend on a client statement immediately before a
+      // failed/unclear assistant reply. Preserve a short alternating tail,
+      // rather than only the last workflow question.
+      history: recentKnowledgeHistory(input.messages),
       leadCard: input.facts,
       workflowFollowUp: input.workflowFollowUp,
-      existingContractServiceRequest: isExplicitExistingContractRequest(input.text ?? ""),
+      existingContractServiceRequest: isExistingContractServiceRequest(input.text ?? ""),
       // Server-owned settings, not model knowledge, are authoritative for
       // office location and map links.
       officeLocationResponse,
@@ -256,7 +294,10 @@ export class AgentTurnService {
       // Keep the model focused on the approved answer most relevant to this
       // message. The packet always starts with FAQ, then section 3.18 rules,
       // instead of making it search a large, competing corpus by itself.
-      knowledge,
+      // Every approved chunk is retained. This projection removes only
+      // server-side retrieval metadata, which otherwise exceeds the model's
+      // context window before it can produce an answer.
+      knowledge: compactKnowledgeForPrompt(knowledge),
       requiredFallbacks
     };
     try {
@@ -266,35 +307,63 @@ export class AgentTurnService {
         temperature: 0,
         max_tokens: MAX_AGENT_RESPONSE_TOKENS,
         reasoning: { enabled: false },
-        response_format: { type: "json_object" },
+        response_format: { type: "json_schema", json_schema: KNOWLEDGE_RESPONSE_JSON_SCHEMA },
+        structured_outputs: true,
         messages: [
           { role: "system", content: loadPrompt("knowledge-agent.system.md") },
           { role: "user", content: JSON.stringify(context) }
         ]
       }, { operation: "knowledge_answer", timeoutMs: this.config.routerAiTimeoutMs, signal: input.signal });
-      const parsed = knowledgeAnswerSchema.safeParse(parseAgentJson(response.choices?.[0]?.message?.content));
-      if (!parsed.success) throw new Error(`Knowledge response does not match schema: ${parsed.error.issues.map((issue) => issue.path.join(".")).join(", ")}`);
-      // A mandatory match proves that an approved answer exists. The knowledge
-      // model remains the author of its client-facing formulation, so it can
-      // adapt a factual statement to the actual conversational context.
-      const hasSeveralQuestions = hasSeveralClientQuestions(input.text ?? "");
+      const responseChoice = response.choices?.[0];
+      const rawModelResponse = responseChoice?.message?.content;
+      const parsed = knowledgeAnswerSchema.safeParse(parseAgentJson(rawModelResponse));
+      if (!parsed.success) {
+        await this.logs?.warn("dialogue.knowledge-model", "Knowledge model response failed schema validation", {
+          conversationId: input.conversationId,
+          metadata: {
+            model: response.model ?? model,
+            currentMessage: input.text ?? "",
+            // Use null rather than undefined: JSON serialization drops
+            // undefined fields, which hid the actual gateway response in
+            // production logs.
+            rawModelResponse: rawModelResponse ?? null,
+            responseChoice: responseChoice ?? null,
+            // RouterAI may return a successful HTTP response containing an
+            // error envelope instead of `choices`. Preserve that envelope so
+            // this failure is diagnosable without reproducing the request.
+            routerAiResponse: response,
+            schemaIssues: parsed.error.issues
+          }
+        });
+        throw new Error(`Knowledge response does not match schema: ${parsed.error.issues.map((issue) => issue.path.join(".")).join(", ")}`);
+      }
+      const sourceKeys = parsed.data.sourceKeys;
+      const knownKnowledgeKeys = new Set(knowledge.map((chunk) => chunk.key));
+      if (sourceKeys && (
+        (parsed.data.answerFound && sourceKeys.length === 0)
+        || sourceKeys.some((key) => key !== "lead_card" && key !== "conversation_context" && !knownKnowledgeKeys.has(key))
+      )) {
+        throw new Error("Knowledge response references missing or insufficient source keys");
+      }
       const ungroundedCreditAnswer = isUngroundedVehicleCreditAnswer(parsed.data.reply, input.text ?? "");
       const answerFound = !ungroundedCreditAnswer
-        && (parsed.data.answerFound || (!hasSeveralQuestions && Boolean(documentation.mandatoryAnswer)) || (requiredFallbacks.length > 0 && hasSupportedQuestion));
-      // The office location is server-owned configuration, including live map
-      // links, and therefore remains verbatim. Every knowledge-base response
-      // without an exact approved match comes from the dedicated model. For a
-      // matched FAQ, the model is not allowed to author or extend facts: its
-      // server-owned canonical answer is the only client-facing wording.
+        && (parsed.data.answerFound || (requiredFallbacks.length > 0 && hasSupportedQuestion));
+      // The complete corpus is available to the KB model on every turn. It,
+      // rather than a keyword/retrieval filter, decides which approved rule
+      // answers the client's wording. Only live office settings remain
+      // server-owned because their values are configuration, not KB prose.
       const knowledgeReply = contextualPolicy?.key === "region_10_refusal" && parsed.data.contextualPolicyRelation === "follow_up"
         // The policy is server-approved; keep a model from blending in a
         // semantically nearby but unrelated rule such as the 15-year policy.
         ? contextualPolicy.approvedAnswer
-        : documentation.mandatoryAnswer
-          ? documentation.mandatoryAnswer
         : answerFound
           ? removeInternalPricingInstruction(officeLocationResponse ?? ensureGeneralRateCoverage(parsed.data.reply, input.text))
-          : UNKNOWN_KNOWLEDGE_ANSWER;
+          // A fact supplied for the application is intentionally not a KB
+          // answer. Keep it empty so the workflow model remains the sole
+          // author of the client-facing continuation.
+          : parsed.data.questionUnderstood === false
+            ? parsed.data.reply
+            : UNKNOWN_KNOWLEDGE_ANSWER;
       // The maximum range is server-owned, but it is only one answer in a
       // multi-question turn. Keep the canonical range and retain all other
       // independent KB answers (rate, office amenities, vehicle conditions).
@@ -302,11 +371,23 @@ export class AgentTurnService {
       const reply = maximumLoanQuestion && maximumLoanTemplate
         ? mergeMaximumLoanTemplateWithOtherAnswers(maximumLoanTemplate, replyWithFallbacks)
         : replyWithFallbacks;
+      const explicitQuestion = isExplicitQuestionText(input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "");
+      const shouldUseReply = parsed.data.questionUnderstood === true || explicitQuestion;
       await this.logs?.log("dialogue.knowledge-model", "Knowledge model response received", {
         conversationId: input.conversationId,
-        metadata: { model: response.model ?? model, answerFound }
+        metadata: {
+          model: response.model ?? model,
+          currentMessage: input.text ?? "",
+          modelAnswerFound: parsed.data.answerFound,
+          answerFound,
+          sourceKeys: parsed.data.sourceKeys ?? [],
+          requestScope: parsed.data.requestScope,
+          explicitQuestion,
+          questionUnderstood: parsed.data.questionUnderstood === true,
+          replyMode: answerFound ? "approved_answer" : "knowledge_fallback"
+        }
       });
-      return { reply, answerFound, model: response.model ?? model };
+      return { reply, answerFound, shouldUseReply, requestScope: parsed.data.requestScope, model: response.model ?? model };
     } catch (error) {
       if (input.signal?.aborted) throw error;
       const message = formatError(error);
@@ -354,7 +435,7 @@ export class AgentTurnService {
           }
         ]
       }, { operation: "output_rendering", timeoutMs: this.config.routerAiTimeoutMs, signal: input.signal });
-      const reply = parseRendererReply(response.choices?.[0]?.message?.content);
+      const reply = parseRendererReply(response.choices?.[0]?.message?.content ?? undefined);
       if (!reply || !isSafeRenderedReply(reply, responsePlan)) {
         await this.logs?.warn("dialogue.output-renderer", "Output renderer response rejected; using server response plan", {
           conversationId: input.conversationId,
@@ -584,15 +665,22 @@ export class AgentTurnService {
    */
   private async resolveUnofficialMarriageStatus(parsed: AgentTurnResult, input: AgentTurnInput): Promise<AgentTurnResult> {
     const clientReply = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "").trim();
-    if (!looksLikeUnofficialMarriageStatement(clientReply)) return parsed;
+    const lastAssistant = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
+    // A past-tense marriage statement answers the current-status question
+    // directly. It must win before a general model can mistake the words
+    // «в браке» for a present marriage.
+    if (isFamilyStatusQuestion(lastAssistant) && isPastMarriageStatusReply(clientReply)) {
+      return { ...parsed, leadCardPatch: { ...parsed.leadCardPatch, familyStatus: "divorced" } };
+    }
+    if (!looksLikeUnofficialMarriageStatement(clientReply) && !isFamilyStatusQuestion(lastAssistant)) return parsed;
     const fallback = unofficialMarriageStatusFallback(clientReply);
     try {
       const response = await this.client.createChatCompletion({
         model: this.config.routerAiNormalizerModel ?? this.config.routerAiTextModel ?? "routerai-text-model-not-configured",
         temperature: 0, max_tokens: 30, reasoning: { enabled: false }, response_format: { type: "json_object" },
         messages: [
-          { role: "system", content: "Определи только официальный семейный статус клиента из текущей реплики. Верни JSON {\"familyStatus\":\"single\"|\"married\"|\"divorced\"|null}. Гражданский брак, совместная жизнь, дети без официальной регистрации, фразы «официально не расписаны», «брак не регистрировал» означают single. Такая реплика может исправлять ранее сохранённый married. Не додумывай статус." },
-          { role: "user", content: JSON.stringify({ previousFamilyStatus: input.facts.familyStatus ?? null, clientReply }) }
+          { role: "system", content: "Определи только текущий официальный семейный статус клиента из его реплики и последнего вопроса AI. Верни JSON {\"familyStatus\":\"single\"|\"married\"|\"divorced\"|null}. Гражданский брак, совместная жизнь, дети без официальной регистрации, фразы «официально не расписаны», «брак не регистрировал» означают single. Прошедшее время о браке — «в браке был», «была замужем», «был женат», «раньше состоял в браке» — означает divorced, если клиент не сообщил явно о нынешнем браке. «в разводе, но сейчас снова женат» означает married. Не додумывай статус." },
+          { role: "user", content: JSON.stringify({ previousFamilyStatus: input.facts.familyStatus ?? null, lastAssistantQuestion: lastAssistant, clientReply }) }
         ]
       }, { operation: "unofficial_marriage_classification", timeoutMs: this.config.routerAiTimeoutMs, signal: input.signal });
       const familyStatus = parseAgentJson(response.choices?.[0]?.message?.content).familyStatus;
@@ -647,7 +735,7 @@ export class AgentTurnService {
           }
         ]
       }, { operation: "document_identity_extraction", timeoutMs: this.config.routerAiTimeoutMs, signal: input.signal });
-      const extracted = parseDocumentIdentityExtraction(response.choices?.[0]?.message?.content);
+      const extracted = parseDocumentIdentityExtraction(response.choices?.[0]?.message?.content ?? undefined);
       // The focused pass sees the original image and has a deliberately
       // narrow classification contract. When it returns the keyed format it
       // therefore owns the type persisted for every image. A missing model
@@ -845,7 +933,7 @@ export class AgentTurnService {
         model: this.config.routerAiTextModel ?? "routerai-text-model-not-configured",
         temperature: 0, max_tokens: 40, reasoning: { enabled: false }, response_format: { type: "json_object" },
         messages: [
-          { role: "system", content: "Определи, изменяет ли клиент программу займа в текущей реплике, независимо от текущего этапа. Верни строго JSON {\"program\":\"without_storage\"|\"parking\"|null,\"hasOtherStageAnswer\":boolean,\"question\":string|null}. Выбор определяется по смыслу, не только по точному названию: «давай стоянку тогда», «на стоянку», «со стоянкой», «оставить на парковке», «пускай у вас авто останется», «пускай у вас будет машина», «могу без машины обойтись», «машину могу оставить у вас», «авто может остаться у вас» означают parking. «без изъятия», «с правом пользования», «тогда с правом пользования», «оставить машину у себя», «мне нужно авто у себя», «мне надо ездить на машине», «чтобы авто у меня осталось», «машина должна быть у меня», «не могу без машины» означают without_storage: клиент сохраняет автомобиль у себя и может им пользоваться. Считай это выбором только когда клиент утверждает, где ему нужен автомобиль, а не задаёт отвлечённый или условный вопрос. Короткие «без» и «со» интерпретируй только после прямого вопроса о программе. Если в реплике есть вопрос или явный ответ на другой этап, поставь hasOtherStageAnswer=true и верни question, если он есть. Не придумывай выбор." },
+          { role: "system", content: "Определи, изменяет ли клиент программу займа в текущей реплике, независимо от текущего этапа. Верни строго JSON {\"program\":\"without_storage\"|\"parking\"|null,\"hasOtherStageAnswer\":boolean,\"question\":string|null}. Выбор определяется по смыслу, не только по точному названию: «давай стоянку тогда», «стоянка устроит», «парковка подойдёт», «этот вариант устраивает», «на стоянку», «со стоянкой», «оставить на парковке», «пускай у вас авто останется», «пускай у вас будет машина», «могу без машины обойтись», «машину могу оставить у вас», «авто может остаться у вас» означают parking. «без изъятия», «без изъятия устроит», «с правом пользования», «тогда с правом пользования», «оставить машину у себя», «мне нужно авто у себя», «мне надо ездить на машине», «чтобы авто у меня осталось», «машина должна быть у меня», «не могу без машины» означают without_storage: клиент сохраняет автомобиль у себя и может им пользоваться. Считай это выбором только когда клиент утверждает, где ему нужен автомобиль, а не задаёт отвлечённый или условный вопрос. Короткие «без» и «со» интерпретируй только после прямого вопроса о программе. Если в реплике есть вопрос или явный ответ на другой этап, поставь hasOtherStageAnswer=true и верни question, если он есть. Не придумывай выбор." },
           { role: "user", content: JSON.stringify({ currentStageQuestion: lastAssistant, clientReply }) }
         ]
       }, { operation: "program_decision", timeoutMs: this.config.routerAiTimeoutMs, signal: input.signal });
@@ -1301,7 +1389,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   // classifier. It can be incomplete or incorrect, so it must never replace
   // the actual client turn for server-owned limit/rate classification.
   const semanticText = input.currentTurnMessages?.map((message) => message.text).join(" ") || input.text;
-  const existingContractServiceRequest = isExplicitExistingContractRequest(semanticText ?? "");
+  const existingContractServiceRequest = isExistingContractServiceRequest(semanticText ?? "");
   const clientQuestion = extractExplicitClientQuestion(parsed.clientQuestion, semanticText ?? "");
   // The model is the primary semantic classifier for money questions. Text
   // patterns below are deliberately only an outage/legacy fallback.
@@ -2414,7 +2502,7 @@ export function nextRequiredStageQuestion(facts: ApplicationFacts, completion = 
       ? GUARANTOR_PARKING_ALTERNATIVE
       : GUARANTOR_REQUIREMENTS;
   }
-  if (!completion.documents) return "Пожалуйста, отправьте фото ID и свидетельства о регистрации автомобиля с обеих сторон.";
+  if (!completion.documents) return documentCollectionQuestion(facts);
   if (!completion.carPhoto) return "Пожалуйста, отправьте 2–3 фотографии автомобиля.";
   if (!completion.family) return nextFamilyStageQuestion(facts);
   if (completion.readyForVisit && !completion.visit) {
@@ -2434,6 +2522,19 @@ function missingVehicleDetails(facts: ApplicationFacts): string | undefined {
   if (!facts.vehicleModel) return "модель автомобиля";
   if (!facts.vehicleYear) return "год выпуска автомобиля";
   return undefined;
+}
+
+function documentCollectionQuestion(facts: ApplicationFacts): string {
+  const documents = facts.documents ?? {};
+  const idComplete = documents.id_front === "received" && documents.id_back === "received";
+  const stsComplete = documents.vehicle_registration_front === "received" && documents.vehicle_registration_back === "received";
+  if (idComplete && !stsComplete) {
+    return "Пожалуйста, отправьте свидетельство о регистрации автомобиля с обеих сторон.";
+  }
+  if (!idComplete && stsComplete) {
+    return "Пожалуйста, отправьте фото ID с обеих сторон.";
+  }
+  return "Пожалуйста, отправьте фото ID и свидетельства о регистрации автомобиля с обеих сторон.";
 }
 
 /**
@@ -2507,9 +2608,17 @@ function mergeMaximumLoanTemplateWithOtherAnswers(template: string, modelReply: 
   // The knowledge prompt asks for this exact template as a paragraph. Strip
   // it before putting the server-owned variant first. The line fallback also
   // covers a model that copied the placeholders with different whitespace.
+  // A model can reproduce a complete range on one line (usually using the
+  // general 2 000 000 som ceiling from the documentation) instead of the
+  // placeholders. That ceiling is not client-facing: the actual ceiling is
+  // calculated from the lead card below. Remove the *whole pair* regardless
+  // of whitespace before retaining independent answers from a multi-topic
+  // message.
+  const maximumRangePair = /(?:Для\s+вас\s+доступно:\s*)?Без\s+изъятия\s*:\s*от\s*50\s*000\s*сом\s*до\s*(?:MAX_LIMIT_WITHOUT|\d[\d\s]*)\s*сом[.!?]?\s*(?:\n|\s)+Со\s+стоянкой\s*:\s*от\s*50\s*000\s*сом\s*до\s*(?:MAX_LIMIT_PARK|\d[\d\s]*)\s*сом[.!?]?/giu;
   const remaining = modelReply
     .trim()
     .replace(canonical, "")
+    .replace(maximumRangePair, "")
     .replace(/(?:^|\n)\s*без\s+изъятия\s*:\s*от\s*50\s*000\s*сом\s*до\s*(?:MAX_LIMIT_WITHOUT|\d[\d\s]*)\s*сом\s*(?=\n|$)/giu, "\n")
     .replace(/(?:^|\n)\s*со\s+стоянкой\s*:\s*от\s*50\s*000\s*сом\s*до\s*(?:MAX_LIMIT_PARK|\d[\d\s]*)\s*сом\s*(?=\n|$)/giu, "\n")
     // A non-canonical maximum claim is never client-facing. It is removed
@@ -2948,7 +3057,7 @@ function documentAvailabilityAnswerFor(text: string): string | undefined {
 /** Existing-loan support text is valid only for an explicit current-turn servicing request. */
 function removeUnpromptedExistingContractRedirect(reply: string, input: Pick<AgentTurnInput, "text" | "currentTurnMessages">): string {
   const text = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "").trim();
-  if (isExplicitExistingContractRequest(text)) return reply;
+  if (isExistingContractServiceRequest(text)) return reply;
   return reply
     // Remove the complete redirect even when the model copied only its
     // contact sentence and omitted the usual closing phrase.
@@ -2956,10 +3065,6 @@ function removeUnpromptedExistingContractRedirect(reply: string, input: Pick<Age
     .replace(/(?:я\s+айлин\s*[—-]\s*виртуальн\p{L}*\s+помощник\s+по\s+вопросам\s+оформления\s+новых\s+займов\.?\s*)?если\s+у\s+вас\s+уже\s+оформлен\s+займ,?\s+пожалуйста,?\s+позвоните[\s\S]{0,500}?(?:решить\s+ваш\s+вопрос|помогут\s+решить\s+ваш\s+вопрос)\.?/giu, "")
     .replace(/[ \t]{2,}/gu, " ")
     .trim();
-}
-
-function isExplicitExistingContractRequest(text: string): boolean {
-  return /(?:действующ(?:ий|ему)\s+(?:займ|договор)|текущ\p{L}*\s+(?:займ|договор)|(?:сколько|какая)\s+(?:я\s+)?(?:сейчас\s+)?долж(?:ен|на)[^.!?]{0,80}(?:по\s+(?:моему\s+)?(?:текущ\p{L}*\s+)?(?:займу|договор)|у\s+меня)|(?:остат(?:ок|лось)|задолженн\p{L}*|долг\p{L}*)[^.!?]{0,60}(?:по\s+(?:моему\s+)?(?:займу|договор)|у\s+меня)|(?:проверьте|проверить)[^.!?]{0,60}оплат|(?:я\s+)?оплатил(?:а)?\b|реквизит\p{L}*[^.!?]{0,60}(?:оплат|договор)|(?:вернуть|забрать)[^.!?]{0,60}документ|(?:не\s+работает|перестал\p{L}*\s+работать)[^.!?]{0,60}(?:gps|гпс|датчик)|(?:gps|гпс|датчик)[^.!?]{0,40}(?:не\s+работа|сломал|перестал\p{L}*\s+работа|замен))/iu.test(text);
 }
 
 function residencePatchFromExplicitClientText(input: Pick<AgentTurnInput, "text" | "currentTurnMessages" | "messages">, patch: Partial<ApplicationFacts>, previousFacts: ApplicationFacts, _modelAssertedResidence: boolean): Partial<ApplicationFacts> {
@@ -3137,6 +3242,16 @@ function unofficialMarriageStatusFallback(text: string): "single" | undefined {
   return looksLikeUnofficialMarriageStatement(text) ? "single" : undefined;
 }
 
+function isFamilyStatusQuestion(text: string): boolean {
+  return /семейн\p{L}*\s+положен\p{L}*[^?!\n]*(?:в\s+браке|в\s+разводе|не\s+в\s+браке)/iu.test(text);
+}
+
+function isPastMarriageStatusReply(text: string): boolean {
+  const normalized = text.trim().toLocaleLowerCase("ru-RU");
+  if (currentMarriageStatusCorrection(normalized)) return false;
+  return /(?:в\s+браке\s+был(?:а)?|был(?:а)?\s+(?:женат|замужем)|раньше\s+(?:был(?:а)?\s+)?(?:в\s+браке|женат|замужем)|брак\s+(?:был|законч)|состоял(?:а)?\s+в\s+браке)/iu.test(normalized);
+}
+
 function familyPatchFromClearReply(input: Pick<AgentTurnInput, "text" | "currentTurnMessages" | "messages">, facts: ApplicationFacts, modelPatch: Partial<ApplicationFacts>): Partial<ApplicationFacts> {
   const text = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "").trim().toLocaleLowerCase("ru-RU");
   const lastAssistant = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
@@ -3144,6 +3259,7 @@ function familyPatchFromClearReply(input: Pick<AgentTurnInput, "text" | "current
   // A present-tense correction takes precedence over an earlier divorce in
   // the same message and over the previous divorce-purchase question.
   if (currentMarriageStatusCorrection(text)) return { familyStatus: "married" };
+  if (isFamilyStatusQuestion(lastAssistant) && isPastMarriageStatusReply(text)) return { familyStatus: "divorced" };
   // Once the client is already recorded as divorced, the question about when
   // the car was bought has a different meaning from the family-status
   // question. A short answer such as «в браке» describes the purchase, not a
@@ -3579,7 +3695,9 @@ function isExplicitQuestionText(text: string): boolean {
   if (!normalized) return false;
   if (/[?？]/u.test(normalized)) return true;
   if (wordCount(normalized) < 2) return false;
-  return /(?:^|\s)(?:сколько|скок(?:а)?|какой|какая|какие|где|когда|как|почему|зачем|можно|нужно|дадите|дадут|есть\s+ли|будет\s+ли|ставк\p{L}*|процент\p{L}*)(?:\s|$|[?？.,!])/iu.test(normalized);
+  return /(?:^|\s)(?:что|сколько|скок(?:а)?|какой|какая|какие|где|когда|как|почему|зачем|можно|нужно|дадите|дадут|есть\s+ли|будет\s+ли|ставк\p{L}*|процент\p{L}*)(?:\s|$|[?？.,!])/iu.test(normalized)
+    || /(?:у\s+меня|мо[яйеё])[^.!?]{0,80}(?:авто|автомобил|машин|трекер|gps|гпс|датчик)[^.!?]{0,80}(?:слом|авари|не\s+ед|не\s+работ|отвал|поврежд|эвакуатор)/iu.test(normalized)
+    || /(?:слом|авари|не\s+ед|не\s+работ|отвал|поврежд|эвакуатор)[^.!?]{0,80}(?:авто|автомобил|машин|трекер|gps|гпс|датчик)/iu.test(normalized);
 }
 
 function wordCount(text: string): number {
@@ -3608,6 +3726,14 @@ function activeWorkflowHistory(messages: Stage1Message[]): Array<{ author: strin
     .at(-1);
   if (!prompt || !isWorkflowPrompt(prompt)) return [];
   return [{ author: "ai", text: prompt, createdAt: lastAssistantMessage.createdAt }];
+}
+
+function recentKnowledgeHistory(messages: Stage1Message[]): Array<{ author: string; text: string; createdAt: string }> {
+  return messages.slice(-8).map((message) => ({
+    author: message.author,
+    text: message.body,
+    createdAt: message.createdAt
+  }));
 }
 
 function isWorkflowPrompt(text: string): boolean {
@@ -3892,7 +4018,8 @@ function programFromShortReply(text: string): "without_storage" | "parking" | un
   if (preference) return preference;
   const normalized = text.trim().toLocaleLowerCase("ru-RU");
   if (/^(?:без|без\s+из|без\s+изъят\p{L}*|остав(?:ить|лю)\s+(?:у\s+себя|машин\p{L}*\s+себе))[.!\s]*$/iu.test(normalized)) return "without_storage";
-  if (/^(?:со|со\s+стоянк\p{L}*|на\s+стоянк\p{L}*|парковк\p{L}*)[.!\s]*$/iu.test(normalized)) return "parking";
+  if (/^(?:со|стоянк\p{L}*|со\s+стоянк\p{L}*|на\s+стоянк\p{L}*|парковк\p{L}*)(?:\s+(?:устро\p{L}*|подход\p{L}*|год\p{L}*))?[.!\s]*$/iu.test(normalized)) return "parking";
+  if (/^(?:без|без\s+из|без\s+изъят\p{L}*)(?:\s+(?:устро\p{L}*|подход\p{L}*|год\p{L}*))?[.!\s]*$/iu.test(normalized)) return "without_storage";
   return undefined;
 }
 
@@ -3977,7 +4104,7 @@ function isSafeRenderedReply(reply: string, responsePlan: string): boolean {
     && [...planWords].every((word) => replyWords.has(word));
 }
 
-function parseAgentJson(value: string | undefined): Record<string, unknown> {
+function parseAgentJson(value: string | null | undefined): Record<string, unknown> {
   const text = (value ?? "{}").trim().replace(/^```(?:json)?\s*/iu, "").replace(/\s*```$/u, "").trim();
   try {
     const parsed: unknown = JSON.parse(text);

@@ -10,6 +10,15 @@ describe("ResponsePlanService first contact", () => {
     expect(plan.nextQuestions).toEqual(["Подскажите, пожалуйста:\n- модель и год выпуска автомобиля;\n- ориентировочную стоимость автомобиля;\n- какая сумма займа Вам необходима?"]);
   });
 
+  it("does not combine the first-contact greeting with an existing-contract redirect", () => {
+    const service = new ResponsePlanService();
+    const facts = { existingContractQuestion: true } as const;
+    const plan = service.build({ facts, decision: evaluateApplication(facts), isFirstMessage: true, questions: [] });
+
+    expect(plan.answers.map((answer) => answer.key)).toEqual(["existing_contract"]);
+    expect(plan.answers[0]?.text).not.toContain("Здравствуйте!");
+  });
+
   it("does not ask first-contact facts that are already provided", () => {
     const service = new ResponsePlanService();
     const facts = { vehicleMake: "Toyota", vehicleModel: "Camry", vehicleYear: 2021, vehicleValue: 1_500_000, requestedAmount: 500_000 } as const;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { hasApprovedKnowledgeMatch, isMaximumLoanKnowledgeQuestion, prioritizedKnowledgeForQuestion, selectRelevantDocumentation } from "./documentation-retrieval.js";
+import { compactKnowledgeForPrompt, hasApprovedKnowledgeMatch, isExistingContractServiceRequest, isMaximumLoanKnowledgeQuestion, prioritizedKnowledgeForQuestion, selectRelevantDocumentation } from "./documentation-retrieval.js";
 import { generatedDocumentationChunks } from "./documentation-chunks.generated.js";
 import { approvedKnowledgeSeeds } from "../knowledge/knowledge.service.js";
 
@@ -53,6 +53,33 @@ describe("selectRelevantDocumentation", () => {
   });
 
   it.each([
+    "а сколько я на сегодня должен вам",
+    "хочу заехать оплатить, сколько на сегодня мне надо привезти"
+  ])("routes natural payment wording to the existing-contract redirect: %s", (currentMessage) => {
+    const result = selectRelevantDocumentation({ facts: {}, currentMessage, messages: [] });
+
+    expect(result.mandatoryAnswer).toContain("Если у Вас уже оформлен займ");
+  });
+
+  it.each([
+    "у меня уже есть займ",
+    "у меня был займ, хочу уточнить",
+    "что с моим старым займом",
+    "хочу узнать по моему договору",
+    "меня интересует через сколько я смогу получить свой авто",
+    "У меня датчик слетел, нужно ехать проверять?",
+    "трекер отключился, что делать"
+  ])("recognizes an implicit existing-loan request: %s", (text) => {
+    expect(isExistingContractServiceRequest(text)).toBe(true);
+  });
+
+  it("does not mistake a new-loan documents question for an existing-loan payment", () => {
+    const result = selectRelevantDocumentation({ facts: {}, currentMessage: "сколько документов привезти", messages: [] });
+
+    expect(result.mandatoryAnswer).toBeUndefined();
+  });
+
+  it.each([
     "Подскажи что в моем прошлом займе по инфе",
     "информация по моему предыдущему договору",
     "что с моим старым займом"
@@ -62,15 +89,20 @@ describe("selectRelevantDocumentation", () => {
     expect(result.mandatoryAnswer).toBe("Я Айлин — виртуальный помощник по вопросам оформления новых займов. Если у Вас уже оформлен займ, пожалуйста, позвоните по телефону +996 502 108 108 или напишите в WhatsApp +996 776 108 108. Наши специалисты проверят информацию по Вашему договору и помогут решить Ваш вопрос.");
   });
 
-  it("passes the complete knowledge corpus while keeping a direct match first", () => {
+  it("passes the complete knowledge corpus without selecting a topic by filters", () => {
     const packet = prioritizedKnowledgeForQuestion({ facts: {}, currentMessage: "В УНА нужна регистрация?", messages: [] });
+    const unrelatedPacket = prioritizedKnowledgeForQuestion({ facts: {}, currentMessage: "у меня отвалился трекер", messages: [] });
+    const promptPacket = compactKnowledgeForPrompt(packet);
     const packetKeys = new Set(packet.map((chunk) => chunk.key));
 
-    expect(packet[0]).toMatchObject({ key: "faq_vehicle_registration_una" });
+    expect(packet.map((chunk) => chunk.key)).toEqual(unrelatedPacket.map((chunk) => chunk.key));
     for (const chunk of generatedDocumentationChunks) expect(packetKeys).toContain(chunk.key);
     for (const seed of approvedKnowledgeSeeds.filter((seed) => seed.active && seed.status === "approved" && seed.key !== "unknown_fallback")) {
       expect(packetKeys).toContain(`faq_${seed.key}`);
     }
+    expect(promptPacket.map((chunk) => chunk.key)).toEqual(packet.map((chunk) => chunk.key));
+    expect(promptPacket.every((chunk) => Object.keys(chunk).every((key) => ["key", "section", "text"].includes(key)))).toBe(true);
+    expect(JSON.stringify(promptPacket).length).toBeLessThan(JSON.stringify(packet).length / 2);
   });
 
   it.each(["Кто ты?", "Ты робот что ли?", "Ты бот?"])("prioritizes existing-contract knowledge for identity question: %s", (currentMessage) => {
@@ -79,7 +111,11 @@ describe("selectRelevantDocumentation", () => {
 
     expect(hasApprovedKnowledgeMatch(currentMessage)).toBe(true);
     expect(result.mandatoryAnswer).toBe("Я Айлин — виртуальный помощник по вопросам оформления новых займов. Если у Вас уже оформлен займ, пожалуйста, позвоните по телефону +996 502 108 108 или напишите в WhatsApp +996 776 108 108. Наши специалисты проверят информацию по Вашему договору и помогут решить Ваш вопрос.");
-    expect(packet[0]).toMatchObject({ key: "faq_existing_contract_redirect" });
+    expect(packet).toEqual(expect.arrayContaining([expect.objectContaining({ key: "faq_existing_contract_redirect" })]));
+    expect(packet).toEqual(expect.arrayContaining([expect.objectContaining({
+      key: "docx_0363",
+      text: expect.stringContaining("Я Айлин — виртуальный помощник по вопросам оформления новых займов")
+    })]));
   });
 
   it("supplies the approved programme-specific interest-rate answer only for a direct rate question", () => {
@@ -179,8 +215,17 @@ describe("selectRelevantDocumentation", () => {
     const packet = prioritizedKnowledgeForQuestion({ facts: {}, currentMessage, messages: [] });
 
     expect(result.mandatoryAnswer).toContain("Если у Вас уже оформлен займ");
-    expect(packet[0]).toMatchObject({ section: "3.18" });
-    expect(packet.some((chunk) => chunk.key === "faq_gps_requirement")).toBe(false);
+    expect(packet.some((chunk) => chunk.section === "3.18")).toBe(true);
+    expect(packet.some((chunk) => chunk.key === "faq_gps_requirement")).toBe(true);
+  });
+
+  it("treats a failed tracker as servicing an existing loan, not a new-loan GPS question", () => {
+    const result = selectRelevantDocumentation({ facts: {}, currentMessage: "у меня отвалился трекер мне надо к вам приехать?", messages: [] });
+    const packet = prioritizedKnowledgeForQuestion({ facts: {}, currentMessage: "у меня отвалился трекер мне надо к вам приехать?", messages: [] });
+
+    expect(result.mandatoryAnswer).toContain("Если у Вас уже оформлен займ");
+    expect(packet.some((chunk) => chunk.section === "3.18")).toBe(true);
+    expect(packet.some((chunk) => chunk.key === "faq_gps_requirement")).toBe(true);
   });
 
   it("makes the exact approved air-conditioner answer mandatory", () => {

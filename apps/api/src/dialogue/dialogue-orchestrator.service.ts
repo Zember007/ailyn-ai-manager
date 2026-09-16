@@ -2,8 +2,7 @@ import { Injectable, Logger } from "@nestjs/common";
 import type { ApplicationFacts } from "@ailyn/business-rules";
 import type { NormalizedMoneyValue } from "../ai/ai-provider.interface.js";
 import { AgentTurnService, enforceFirstContactGreeting, isClearMoneyConfirmationRejection, nextRequiredStageQuestion, suppressInactiveGuarantorPrompts, type PendingMoneyClarificationDecision } from "./agent-turn.service.js";
-import { isMaximumLoanKnowledgeQuestion } from "./documentation-retrieval.js";
-import { isContextualKnowledgeFollowUpText } from "./contextual-knowledge-follow-up.js";
+import { isExistingContractServiceRequest, isMaximumLoanKnowledgeQuestion } from "./documentation-retrieval.js";
 import { attachmentFactsForCurrentStage, deriveStageCompletion, effectiveFactsForTurn, isCarPhotoStagePrompt, selectedProgramLimit } from "./agent-turn-reconciliation.js";
 import type { InboundMessage } from "../channels/channel.interface.js";
 import { SettingsService } from "../settings/settings.service.js";
@@ -13,6 +12,7 @@ import { DeferredIntegrationsService } from "./deferred-integrations.service.js"
 import { detectMoneyMentions, formatMoney, formatSomMoney, resolveMoneyFacts, roundSomAmount, type ForeignMoneyCurrencyCode } from "./money-normalization.js";
 import { calculateLoanPricing, calculateLoanRangeDisplayMaximums, MINIMUM_VEHICLE_VALUE } from "./loan-pricing.js";
 import { referencesOtherPersonsVehicle } from "./lead-card-ownership.js";
+import { isRepeatLoanRequest } from "./repeat-loan.js";
 
 export interface DialogueResult { conversation: Stage1Conversation; application: Stage1Application; reply: string; validation: { passed: boolean; errors: string[] }; routerAiModel: string; promptVersion: string; needsKnowledgeLookup?: boolean; summaryNeedsRefresh?: boolean; }
 export interface DialogueReceiveOptions { signal?: AbortSignal; deferReplyPersistence?: boolean; }
@@ -22,6 +22,17 @@ const VEHICLE_VALUE_BELOW_MINIMUM_REPLY = "К сожалению, мы не мо
 
 function formatTimingError(error: unknown): string {
   return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+}
+
+function omitRepeatLoanServiceFacts(patch: Partial<ApplicationFacts>): Partial<ApplicationFacts> {
+  const {
+    existingContractQuestion: _existingContractQuestion,
+    existingContractPaymentMessage: _existingContractPaymentMessage,
+    clientClosed: _clientClosed,
+    clientPaused: _clientPaused,
+    ...safePatch
+  } = patch;
+  return safePatch;
 }
 
 @Injectable()
@@ -63,20 +74,29 @@ export class DialogueOrchestratorService {
     const firstMessage = messages[0]!;
     const lastMessage = messages.at(-1)!;
     const { conversation, application: initialApplication } = await this.store.getOrCreateConversation({ externalContactId: firstMessage.externalContactId, externalConversationId: firstMessage.externalConversationId, channel: firstMessage.channel });
+    let application = initialApplication;
     // Inbounds must be available to the model before they are stored. A newer
     // client message can abort this turn; persisting here would make the
     // batcher retry those same messages and duplicate them in history.
     const pendingInbounds = messages.map(toPendingInboundMessage);
     const turnMessages = [...conversation.messages, ...pendingInbounds];
-    // Use the persisted card as a server-side stage gate before calling any
-    // model. In particular, a previous guarantor question cannot survive in
-    // model context after the customer has already selected parking.
-    const modelMessages = suppressInactiveGuarantorPrompts(turnMessages, initialApplication.facts);
     const text = messages.map((message) => message.text?.trim()).filter((value): value is string => Boolean(value)).join("\n");
-    const resumingPausedConversation = Boolean(initialApplication.facts.clientPaused && isPausedConversationContinuation(text));
+    const startsRepeatLoan = !isExistingContractServiceRequest(text) && isRepeatLoanRequest(text);
+    if (startsRepeatLoan) {
+      const closedApplication = await this.store.findLatestClosedApplication(application.contactId);
+      if (closedApplication) application = await this.store.createRepeatLoanApplication(conversation, closedApplication);
+    }
+    const repeatLoanStarted = application.id !== initialApplication.id;
+    // The previous conversation may be retained as history, but the model
+    // must not treat old collateral as facts of this new application.
+    const modelMessages = suppressInactiveGuarantorPrompts(
+      repeatLoanStarted ? pendingInbounds : turnMessages,
+      application.facts
+    );
+    const resumingPausedConversation = Boolean(application.facts.clientPaused && isPausedConversationContinuation(text));
     const factsBeforeTurn: ApplicationFacts = resumingPausedConversation
-      ? { ...initialApplication.facts, clientPaused: false }
-      : initialApplication.facts;
+      ? { ...application.facts, clientPaused: false }
+      : application.facts;
     const currentTurnMessages = messages.map((message, index) => ({ index: index + 1, text: message.text?.trim() ?? "" }));
     const attachments = messages.flatMap((message) => message.attachments);
     const settings = await this.settings.getValues();
@@ -156,22 +176,50 @@ export class DialogueOrchestratorService {
       attachments,
       signal: options.signal
     });
+    // Terminal refusals and complete visit confirmations are closed
+    // server-owned replies. The knowledge model must not replace them with
+    // a repeated stage question or an unrelated FAQ answer.
+    let serverOwnsReply = turn.result?.dialogueState.status === "refuse"
+      || turn.result?.dialogueState.status === "redirect_existing_contract"
+      || Boolean(
+        turn.result?.leadCardPatch.visitDate
+        && turn.result?.leadCardPatch.visitTime
+        && /записываю\s+вас\s+на/iu.test(turn.reply)
+      );
+    if (repeatLoanStarted) {
+      serverOwnsReply = true;
+      const reply = "Поняла, оформляем новую заявку. Ваши личные данные у нас уже сохранены. Окончательное решение и сумма определяются после проверки автомобиля и документов. Для нового оформления пришлите, пожалуйста, актуальные фото автомобиля и свидетельство о регистрации ТС с обеих сторон. Также уточните марку, модель, год выпуска и ориентировочную стоимость автомобиля.";
+      turn = {
+        ...turn,
+        reply,
+        ...(turn.result ? {
+          result: {
+            ...turn.result,
+            reply,
+            leadCardPatch: omitRepeatLoanServiceFacts(turn.result.leadCardPatch)
+          }
+        } : {})
+      };
+    }
     // This flag is set from the approved KB payload, not from wording the
     // client or a model used to ask about a maximum.
     let receivedMaximumLoanTemplate = false;
-    const knowledgeRequest = turn.result?.leadCardPatch.knowledgeRequest;
     const currentMaximumLoanQuestion = isMaximumLoanKnowledgeQuestion(text);
-    const deferredMaximumLoanAnswer = initialApplication.agentState?.nextAction === ANSWER_MAXIMUM_AFTER_PREREQUISITES
+    const existingContractServiceRequest = isExistingContractServiceRequest(text);
+    const deferredMaximumLoanAnswer = !existingContractServiceRequest
+      && application.agentState?.nextAction === ANSWER_MAXIMUM_AFTER_PREREQUISITES
       && Boolean(turn.result)
       && hasMaximumLoanPrerequisites(turn.result!.leadCardPatch);
     const maximumLoanQuestion = currentMaximumLoanQuestion || deferredMaximumLoanAnswer;
-    const contextualKnowledgeFollowUp = isContextualKnowledgeFollowUp(modelMessages, text);
     // A maximum-limit question has an approved KB answer and a server-owned
     // calculation template. It must reach that path even when the workflow
     // model failed to set `needsKnowledgeLookup`; otherwise the stage prompt
     // below replaces the answer the client actually asked for.
-    if (!vehicleValueBelowMinimum && ((knowledgeRequest?.required ?? turn.result?.needsKnowledgeLookup) || maximumLoanQuestion || contextualKnowledgeFollowUp) && turn.result) {
-      const { knowledgeRequest: _knowledgeRequest, ...turnFacts } = turn.result.leadCardPatch;
+    // Each turn is evaluated against approved knowledge independently. The
+    // workflow model is fallible at identifying natural questions, so its
+    // `knowledgeRequest` flag cannot be a permission boundary for KB lookup.
+    {
+      const { knowledgeRequest: _knowledgeRequest, ...turnFacts } = turn.result?.leadCardPatch ?? {};
       const factsForWorkflow = { ...normalizedFacts, ...turnFacts };
       const canonicalWorkflowFollowUp = nextRequiredStageQuestion(
         factsForWorkflow,
@@ -182,10 +230,10 @@ export class DialogueOrchestratorService {
       // application: derive the next required action from server-owned facts.
       const workflowFollowUp = maximumLoanQuestion
         ? maximumLoanCalculationFollowUp(factsForWorkflow, canonicalWorkflowFollowUp)
-        : deferredMaximumLoanAnswer || turn.result.dialogueState.status === "redirect_existing_contract"
+        : deferredMaximumLoanAnswer || turn.result?.dialogueState.status === "redirect_existing_contract"
         ? ""
-        : extractWorkflowFollowUp(turn.reply)
-        || canonicalWorkflowFollowUp
+        : canonicalWorkflowFollowUp
+        || extractWorkflowFollowUp(turn.reply)
         // A completed application has no further collection action. The
         // knowledge contract still receives a string in that terminal case.
         || "";
@@ -194,20 +242,33 @@ export class DialogueOrchestratorService {
       // must never truncate a multi-question client message before knowledge
       // retrieval: the knowledge agent needs every question in this turn.
       const clientQuestion = deferredMaximumLoanAnswer ? "сколько максимум дадите" : text;
-      const knowledge = await this.agent.answerWithKnowledge({
-        conversationId: conversation.id,
-        messages: modelMessages,
-        // The KB must see facts reconciled from this very client message:
-        // maximum-loan placeholders depend on the just-provided vehicle
-        // value and residence, not only on the persisted pre-turn card.
-        facts: factsForWorkflow,
-        settings,
-        text: clientQuestion,
-        currentTurnMessages,
-        workflowFollowUp,
-        signal: options.signal
-      });
-      if (knowledge) {
+      const knowledge = serverOwnsReply
+        ? undefined
+        : await this.agent.answerWithKnowledge?.({
+          conversationId: conversation.id,
+          messages: modelMessages,
+          // The KB must see facts reconciled from this very client message:
+          // maximum-loan placeholders depend on the just-provided vehicle
+          // value and residence, not only on the persisted pre-turn card.
+          facts: factsForWorkflow,
+          settings,
+          text: clientQuestion,
+          currentTurnMessages,
+          currentTime: lastMessage.timestamp,
+          workflowFollowUp,
+          isFirstClientMessage: conversation.messages.length === 0,
+          signal: options.signal
+        });
+      // Knowledge is deliberately evaluated on every turn, including terse
+      // stage answers. A direct answer to the programme-selection prompt is
+      // not, however, a request for programme details. Do not let a broad KB
+      // model answer (for example, the parking rate) replace the selected
+      // programme and its next server-owned workflow step.
+      const directProgramSelection = isDirectProgramSelectionReply(text, lastAssistantMessage)
+        && (turn.result?.leadCardPatch.requestedProgram === "without_storage" || turn.result?.leadCardPatch.requestedProgram === "parking");
+      // An explicit client question must never be replaced by a collection
+      // prompt. When KB has no approved answer, show its honest fallback.
+      if (!directProgramSelection && (knowledge?.answerFound || knowledge?.shouldUseReply)) {
         receivedMaximumLoanTemplate = hasMaximumLoanPlaceholders(knowledge.reply);
         // The knowledge model is the only author of factual company answers.
         // Never prefix it with the workflow model's prose: that prose may be
@@ -219,12 +280,25 @@ export class DialogueOrchestratorService {
         const responsePlan = maximumLoanQuestion
           ? stripWorkflowQuestionsFromMaximumAnswer(knowledge.reply)
           : knowledge.reply;
+        // A KB answer supplements a new-loan workflow; it does not replace
+        // the next server-owned collection question. Non-new-loan first
+        // contacts are explicitly classified by the KB model and stop here.
+        const continuesNewLoanWorkflow = knowledge.requestScope === "new_loan"
+          || (knowledge.requestScope === undefined && !knowledge.shouldUseReply);
         const reply = appendWorkflowFollowUp(
           responsePlan,
-          workflowFollowUpAfterKnowledge(responsePlan, workflowFollowUp, lastAssistantMessage, factsForWorkflow, maximumLoanQuestion)
+          knowledge.answerFound && continuesNewLoanWorkflow
+            ? workflowFollowUpAfterKnowledge(responsePlan, workflowFollowUp, lastAssistantMessage, factsForWorkflow, maximumLoanQuestion)
+            : "",
+          lastAssistantMessage
         );
-        const result = { ...turn.result, reply };
-        turn = { ...turn, result, reply, model: knowledge.model, promptVersion: `${turn.promptVersion}+knowledge` };
+        turn = {
+          ...turn,
+          ...(turn.result ? { result: { ...turn.result, reply } } : {}),
+          reply,
+          model: knowledge.model,
+          promptVersion: `${turn.promptVersion}+knowledge`
+        };
       }
     }
     if (turn.result) {
@@ -287,7 +361,6 @@ export class DialogueOrchestratorService {
     // Attachments below deliberately use these stored IDs, not the ephemeral
     // model-context messages above.
     const inbounds = await Promise.all(messages.map((message) => this.store.addMessage(conversation, { author: "client", body: message.text?.trim() ?? "", attachmentIds: [], attachments: [], metadata: { externalMessageId: message.externalMessageId, channel: message.channel } })));
-    let application = initialApplication;
     let changedFactKeys: string[] = [];
     let managerEvent: "initial" | "delta" | null = null;
     if (turn.result) {
@@ -305,12 +378,12 @@ export class DialogueOrchestratorService {
       };
       const lastAssistantReply = [...modelMessages].reverse().find((message) => message.author === "ai")?.body ?? "";
       const attachmentFacts = attachmentFactsForCurrentStage({
-        previous: initialApplication.facts,
+        previous: application.facts,
         attachments: turnResult.attachments,
         inboundAttachmentCount: attachments.length,
         lastAssistantReply
       });
-      const reconciledFacts = effectiveFactsForTurn({ previous: initialApplication.facts, modelPatch, explicitFacts: {}, currencyFacts: currencyFactsForTurn, attachmentFacts });
+      const reconciledFacts = effectiveFactsForTurn({ previous: application.facts, modelPatch, explicitFacts: {}, currencyFacts: currencyFactsForTurn, attachmentFacts });
       const effectiveFacts = { ...reconciledFacts, stageCompletion: deriveStageCompletion(reconciledFacts, settings) };
       const preliminaryLimit = selectedProgramLimit(effectiveFacts, settings);
       changedFactKeys = await this.store.updateFacts(application, effectiveFacts);
@@ -321,7 +394,7 @@ export class DialogueOrchestratorService {
         // preference: the next turn that completes those facts receives the
         // deferred range automatically.
         ...(receivedMaximumLoanTemplate && !hasMaximumLoanPrerequisites(reconciledFacts)
-          || initialApplication.agentState?.nextAction === ANSWER_MAXIMUM_AFTER_PREREQUISITES && !hasMaximumLoanPrerequisites(reconciledFacts)
+          || application.agentState?.nextAction === ANSWER_MAXIMUM_AFTER_PREREQUISITES && !hasMaximumLoanPrerequisites(reconciledFacts)
           ? { nextAction: ANSWER_MAXIMUM_AFTER_PREREQUISITES }
           : {}),
         cardSummary: turnResult.cardSummary,
@@ -374,7 +447,9 @@ export class DialogueOrchestratorService {
     // so the first visible reply always has it, including FAQ/KB paths.
     const reply = vehicleValueBelowMinimum
       ? VEHICLE_VALUE_BELOW_MINIMUM_REPLY
-      : enforceFirstContactGreeting(plannedReply, {
+      : serverOwnsReply
+        ? plannedReply
+        : enforceFirstContactGreeting(plannedReply, {
       messages: conversation.messages,
       text,
       currentTurnMessages,
@@ -467,11 +542,17 @@ function extractWorkflowFollowUp(reply: string): string {
     : "";
 }
 
-function appendWorkflowFollowUp(reply: string, followUp: string): string {
+export function appendWorkflowFollowUp(reply: string, followUp: string, lastAssistantMessage = ""): string {
   const normalizedReply = reply.replace(/[?!.]/gu, "").replace(/\s+/gu, " ").trim().toLocaleLowerCase("ru-RU");
   const normalizedFollowUp = followUp.replace(/[?!.]/gu, "").replace(/\s+/gu, " ").trim().toLocaleLowerCase("ru-RU");
-  if (!normalizedFollowUp || normalizedReply.includes(normalizedFollowUp)) return reply;
+  const normalizedLastAssistant = lastAssistantMessage.replace(/[?!.]/gu, "").replace(/\s+/gu, " ").trim().toLocaleLowerCase("ru-RU");
+  if (!normalizedFollowUp || normalizedReply.includes(normalizedFollowUp) || normalizedLastAssistant.includes(normalizedFollowUp) || (asksForResidenceIn(reply) && asksForResidenceIn(followUp))) return reply;
   return [reply.trim(), followUp].filter(Boolean).join("\n\n");
+}
+
+/** A KB answer may use a shorter wording than the canonical residence prompt. */
+function asksForResidenceIn(text: string): boolean {
+  return /(?:подскажите|уточните)[^?!\n]{0,120}(?:пропис|регион)|(?:пропис|регион)[^?!\n]{0,120}\?/iu.test(text);
 }
 
 /** A maximum-limit answer may be followed by one server-owned prerequisite,
@@ -511,6 +592,14 @@ export function workflowFollowUpAfterKnowledge(reply: string, followUp: string, 
 
 function isRequestedAmountStagePrompt(text: string): boolean {
   return /(?:какая\s+)?сумм\p{L}*\s+займ/iu.test(text);
+}
+
+/** A one-phrase answer to the server's explicit programme choice is stage
+ * data, even though the full knowledge corpus is evaluated for the turn. */
+function isDirectProgramSelectionReply(text: string, lastAssistantMessage: string): boolean {
+  if (!/(?:вас\s+интересует|какую\s+программ\p{L}*\s+выбираете)[^?!\n]*(?:без\s+изъятия|стоянк)/iu.test(lastAssistantMessage)) return false;
+  const reply = text.trim().toLocaleLowerCase("ru-RU");
+  return /^(?:(?:стоянк\p{L}*|парковк\p{L}*|со\s+стоянк\p{L}*|на\s+стоянк\p{L}*)|(?:без(?:\s+изъят\p{L}*)?))(?:\s+(?:устро\p{L}*|подход\p{L}*|год\p{L}*))?[.!\s]*$/iu.test(reply);
 }
 
 function hasMaximumLoanPlaceholders(text: string): boolean {
@@ -915,17 +1004,6 @@ export function removeEarlierDuplicateSentences(reply: string): string {
     .replace(/\n{3,}/gu, "\n\n")
     .replace(/[ \t]{2,}/gu, " ")
     .trim();
-}
-
-/** Route a terse follow-up after a server-approved policy to the knowledge
- * model even if the main dialogue model did not recognise it as a FAQ. The
- * knowledge model receives the prior policy and decides whether this is a
- * continuation or an independent new question. */
-function isContextualKnowledgeFollowUp(messages: Stage1Message[], text: string): boolean {
-  const normalized = text.trim();
-  if (!isContextualKnowledgeFollowUpText(normalized)) return false;
-  const lastAssistant = [...messages].reverse().find((message) => message.author === "ai")?.body ?? "";
-  return Boolean(lastAssistant.trim());
 }
 
 // Public compatibility symbols kept while the old orchestration path is removed.

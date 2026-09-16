@@ -20,6 +20,16 @@ export interface RouterAiChatRequest {
 }
 
 export interface RouterAiChatResponse {
-  choices?: { message?: { content?: string } }[];
+  choices?: {
+    finish_reason?: string | null;
+    message?: {
+      content?: string | null;
+      /** Present when a model declines structured output instead of content. */
+      refusal?: string | null;
+      [key: string]: unknown;
+    };
+    [key: string]: unknown;
+  }[];
   model?: string;
+  [key: string]: unknown;
 }

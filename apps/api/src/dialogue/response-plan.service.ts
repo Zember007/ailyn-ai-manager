@@ -41,10 +41,12 @@ export class ResponsePlanService {
     const deferLegacyFlow = input.questions.length > 0 || input.intents?.some((intent) => ["complaint", "pause", "on_the_way", "arrived"].includes(intent));
     const decisionAnswers = (deferLegacyFlow ? [] : this.answerDecision(input.decision, input.facts, input.intents ?? []))
       .filter((answer) => !previousAssistantMessages.some((message) => message.includes(answer.text)));
-    const requiredAnswers = input.decision.requiredStatements
-      .filter(isClientFacingRequiredStatement)
-      .filter((statement) => !previousAssistantMessages.some((message) => message.includes(statement)))
-      .map((text, index) => ({ key: `required_statement_${index}`, text, exact: true }));
+    const requiredAnswers = input.decision.nextAction === "redirect_existing_contract"
+      ? []
+      : input.decision.requiredStatements
+        .filter(isClientFacingRequiredStatement)
+        .filter((statement) => !previousAssistantMessages.some((message) => message.includes(statement)))
+        .map((text, index) => ({ key: `required_statement_${index}`, text, exact: true }));
     const answers = [firstContactAnswer, ...specialAnswers, ...(input.knowledgeAnswers ?? []), ...decisionAnswers, ...requiredAnswers]
       .filter((answer): answer is KnowledgeAnswer => Boolean(answer))
       .filter((answer) => !previousAssistantMessages.some((message) => message.includes(answer.text)))
@@ -57,7 +59,9 @@ export class ResponsePlanService {
       nextQuestions,
       allowedFacts: input.facts as Record<string, unknown>,
       allowedFinancialValues: input.facts.requestedProgram && input.facts.residenceRegion ? Object.values(input.decision.calculatedLimits).filter((value): value is number => typeof value === "number") : [],
-      requiredStatements: input.decision.requiredStatements.filter((statement) => !previousAssistantMessages.some((message) => message.includes(statement))),
+      requiredStatements: input.decision.nextAction === "redirect_existing_contract"
+        ? []
+        : input.decision.requiredStatements.filter((statement) => !previousAssistantMessages.some((message) => message.includes(statement))),
       forbiddenStatements: input.decision.forbiddenStatements,
       language,
       knownFactKeys: Object.keys(input.facts) as (keyof ApplicationFacts)[],
@@ -346,7 +350,7 @@ function buildVisitAnswer(facts: ApplicationFacts, decision: DecisionResult): Kn
 }
 
 function shouldSuppressFirstContactIntroduction(decision: DecisionResult, facts: ApplicationFacts): boolean {
-  if (["collect_owner", "collect_family_status", "schedule_visit", "arrived", "on_the_way"].includes(decision.nextAction)) return true;
+  if (["collect_owner", "collect_family_status", "schedule_visit", "arrived", "on_the_way", "redirect_existing_contract"].includes(decision.nextAction)) return true;
   if (facts.declinedDocuments || facts.familyStatus || facts.visitRequested || facts.visitDate || facts.visitTime) return true;
   return false;
 }

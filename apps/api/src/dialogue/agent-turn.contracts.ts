@@ -60,10 +60,18 @@ export const agentTurnResultSchema = z.object({
 export type AgentTurnResult = z.infer<typeof agentTurnResultSchema>;
 export type AgentLeadCardPatch = Partial<ApplicationFacts>;
 export const knowledgeAnswerSchema = z.object({
-  reply: z.string().min(1).max(4000),
+  /** Empty only when this turn is an application fact, not a KB question. */
+  reply: z.string().max(4000),
   answerFound: z.boolean(),
+  /** The model understood this turn as a client question or service request,
+   * even when it was expressed without a question mark. */
+  questionUnderstood: z.boolean().optional(),
+  /** Keys from the supplied KB that directly support the client reply. */
+  sourceKeys: z.array(z.string().min(1).max(120)).max(20).optional(),
+  /** Whether the client seeks a new loan or another type of assistance. */
+  requestScope: z.enum(["new_loan", "not_new_loan", "unknown"]).optional(),
   /** Classification only when the server supplied a previous terminal policy. */
-  contextualPolicyRelation: z.enum(["follow_up", "new_question"]).optional()
+  contextualPolicyRelation: z.enum(["follow_up", "new_question"]).nullable().optional()
 }).strict();
 export type KnowledgeAnswer = z.infer<typeof knowledgeAnswerSchema>;
 export const dialogueSummarySchema = z.object({ summary: z.string().min(1).max(4_000) }).strict();
