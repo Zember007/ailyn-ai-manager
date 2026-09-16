@@ -7,6 +7,7 @@ export type BusinessRuleStatus =
   | "need_more_data"
   | "redirect_existing_contract"
   | "target_reached"
+  | "closed"
   | "blocked";
 
 export type LoanProgram = "without_storage" | "parking";

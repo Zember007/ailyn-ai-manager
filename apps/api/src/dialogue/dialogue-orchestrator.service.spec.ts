@@ -96,7 +96,7 @@ describe("single-agent dialogue", () => {
       createManagerNotification: vi.fn()
     } as any;
     const agent = {
-      run: vi.fn().mockResolvedValue({ result: { ...validResult, leadCardPatch: {}, attachments: [] }, reply: "Распознано.", model: "one", promptVersion: "v1" })
+      run: vi.fn().mockResolvedValue({ result: { ...validResult, leadCardPatch: { familyStatus: "married" }, attachments: [] }, reply: "Распознано.", model: "one", promptVersion: "v1" })
     } as any;
 
     const output = await new DialogueOrchestratorService(agent, store, { getValues: vi.fn().mockResolvedValue({}) } as any, { log: vi.fn(), warn: vi.fn() } as any)
@@ -104,6 +104,7 @@ describe("single-agent dialogue", () => {
 
     expect(store.createRepeatLoanApplication).toHaveBeenCalledWith(conversation, closedApplication);
     expect(store.updateFacts).toHaveBeenCalledWith(newApplication, expect.not.objectContaining({ vehicleMake: "Toyota", requestedAmount: 500_000 }));
+    expect(store.updateFacts).toHaveBeenCalledWith(newApplication, expect.objectContaining({ familyStatus: "single" }));
     expect(output.application.id).toBe("new-app");
     expect(output.reply).toContain("оформляем новую заявку");
     expect(output.reply).toContain("актуальные фото автомобиля");
@@ -134,6 +135,29 @@ describe("single-agent dialogue", () => {
 
     expect(store.findLatestClosedApplication).not.toHaveBeenCalled();
     expect(store.createRepeatLoanApplication).not.toHaveBeenCalled();
+  });
+
+  it("closes a terminal prior application and starts a repeat loan when legacy data has no CLOSED state", async () => {
+    const application = { id: "legacy-app", contactId: "contact", stage: "TARGET_REACHED_VISIT", status: "target_reached", facts: { familyStatus: "married" } } as any;
+    const closedApplication = { ...application, stage: "CLOSED" } as any;
+    const newApplication = { id: "new-app", contactId: "contact", stage: "NEW", status: "need_more_data", facts: { familyStatus: "married" } } as any;
+    const conversation = { id: "conversation", messages: [{ author: "ai", body: "Есть ли у Вас ещё вопросы?", createdAt: "now" }], application, channel: "web-test" } as any;
+    const store = {
+      getOrCreateConversation: vi.fn().mockResolvedValue({ conversation, application }),
+      findLatestClosedApplication: vi.fn().mockResolvedValue(undefined),
+      closeApplicationForRepeatLoan: vi.fn().mockResolvedValue(closedApplication),
+      createRepeatLoanApplication: vi.fn().mockResolvedValue(newApplication),
+      addMessage: vi.fn().mockResolvedValue({ id: "message", createdAt: "now" }), updateFacts: vi.fn().mockResolvedValue([]), saveAgentState: vi.fn(),
+      getApplication: vi.fn().mockResolvedValue(newApplication), getConversation: vi.fn().mockResolvedValue({ ...conversation, application: newApplication }), addAttachment: vi.fn(), createManagerNotification: vi.fn()
+    } as any;
+    const agent = { run: vi.fn().mockResolvedValue({ result: { ...validResult, leadCardPatch: {}, attachments: [] }, reply: "Распознано.", model: "one", promptVersion: "v1" }) } as any;
+
+    const output = await new DialogueOrchestratorService(agent, store, { getValues: vi.fn().mockResolvedValue({}) } as any, { log: vi.fn(), warn: vi.fn() } as any)
+      .receive({ externalMessageId: "repeat", channel: "web-test", externalContactId: "contact", text: "нужен снова займ под туже машину, я выкупился у вас три дня назад", attachments: [], timestamp: new Date() });
+
+    expect(store.closeApplicationForRepeatLoan).toHaveBeenCalledWith(application);
+    expect(store.createRepeatLoanApplication).toHaveBeenCalledWith(conversation, closedApplication);
+    expect(output.reply).not.toMatch(/нотариальн|супруг/iu);
   });
 
   it("removes unrequested assistance offers from a knowledge answer", () => {
@@ -277,7 +301,7 @@ describe("single-agent dialogue", () => {
     expect(output.reply).not.toMatch(/ставк|2,4%|вас\s+интересует.*стоянк/iu);
   });
 
-  it("does not let a knowledge rate answer replace a direct programme selection", async () => {
+  it("uses a KB answer even when the workflow model also recognises a programme selection", async () => {
     const application = {
       id: "app", facts: { vehicleModel: "Camry", vehicleYear: 2020, vehicleValue: 1_000_000, requestedAmount: 300_000, residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY" },
       contactId: "contact", stage: "COLLECTING_AMOUNT", status: "need_more_data"
@@ -303,8 +327,8 @@ describe("single-agent dialogue", () => {
       .receive({ externalMessageId: "parking", channel: "web-test", externalContactId: "contact", text: "стоянка", attachments: [], timestamp: new Date() });
 
     expect(agent.answerWithKnowledge).toHaveBeenCalledOnce();
-    expect(output.reply).toBe(selectedReply);
-    expect(output.reply).not.toMatch(/ставк|2,4%/iu);
+    expect(output.reply).toContain("По программе со стоянкой ставка составляет 2,4% в месяц.");
+    expect(output.reply).toContain(selectedReply);
   });
 
   it.each([
@@ -6021,7 +6045,66 @@ describe("single-agent dialogue", () => {
     expect(output.reply).toBe(`Да, для наших клиентов есть чай и кофе.\n\n${stageQuestion}`);
   });
 
-  it("does not let KB replace a divorce-certificate stage response", async () => {
+  it("keeps a KB answer without reviving an incomplete stage after a completed scenario", async () => {
+    const staleStageQuestion = "Для оформления потребуется нотариальное согласие супруга или супруги. Вам удобно оформить согласие при визите в офис?";
+    const knowledgeReply = "Для Вас доступна предварительная оценка суммы займа.";
+    // Historical cards can retain an unanswered consent field even after a
+    // visit/documents scenario is completed. It is not an active prompt.
+    const application = {
+      id: "app", contactId: "contact", stage: "TARGET_REACHED_VISIT", status: "target_reached",
+      facts: { familyStatus: "married", spouseConsentAtOffice: undefined }
+    } as any;
+    const conversation = {
+      id: "conversation", application, channel: "web-test",
+      messages: [{ author: "ai", body: "Есть ли у Вас ещё вопросы?", createdAt: "now" }]
+    } as any;
+    const store = {
+      getOrCreateConversation: vi.fn().mockResolvedValue({ conversation, application }),
+      addMessage: vi.fn().mockResolvedValue({ id: "message", author: "client", body: "", createdAt: "now" }),
+      updateFacts: vi.fn().mockResolvedValue([]), saveAgentState: vi.fn(), getApplication: vi.fn().mockResolvedValue(application), getConversation: vi.fn().mockResolvedValue(conversation), addAttachment: vi.fn(), createManagerNotification: vi.fn()
+    } as any;
+    const agent = {
+      run: vi.fn().mockResolvedValue({
+        result: { ...validResult, reply: staleStageQuestion, leadCardPatch: {} },
+        reply: staleStageQuestion, model: "workflow-model", promptVersion: "v1"
+      }),
+      answerWithKnowledge: vi.fn().mockResolvedValue({ reply: knowledgeReply, answerFound: true, shouldUseReply: true, requestScope: "new_loan", model: "knowledge-model" })
+    } as any;
+
+    const output = await new DialogueOrchestratorService(agent, store, { getValues: vi.fn().mockResolvedValue({}) } as any, { log: vi.fn() } as any)
+      .receive({ externalMessageId: "maximum", channel: "web-test", externalContactId: "contact", text: "сколько дадите", attachments: [], timestamp: new Date() });
+
+    expect(agent.answerWithKnowledge).toHaveBeenCalledOnce();
+    expect(output.reply).toBe(knowledgeReply);
+    expect(output.reply).not.toContain("нотариальное согласие");
+  });
+
+  it("never discards a KB answer when a question without a question mark resembles a stage reply", async () => {
+    const stageQuestion = "Подскажите, пожалуйста, ориентировочную стоимость автомобиля.";
+    const knowledgeReply = "Для Вас доступна предварительная оценка максимальной суммы займа.";
+    const application = { id: "app", contactId: "contact", stage: "COLLECTING_VALUE", status: "need_more_data", facts: { vehicleModel: "Camry", vehicleYear: 2018 } } as any;
+    const conversation = { id: "conversation", application, channel: "web-test", messages: [{ author: "ai", body: stageQuestion, createdAt: "now" }] } as any;
+    const store = {
+      getOrCreateConversation: vi.fn().mockResolvedValue({ conversation, application }),
+      addMessage: vi.fn().mockResolvedValue({ id: "message", author: "client", body: "", createdAt: "now" }),
+      updateFacts: vi.fn().mockResolvedValue([]), saveAgentState: vi.fn(), getApplication: vi.fn().mockResolvedValue(application), getConversation: vi.fn().mockResolvedValue(conversation), addAttachment: vi.fn(), createManagerNotification: vi.fn()
+    } as any;
+    const agent = {
+      run: vi.fn().mockResolvedValue({
+        result: { ...validResult, reply: stageQuestion, currentStageResponse: "answer", leadCardPatch: {} },
+        reply: stageQuestion, model: "workflow-model", promptVersion: "v1"
+      }),
+      answerWithKnowledge: vi.fn().mockResolvedValue({ reply: knowledgeReply, answerFound: true, shouldUseReply: true, requestScope: "new_loan", model: "knowledge-model" })
+    } as any;
+
+    const output = await new DialogueOrchestratorService(agent, store, { getValues: vi.fn().mockResolvedValue({}) } as any, { log: vi.fn() } as any)
+      .receive({ externalMessageId: "maximum", channel: "web-test", externalContactId: "contact", text: "сколько дадите", attachments: [], timestamp: new Date() });
+
+    expect(agent.answerWithKnowledge).toHaveBeenCalledOnce();
+    expect(output.reply).toContain(knowledgeReply);
+  });
+
+  it("keeps a divorce-certificate stage response when KB returns its workflow sentinel", async () => {
     const certificateReply = "В таком случае, пожалуйста, возьмите с собой оригинал свидетельства о расторжении брака. Если удобно, заранее пришлите его фотографию — это ускорит рассмотрение заявки.";
     const application = { id: "app", facts: { familyStatus: "divorced" }, contactId: "contact", stage: "COLLECTING_FAMILY_STATUS", status: "need_more_data" } as any;
     const conversation = {
@@ -6038,7 +6121,7 @@ describe("single-agent dialogue", () => {
         result: { ...validResult, reply: certificateReply, currentStageResponse: "answer", leadCardPatch: { vehicleBoughtDuringMarriage: true } },
         reply: certificateReply, model: "workflow-model", promptVersion: "v1"
       }),
-      answerWithKnowledge: vi.fn().mockResolvedValue({ reply: "Автомобиль был приобретён во время брака.", answerFound: true, shouldUseReply: true, requestScope: "new_loan", model: "knowledge-model" })
+      answerWithKnowledge: vi.fn().mockResolvedValue({ reply: "__WORKFLOW_STAGE_RESPONSE__", answerFound: false, shouldUseReply: false, requestScope: "new_loan", model: "knowledge-model" })
     } as any;
 
     const output = await new DialogueOrchestratorService(agent, store, { getValues: vi.fn().mockResolvedValue({}) } as any, { log: vi.fn() } as any)
@@ -6046,7 +6129,7 @@ describe("single-agent dialogue", () => {
 
     expect(agent.answerWithKnowledge).toHaveBeenCalledOnce();
     expect(output.reply).toBe(certificateReply);
-    expect(output.reply).not.toBe("Автомобиль был приобретён во время брака.");
+    expect(output.reply).not.toBe("__WORKFLOW_STAGE_RESPONSE__");
   });
 
   it("shows the KB fallback for an explicit question instead of resuming the application workflow", async () => {

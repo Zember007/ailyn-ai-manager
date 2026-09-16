@@ -13,7 +13,6 @@ import { detectMoneyMentions, formatMoney, formatSomMoney, resolveMoneyFacts, ro
 import { calculateLoanPricing, calculateLoanRangeDisplayMaximums, MINIMUM_VEHICLE_VALUE } from "./loan-pricing.js";
 import { referencesOtherPersonsVehicle } from "./lead-card-ownership.js";
 import { isRepeatLoanRequest } from "./repeat-loan.js";
-import type { AgentTurnResult } from "./agent-turn.contracts.js";
 
 export interface DialogueResult { conversation: Stage1Conversation; application: Stage1Application; reply: string; validation: { passed: boolean; errors: string[] }; routerAiModel: string; promptVersion: string; needsKnowledgeLookup?: boolean; summaryNeedsRefresh?: boolean; }
 export interface DialogueReceiveOptions { signal?: AbortSignal; deferReplyPersistence?: boolean; }
@@ -25,15 +24,29 @@ function formatTimingError(error: unknown): string {
   return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
 }
 
-function omitRepeatLoanServiceFacts(patch: Partial<ApplicationFacts>): Partial<ApplicationFacts> {
+function omitRepeatLoanServiceFacts(patch: Partial<ApplicationFacts>, text: string): Partial<ApplicationFacts> {
   const {
     existingContractQuestion: _existingContractQuestion,
     existingContractPaymentMessage: _existingContractPaymentMessage,
     clientClosed: _clientClosed,
     clientPaused: _clientPaused,
+    familyStatus,
     ...safePatch
   } = patch;
-  return safePatch;
+  return explicitlyStatesFamilyStatus(text) && familyStatus !== undefined
+    ? { ...safePatch, familyStatus }
+    : safePatch;
+}
+
+function explicitlyStatesFamilyStatus(text: string): boolean {
+  return /(?:женат|замужем|в\s+браке|не\s+(?:женат|замужем|в\s+браке)|в\s+разводе|разв[её]д)/iu.test(text);
+}
+
+function isTerminalApplicationHistory(application: Stage1Application): boolean {
+  return application.facts.clientClosed === true
+    || application.stage === "TARGET_REACHED_DOCUMENTS"
+    || application.stage === "TARGET_REACHED_VISIT"
+    || application.stage === "PAUSED";
 }
 
 @Injectable()
@@ -84,7 +97,8 @@ export class DialogueOrchestratorService {
     const text = messages.map((message) => message.text?.trim()).filter((value): value is string => Boolean(value)).join("\n");
     const startsRepeatLoan = !isExistingContractServiceRequest(text) && isRepeatLoanRequest(text);
     if (startsRepeatLoan) {
-      const closedApplication = await this.store.findLatestClosedApplication(application.contactId);
+      const closedApplication = await this.store.findLatestClosedApplication(application.contactId)
+        ?? (isTerminalApplicationHistory(application) ? await this.store.closeApplicationForRepeatLoan(application) : undefined);
       if (closedApplication) application = await this.store.createRepeatLoanApplication(conversation, closedApplication);
     }
     const repeatLoanStarted = application.id !== initialApplication.id;
@@ -197,7 +211,7 @@ export class DialogueOrchestratorService {
           result: {
             ...turn.result,
             reply,
-            leadCardPatch: omitRepeatLoanServiceFacts(turn.result.leadCardPatch)
+            leadCardPatch: omitRepeatLoanServiceFacts(turn.result.leadCardPatch, text)
           }
         } : {})
       };
@@ -260,22 +274,12 @@ export class DialogueOrchestratorService {
           isFirstClientMessage: conversation.messages.length === 0,
           signal: options.signal
         });
-      // Knowledge is deliberately evaluated on every turn, including terse
-      // stage answers. A direct answer to the programme-selection prompt is
-      // not, however, a request for programme details. Do not let a broad KB
-      // model answer (for example, the parking rate) replace the selected
-      // programme and its next server-owned workflow step.
-      const directProgramSelection = isDirectProgramSelectionReply(text, lastAssistantMessage)
-        && (turn.result?.leadCardPatch.requestedProgram === "without_storage" || turn.result?.leadCardPatch.requestedProgram === "parking");
-      // KB is evaluated on every inbound turn, but it is not allowed to
-      // overwrite the server workflow after the client has simply supplied a
-      // fact requested at the active stage (family status, purchase timing,
-      // document state, etc.). A separate question in the same turn remains
-      // eligible for KB handling.
-      const plainStageFactResponse = isPlainStageFactResponse(turn.result, text);
-      // An explicit client question must never be replaced by a collection
-      // prompt. When KB has no approved answer, show its honest fallback.
-      if (!directProgramSelection && !plainStageFactResponse && (knowledge?.answerFound || knowledge?.shouldUseReply)) {
+      // The KB owns the decision whether the client asked a meaningful
+      // question. Do not let the workflow model's stage classification, a
+      // missing question mark, or programme-selection heuristics discard an
+      // answer that the KB explicitly found. Stage facts are protected by the
+      // KB's `answerFound: false` workflow sentinel instead.
+      if (knowledge?.answerFound || knowledge?.shouldUseReply) {
         receivedMaximumLoanTemplate = hasMaximumLoanPlaceholders(knowledge.reply);
         // The knowledge model is the only author of factual company answers.
         // Never prefix it with the workflow model's prose: that prose may be
@@ -291,9 +295,14 @@ export class DialogueOrchestratorService {
         // own topic (for example, tea or coffee) must not end collection of
         // the next missing fact. Scope can stop the workflow only on the very
         // first client contact, before an application conversation exists.
-        const continuesNewLoanWorkflow = conversation.messages.length > 0
+        // A completed (or paused) application has no active collection
+        // stage. Its card can still contain historical gaps such as a spouse
+        // consent flag, but those gaps must never be appended to a KB answer
+        // during a post-scenario test question.
+        const continuesNewLoanWorkflow = !isTerminalApplicationHistory(application)
+          && (conversation.messages.length > 0
           || knowledge.requestScope === "new_loan"
-          || (knowledge.requestScope === undefined && !knowledge.shouldUseReply);
+          || (knowledge.requestScope === undefined && !knowledge.shouldUseReply));
         const reply = appendWorkflowFollowUp(
           responsePlan,
           knowledge.answerFound && continuesNewLoanWorkflow
@@ -601,26 +610,6 @@ export function workflowFollowUpAfterKnowledge(reply: string, followUp: string, 
 
 function isRequestedAmountStagePrompt(text: string): boolean {
   return /(?:какая\s+)?сумм\p{L}*\s+займ/iu.test(text);
-}
-
-/** A one-phrase answer to the server's explicit programme choice is stage
- * data, even though the full knowledge corpus is evaluated for the turn. */
-function isDirectProgramSelectionReply(text: string, lastAssistantMessage: string): boolean {
-  if (!/(?:вас\s+интересует|какую\s+программ\p{L}*\s+выбираете)[^?!\n]*(?:без\s+изъятия|стоянк)/iu.test(lastAssistantMessage)) return false;
-  const reply = text.trim().toLocaleLowerCase("ru-RU");
-  return /^(?:(?:стоянк\p{L}*|парковк\p{L}*|со\s+стоянк\p{L}*|на\s+стоянк\p{L}*)|(?:без(?:\s+изъят\p{L}*)?))(?:\s+(?:устро\p{L}*|подход\p{L}*|год\p{L}*))?[.!\s]*$/iu.test(reply);
-}
-
-function isPlainStageFactResponse(result: AgentTurnResult | undefined, text: string): boolean {
-  if (!result || /[?？]/u.test(text) || result.clientQuestion) return false;
-  if (result.currentStageResponse === "answer") return true;
-  const stageFactKeys = new Set([
-    "vehicleMake", "vehicleModel", "vehicleYear", "vehicleValue", "requestedAmount", "requestedProgram",
-    "residenceRegion", "residenceText", "residenceCategory", "familyStatus", "vehicleBoughtDuringMarriage",
-    "spouseConsentReady", "spouseConsentAtOffice", "guarantorAvailable", "documents", "documentsProvided",
-    "declinedDocuments", "declinedCarPhoto", "visitDate", "visitTime"
-  ]);
-  return Object.keys(result.leadCardPatch).some((key) => stageFactKeys.has(key));
 }
 
 function hasMaximumLoanPlaceholders(text: string): boolean {

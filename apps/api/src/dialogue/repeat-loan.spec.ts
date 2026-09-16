@@ -5,6 +5,7 @@ import { isRepeatLoanRequest, persistentClientFacts } from "./repeat-loan.js";
 describe("repeat-loan helpers", () => {
   it("recognizes a request for a new loan after repayment", () => {
     expect(isRepeatLoanRequest("Хочу снова займ под ту же машину")).toBe(true);
+    expect(isRepeatLoanRequest("я снова хочу взять займ под ту же машину")).toBe(true);
     expect(isRepeatLoanRequest("Я выкупился и снова нужны деньги")).toBe(true);
     expect(isRepeatLoanRequest("Выкупил машину три дня назад")).toBe(true);
     expect(isRepeatLoanRequest("Займ снова дадите?")).toBe(true);

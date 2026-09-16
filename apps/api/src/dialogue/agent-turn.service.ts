@@ -384,7 +384,12 @@ export class AgentTurnService {
           requestScope: parsed.data.requestScope,
           explicitQuestion,
           questionUnderstood: parsed.data.questionUnderstood === true,
-          replyMode: answerFound ? "approved_answer" : "knowledge_fallback"
+          replyMode: answerFound ? "approved_answer" : "knowledge_fallback",
+          // Keep both values: the first makes a model mistake diagnosable,
+          // while the second shows the exact KB text passed to orchestration
+          // after server-owned normalisation (for example max-limit template).
+          rawKnowledgeReply: parsed.data.reply,
+          selectedKnowledgeReply: reply
         }
       });
       return { reply, answerFound, shouldUseReply, requestScope: parsed.data.requestScope, model: response.model ?? model };

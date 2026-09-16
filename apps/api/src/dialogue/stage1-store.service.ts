@@ -240,6 +240,22 @@ export class Stage1StoreService {
     return application ? this.mapApplication(application) : undefined;
   }
 
+  async closeApplicationForRepeatLoan(application: Stage1Application): Promise<Stage1Application> {
+    const current = await this.prisma.application.findUnique({ where: { id: application.id }, select: { metadata: true } });
+    const metadata = asRecord(current?.metadata);
+    await this.prisma.application.update({
+      where: { id: application.id },
+      data: {
+        state: "CLOSED",
+        metadata: toJson({ ...metadata, status: "closed", closedForRepeatLoanAt: new Date().toISOString() })
+      }
+    });
+    await this.recordAudit("application.closed_for_repeat_loan", "Application", application.id);
+    const closed = await this.loadApplication(application.id);
+    if (!closed) throw new Error("repeat_loan_application_not_found_after_close");
+    return this.mapApplication(closed);
+  }
+
   async createRepeatLoanApplication(conversation: Stage1Conversation, closedApplication: Stage1Application): Promise<Stage1Application> {
     if (closedApplication.contactId !== conversation.contactId) {
       throw new Error("repeat_loan_application_contact_mismatch");
