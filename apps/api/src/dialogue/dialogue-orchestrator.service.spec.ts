@@ -6141,8 +6141,7 @@ describe("single-agent dialogue", () => {
         result: {
           ...validResult,
           reply: `${firstContactGreeting}\n\n${redirect}\n\n${stageQuestion}`,
-          leadCardPatch: {},
-          dialogueState: { stage: "EXISTING_CONTRACT_REDIRECT", status: "redirect_existing_contract", nextAction: "redirect_existing_contract" }
+          leadCardPatch: {}
         },
         reply: `${firstContactGreeting}\n\n${redirect}\n\n${stageQuestion}`,
         model: "workflow-model",
@@ -6158,6 +6157,11 @@ describe("single-agent dialogue", () => {
     expect(output.reply).toBe(redirect);
     expect(output.reply).not.toContain(firstContactGreeting);
     expect(output.reply).not.toContain(stageQuestion);
+    expect(store.saveAgentState).toHaveBeenCalledWith(application, expect.objectContaining({
+      stage: "EXISTING_CONTRACT_REDIRECT",
+      status: "redirect_existing_contract",
+      nextAction: "redirect_existing_contract"
+    }));
   });
 
   it("keeps an existing-loan answer standalone even when the KB misclassifies its scope", async () => {
@@ -6186,7 +6190,7 @@ describe("single-agent dialogue", () => {
     expect(output.reply).not.toContain(stageQuestion);
   });
 
-  it("starts the workflow for an explicit infinitive new-loan request", async () => {
+  it("starts the workflow for an explicit new-loan request", async () => {
     const stageQuestion = "Подскажите, пожалуйста, ориентировочную стоимость автомобиля.";
     const knowledgeReply = "Оформление доступно после проверки автомобиля.";
     const application = { id: "app", facts: {}, contactId: "contact", stage: "NEW", status: "need_more_data" } as any;
@@ -6202,7 +6206,7 @@ describe("single-agent dialogue", () => {
     } as any;
 
     const output = await new DialogueOrchestratorService(agent, store, { getValues: vi.fn().mockResolvedValue({}) } as any, { log: vi.fn() } as any)
-      .receive({ externalMessageId: "new-loan", channel: "web-test", externalContactId: "contact", text: "Оформить новый займ", attachments: [], timestamp: new Date() });
+      .receive({ externalMessageId: "new-loan", channel: "web-test", externalContactId: "contact", text: "Мне нужно оформить займ", attachments: [], timestamp: new Date() });
 
     expect(output.reply).toContain(firstContactGreeting);
     expect(output.reply).toContain(knowledgeReply);

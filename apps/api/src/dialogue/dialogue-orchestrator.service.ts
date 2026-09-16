@@ -63,7 +63,7 @@ function opensNewLoanApplication(
   moneyFacts: Partial<ApplicationFacts>,
   hasInboundAttachments = false
 ): boolean {
-  const explicitNewLoanIntent = /(?:(?:хочу|нуж(?:ен|на|ны)|планирую|собираюсь|можно).{0,40}(?:оформить|получить|взять)?\s*(?:нов(?:ый|ую)\s+)?(?:займ|деньг)|(?:оформить|получить|взять)\s+(?:нов(?:ый|ую)\s+)?(?:займ|деньг))/iu.test(text);
+  const explicitNewLoanIntent = /(?:(?:хочу|нуж(?:ен|на|ны|но)|планирую|собираюсь|можно).{0,40}(?:оформить|получить|взять)?\s*(?:нов(?:ый|ую)\s+)?(?:займ|деньг)|(?:оформить|получить|взять)\s+(?:нов(?:ый|ую)\s+)?(?:займ|деньг))/iu.test(text);
   if (explicitNewLoanIntent) return true;
   if (hasInboundAttachments) return true;
   return Object.entries({ ...leadPatch, ...moneyFacts })
@@ -236,10 +236,11 @@ export class DialogueOrchestratorService {
     // Deliver the canonical approved redirect directly and do not require a
     // second KB call to clean up an already-classified servicing request.
     if (existingContractRedirect) {
+      const dialogueState = { stage: "EXISTING_CONTRACT_REDIRECT" as const, status: "redirect_existing_contract" as const, nextAction: "redirect_existing_contract" };
       turn = {
         ...turn,
         reply: EXISTING_CONTRACT_REDIRECT_REPLY,
-        ...(turn.result ? { result: { ...turn.result, reply: EXISTING_CONTRACT_REDIRECT_REPLY } } : {})
+        ...(turn.result ? { result: { ...turn.result, reply: EXISTING_CONTRACT_REDIRECT_REPLY, dialogueState } } : {})
       };
     }
     if (repeatLoanStarted) {
