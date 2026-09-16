@@ -6021,6 +6021,34 @@ describe("single-agent dialogue", () => {
     expect(output.reply).toBe(`Да, для наших клиентов есть чай и кофе.\n\n${stageQuestion}`);
   });
 
+  it("does not let KB replace a divorce-certificate stage response", async () => {
+    const certificateReply = "В таком случае, пожалуйста, возьмите с собой оригинал свидетельства о расторжении брака. Если удобно, заранее пришлите его фотографию — это ускорит рассмотрение заявки.";
+    const application = { id: "app", facts: { familyStatus: "divorced" }, contactId: "contact", stage: "COLLECTING_FAMILY_STATUS", status: "need_more_data" } as any;
+    const conversation = {
+      id: "conversation", application, channel: "web-test",
+      messages: [{ author: "ai", body: "Подскажите, пожалуйста, автомобиль был приобретён до брака, во время брака или после развода?", createdAt: "now" }]
+    } as any;
+    const store = {
+      getOrCreateConversation: vi.fn().mockResolvedValue({ conversation, application }),
+      addMessage: vi.fn().mockResolvedValue({ id: "message", author: "client", body: "", createdAt: "now" }),
+      updateFacts: vi.fn().mockResolvedValue(["vehicleBoughtDuringMarriage"]), saveAgentState: vi.fn(), getApplication: vi.fn().mockResolvedValue(application), getConversation: vi.fn().mockResolvedValue(conversation), addAttachment: vi.fn(), createManagerNotification: vi.fn()
+    } as any;
+    const agent = {
+      run: vi.fn().mockResolvedValue({
+        result: { ...validResult, reply: certificateReply, currentStageResponse: "answer", leadCardPatch: { vehicleBoughtDuringMarriage: true } },
+        reply: certificateReply, model: "workflow-model", promptVersion: "v1"
+      }),
+      answerWithKnowledge: vi.fn().mockResolvedValue({ reply: "Автомобиль был приобретён во время брака.", answerFound: true, shouldUseReply: true, requestScope: "new_loan", model: "knowledge-model" })
+    } as any;
+
+    const output = await new DialogueOrchestratorService(agent, store, { getValues: vi.fn().mockResolvedValue({}) } as any, { log: vi.fn() } as any)
+      .receive({ externalMessageId: "timing", channel: "web-test", externalContactId: "contact", text: "во время", attachments: [], timestamp: new Date() });
+
+    expect(agent.answerWithKnowledge).toHaveBeenCalledOnce();
+    expect(output.reply).toBe(certificateReply);
+    expect(output.reply).not.toBe("Автомобиль был приобретён во время брака.");
+  });
+
   it("shows the KB fallback for an explicit question instead of resuming the application workflow", async () => {
     const application = { id: "app", facts: {}, contactId: "contact", stage: "NEW", status: "need_more_data" } as any;
     const conversation = { id: "conversation", messages: [], application, channel: "web-test" } as any;

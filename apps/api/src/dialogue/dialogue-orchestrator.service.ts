@@ -13,6 +13,7 @@ import { detectMoneyMentions, formatMoney, formatSomMoney, resolveMoneyFacts, ro
 import { calculateLoanPricing, calculateLoanRangeDisplayMaximums, MINIMUM_VEHICLE_VALUE } from "./loan-pricing.js";
 import { referencesOtherPersonsVehicle } from "./lead-card-ownership.js";
 import { isRepeatLoanRequest } from "./repeat-loan.js";
+import type { AgentTurnResult } from "./agent-turn.contracts.js";
 
 export interface DialogueResult { conversation: Stage1Conversation; application: Stage1Application; reply: string; validation: { passed: boolean; errors: string[] }; routerAiModel: string; promptVersion: string; needsKnowledgeLookup?: boolean; summaryNeedsRefresh?: boolean; }
 export interface DialogueReceiveOptions { signal?: AbortSignal; deferReplyPersistence?: boolean; }
@@ -266,9 +267,15 @@ export class DialogueOrchestratorService {
       // programme and its next server-owned workflow step.
       const directProgramSelection = isDirectProgramSelectionReply(text, lastAssistantMessage)
         && (turn.result?.leadCardPatch.requestedProgram === "without_storage" || turn.result?.leadCardPatch.requestedProgram === "parking");
+      // KB is evaluated on every inbound turn, but it is not allowed to
+      // overwrite the server workflow after the client has simply supplied a
+      // fact requested at the active stage (family status, purchase timing,
+      // document state, etc.). A separate question in the same turn remains
+      // eligible for KB handling.
+      const plainStageFactResponse = isPlainStageFactResponse(turn.result, text);
       // An explicit client question must never be replaced by a collection
       // prompt. When KB has no approved answer, show its honest fallback.
-      if (!directProgramSelection && (knowledge?.answerFound || knowledge?.shouldUseReply)) {
+      if (!directProgramSelection && !plainStageFactResponse && (knowledge?.answerFound || knowledge?.shouldUseReply)) {
         receivedMaximumLoanTemplate = hasMaximumLoanPlaceholders(knowledge.reply);
         // The knowledge model is the only author of factual company answers.
         // Never prefix it with the workflow model's prose: that prose may be
@@ -602,6 +609,18 @@ function isDirectProgramSelectionReply(text: string, lastAssistantMessage: strin
   if (!/(?:вас\s+интересует|какую\s+программ\p{L}*\s+выбираете)[^?!\n]*(?:без\s+изъятия|стоянк)/iu.test(lastAssistantMessage)) return false;
   const reply = text.trim().toLocaleLowerCase("ru-RU");
   return /^(?:(?:стоянк\p{L}*|парковк\p{L}*|со\s+стоянк\p{L}*|на\s+стоянк\p{L}*)|(?:без(?:\s+изъят\p{L}*)?))(?:\s+(?:устро\p{L}*|подход\p{L}*|год\p{L}*))?[.!\s]*$/iu.test(reply);
+}
+
+function isPlainStageFactResponse(result: AgentTurnResult | undefined, text: string): boolean {
+  if (!result || /[?？]/u.test(text) || result.clientQuestion) return false;
+  if (result.currentStageResponse === "answer") return true;
+  const stageFactKeys = new Set([
+    "vehicleMake", "vehicleModel", "vehicleYear", "vehicleValue", "requestedAmount", "requestedProgram",
+    "residenceRegion", "residenceText", "residenceCategory", "familyStatus", "vehicleBoughtDuringMarriage",
+    "spouseConsentReady", "spouseConsentAtOffice", "guarantorAvailable", "documents", "documentsProvided",
+    "declinedDocuments", "declinedCarPhoto", "visitDate", "visitTime"
+  ]);
+  return Object.keys(result.leadCardPatch).some((key) => stageFactKeys.has(key));
 }
 
 function hasMaximumLoanPlaceholders(text: string): boolean {
