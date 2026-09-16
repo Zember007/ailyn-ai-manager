@@ -1141,6 +1141,30 @@ describe("single-agent dialogue", () => {
     expect(client.createChatCompletion.mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 
+  it("normalizes a written vehicle price while the dialogue is awaiting its value", async () => {
+    const application = { id: "app", facts: { vehicleModel: "Rio", vehicleYear: 2020 }, contactId: "contact", stage: "COLLECTING_VALUE", status: "need_more_data" } as any;
+    const conversation = {
+      id: "conversation", application, channel: "web-test",
+      messages: [{ author: "ai", body: "Подскажите, пожалуйста, ориентировочную стоимость автомобиля.", createdAt: "before" }]
+    } as any;
+    const store = {
+      getOrCreateConversation: vi.fn().mockResolvedValue({ conversation, application }),
+      addMessage: vi.fn().mockResolvedValue({ id: "message", author: "client", body: "стоимость два миллиона", createdAt: "now" }),
+      updateFacts: vi.fn().mockResolvedValue(["vehicleValue"]), saveAgentState: vi.fn(), getApplication: vi.fn().mockResolvedValue(application),
+      getConversation: vi.fn().mockResolvedValue({ ...conversation, application }), addAttachment: vi.fn(), createManagerNotification: vi.fn()
+    } as any;
+    const agent = {
+      normalizeMoney: vi.fn().mockResolvedValue([{ field: "vehicleValue", amount: 2_000_000, currency: "KGS", confidence: 0.99 }]),
+      run: vi.fn().mockResolvedValue({ result: { ...validResult, leadCardPatch: {} }, reply: "Стоимость записала.", model: "workflow", promptVersion: "v1" })
+    } as any;
+
+    await new DialogueOrchestratorService(agent, store, { getValues: vi.fn().mockResolvedValue({}) } as any, { log: vi.fn() } as any)
+      .receive({ externalMessageId: "written-value", channel: "web-test", externalContactId: "contact", text: "стоимость два миллиона", attachments: [], timestamp: new Date() });
+
+    expect(agent.normalizeMoney).toHaveBeenCalledTimes(1);
+    expect(agent.run).toHaveBeenCalledWith(expect.objectContaining({ facts: expect.objectContaining({ vehicleValue: 2_000_000 }) }));
+  });
+
   it("keeps a clear money-confirmation rejection out of knowledge routing when its classifier is undecided", async () => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ decision: "undecided", currency: null }) } }] }) } as any;
     const result = await new AgentTurnService(client).classifyPendingMoneyClarification({

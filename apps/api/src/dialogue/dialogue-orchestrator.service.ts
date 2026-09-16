@@ -161,7 +161,12 @@ export class DialogueOrchestratorService {
     // A correction may use two bare numbers («не 200, а 500») without a
     // currency suffix. It is still a money turn: send it to the semantic
     // normalizer instead of silently leaving the old requested amount.
-    const moneyMentioned = detectMoneyMentions(text).length > 0 || isRequestedAmountCorrectionText(text) || currencyOnlyForeignMoneyFromHistory(text, modelMessages).length > 0 || moneyClarification?.decision === "accept";
+    // A written amount such as «два миллиона» deliberately has no numeric
+    // fallback match. When the server is explicitly awaiting a price or loan
+    // amount, still send the reply to RouterAI: the model owns natural-language
+    // money understanding, including words, typos, and mixed phrasing.
+    const awaitingMoneyField = expectedMoneyFieldFromLastQuestion(modelMessages);
+    const moneyMentioned = detectMoneyMentions(text).length > 0 || awaitingMoneyField !== undefined || isRequestedAmountCorrectionText(text) || currencyOnlyForeignMoneyFromHistory(text, modelMessages).length > 0 || moneyClarification?.decision === "accept";
     const modelNormalizedMoney = moneyMentioned && this.agent.normalizeMoney
       ? await this.agent.normalizeMoney({ text, facts: factsBeforeTurn, messages: modelMessages, conversationId: conversation.id, signal: options.signal })
       : [];
