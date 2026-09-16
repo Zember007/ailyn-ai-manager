@@ -6986,6 +6986,34 @@ describe("single-agent dialogue", () => {
     expect(output.reply).not.toContain("Могу продолжить либо");
   });
 
+  it.each([
+    ["мне нужен авто в использовании", "without_storage"],
+    ["мне нужен авто", "without_storage"],
+    ["с правом пользования", "without_storage"],
+    ["оставлю авто у вас", "parking"]
+  ] as const)("gives the programme classifier the semantic meaning of %s", async (clientReply, program) => {
+    const client = {
+      isConfigured: vi.fn().mockReturnValue(true),
+      createChatCompletion: vi.fn()
+        .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ ...validResult, reply: "Поняла.", leadCardPatch: {} }) } }] })
+        .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ program, hasOtherStageAnswer: false, question: null }) } }] })
+    } as any;
+    const question = "Вас интересует займ без изъятия автомобиля или с постановкой автомобиля на охраняемую стоянку?";
+
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: question, createdAt: "now" } as any],
+      facts: { vehicleModel: "Rio", vehicleYear: 2020, vehicleValue: 2_000_000, requestedAmount: 500_000 } as any,
+      settings: {}, text: clientReply, attachments: []
+    });
+
+    const classifierRequest = client.createChatCompletion.mock.calls[1][0];
+    expect(classifierRequest.messages[1].content).toContain(clientReply);
+    expect(classifierRequest.messages[0].content).toContain("мне нужен авто в использовании");
+    expect(classifierRequest.messages[0].content).toContain("мне нужен авто");
+    expect(classifierRequest.messages[0].content).toContain("оставлю авто у вас");
+    expect(output.result?.leadCardPatch.requestedProgram).toBe(program);
+  });
+
   it("treats a bare refusal after the parking alternative as keeping the car at the without-storage limit", async () => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
       ...validResult,
