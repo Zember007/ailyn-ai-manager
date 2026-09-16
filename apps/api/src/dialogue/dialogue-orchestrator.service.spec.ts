@@ -2311,6 +2311,17 @@ describe("single-agent dialogue", () => {
     }));
   });
 
+  it("bounds money normalization to the auxiliary-model timeout", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ values: [] }) } }] }) } as any;
+
+    await new AgentTurnService(client).normalizeMoney({ text: "нужно 100 тысяч", facts: {}, messages: [] });
+
+    expect(client.createChatCompletion).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      operation: "money_normalization",
+      timeoutMs: 5_000
+    }));
+  });
+
   it("rejects a duplicate vehicle value for one explicit loan amount", async () => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ values: [
       { field: "requestedAmount", amount: 1_000_000, currency: "KGS", confidence: 0.99 },

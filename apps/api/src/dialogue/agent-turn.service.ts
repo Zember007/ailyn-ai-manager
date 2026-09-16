@@ -59,6 +59,9 @@ type ContextualKnowledgePolicy = { key: "region_10_refusal" | "previous_assistan
 // enough to resolve conversational references. Keeping this bounded is one of
 // the few latency levers that does not weaken application validation.
 const MAX_AGENT_RESPONSE_TOKENS = 500;
+// Auxiliary classifiers and JSON normalizers have deterministic fallbacks.
+// They must never make a client wait for the full dialogue-model timeout.
+const AUXILIARY_MODEL_TIMEOUT_MS = 5_000;
 const unnormalizedMoneyFactKeys = new Set(["vehicleValue", "requestedAmount", "vehicleValueSourceCurrency", "requestedAmountSourceCurrency"]);
 const NORMALIZER_PROMPT = `Вы — технический JSON-нормализатор ответа менеджера.
 Верните только один валидный JSON строго по переданной схеме AgentTurnResult.
@@ -102,6 +105,7 @@ export type PendingMoneyClarificationDecision = {
 export class AgentTurnService {
   private readonly config = loadAppConfig();
   private readonly logger = new Logger(AgentTurnService.name);
+  private readonly auxiliaryModelTimeoutMs = Math.min(this.config.routerAiTimeoutMs, AUXILIARY_MODEL_TIMEOUT_MS);
 
   constructor(private readonly client: RouterAiClient, private readonly logs?: BackendLogsService) { }
 
@@ -122,7 +126,7 @@ export class AgentTurnService {
           { role: "system", content: "Определи смысл ответа клиента только относительно денежного уточнения AI. Верни строго JSON {\"decision\":\"accept\"|\"reject\"|\"undecided\",\"currency\":\"USD\"|\"EUR\"|\"KZT\"|\"RUB\"|null}. Подтверждение суммы, в том числе ответ только названием валюты, означает accept. Отрицание или исправление суммы без нового числа означает reject. Укажи currency только если клиент явно назвал валюту в текущем ответе; иначе null. Нейтральный или неясный ответ — undecided. Не добавляй текст." },
           { role: "user", content: JSON.stringify({ lastAssistantQuestion: lastAssistantMessage, clientReply }) }
         ]
-      }, { operation: "money_clarification", timeoutMs: this.config.routerAiTimeoutMs, signal: input.signal });
+      }, { operation: "money_clarification", timeoutMs: this.auxiliaryModelTimeoutMs, signal: input.signal });
       const parsed = parseAgentJson(response.choices?.[0]?.message?.content);
       const decision = parsed.decision;
       const currency = parsed.currency;
@@ -162,7 +166,7 @@ export class AgentTurnService {
           // resolve a short answer to its immediately preceding offer.
           { role: "user", content: JSON.stringify(normalizerContext) }
         ]
-      }, { operation: "money_normalization", timeoutMs: this.config.routerAiTimeoutMs, signal: input.signal });
+      }, { operation: "money_normalization", timeoutMs: this.auxiliaryModelTimeoutMs, signal: input.signal });
       const rawModelResponse = response.choices?.[0]?.message?.content ?? "{}";
       let decoded: unknown;
       try {
@@ -636,7 +640,7 @@ export class AgentTurnService {
           { role: "system", content: "Ты нормализуешь только ответ клиента на вопрос о времени визита. Верни JSON {\"visitTimeAvailability\":\"known\"|\"unknown\"|\"not_a_visit_answer\"}. known: клиент назвал время, включая приблизительное («примерно в 5»). unknown: явно говорит, что время пока неизвестно («по времени пока не знаю», «как только смогу — сообщу»). Не извлекай и не придумывай время." },
           { role: "user", content: JSON.stringify({ lastAssistant, clientReply }) }
         ]
-      }, { operation: "visit_time_classification", timeoutMs: this.config.routerAiTimeoutMs, signal: input.signal });
+      }, { operation: "visit_time_classification", timeoutMs: this.auxiliaryModelTimeoutMs, signal: input.signal });
       const decision = parseAgentJson(response.choices?.[0]?.message?.content).visitTimeAvailability;
       if (decision === "known" || decision === "unknown" || decision === "not_a_visit_answer") {
         return decision === "unknown"
@@ -687,7 +691,7 @@ export class AgentTurnService {
           { role: "system", content: "Определи только текущий официальный семейный статус клиента из его реплики и последнего вопроса AI. Верни JSON {\"familyStatus\":\"single\"|\"married\"|\"divorced\"|null}. Гражданский брак, совместная жизнь, дети без официальной регистрации, фразы «официально не расписаны», «брак не регистрировал» означают single. Прошедшее время о браке — «в браке был», «была замужем», «был женат», «раньше состоял в браке» — означает divorced, если клиент не сообщил явно о нынешнем браке. «в разводе, но сейчас снова женат» означает married. Не додумывай статус." },
           { role: "user", content: JSON.stringify({ previousFamilyStatus: input.facts.familyStatus ?? null, lastAssistantQuestion: lastAssistant, clientReply }) }
         ]
-      }, { operation: "unofficial_marriage_classification", timeoutMs: this.config.routerAiTimeoutMs, signal: input.signal });
+      }, { operation: "unofficial_marriage_classification", timeoutMs: this.auxiliaryModelTimeoutMs, signal: input.signal });
       const familyStatus = parseAgentJson(response.choices?.[0]?.message?.content).familyStatus;
       if (familyStatus === "single" || familyStatus === "married" || familyStatus === "divorced") {
         return { ...parsed, leadCardPatch: { ...parsed.leadCardPatch, familyStatus } };
@@ -739,7 +743,7 @@ export class AgentTurnService {
             ]
           }
         ]
-      }, { operation: "document_identity_extraction", timeoutMs: this.config.routerAiTimeoutMs, signal: input.signal });
+      }, { operation: "document_identity_extraction", timeoutMs: this.auxiliaryModelTimeoutMs, signal: input.signal });
       const extracted = parseDocumentIdentityExtraction(response.choices?.[0]?.message?.content ?? undefined);
       // The focused pass sees the original image and has a deliberately
       // narrow classification contract. When it returns the keyed format it
@@ -812,7 +816,7 @@ export class AgentTurnService {
           { role: "system", content: "Определи смысл ответа клиента только на вопрос: автомобиль куплен до брака, во время брака или после развода. Верни JSON {\"timing\":\"before_marriage\"|\"during_marriage\"|\"after_divorce\"|\"undecided\"|\"not_an_answer\"}. «в», «во», «во время», «в браке», «во время брака» означают during_marriage. «до», «до брака», «раньше брака», «до того как поженились», «наверное до ещё» означают before_marriage. «после», «не в», «не в браке», «вне брака», «после развода» означают after_divorce. Отдельный вопрос клиента — not_an_answer. Не меняй семейное положение и не добавляй текст." },
           { role: "user", content: JSON.stringify({ questionAsked: lastAssistant, clientReply }) }
         ]
-      }, { operation: "divorce_purchase_timing", timeoutMs: this.config.routerAiTimeoutMs, signal: input.signal });
+      }, { operation: "divorce_purchase_timing", timeoutMs: this.auxiliaryModelTimeoutMs, signal: input.signal });
       const timing = parseAgentJson(response.choices?.[0]?.message?.content).timing;
       if (timing === "during_marriage") return apply(true);
       if (timing === "before_marriage" || timing === "after_divorce") return apply(false);
@@ -844,7 +848,7 @@ export class AgentTurnService {
           { role: "system", content: "Определи смысл реплики клиента только относительно активного действия AI. Верни JSON {\"decision\":\"accept\"|\"reject\"|\"undecided\"|\"not_an_answer\"}. accept — клиент отправит или уже готов отправить запрошенные файлы; reject — явно отказывается или откладывает их; not_an_answer — клиент задал отдельный вопрос или изменил другой факт; undecided — смысла недостаточно. Не додумывай ответ и не добавляй текст." },
           { role: "user", content: JSON.stringify({ action, questionAsked: lastAssistant, clientReply }) }
         ]
-      }, { operation: "optional_stage_decision", timeoutMs: this.config.routerAiTimeoutMs, signal: input.signal });
+      }, { operation: "optional_stage_decision", timeoutMs: this.auxiliaryModelTimeoutMs, signal: input.signal });
       const decision = parseAgentJson(response.choices?.[0]?.message?.content).decision;
       if (decision !== "reject") return parsed;
       return {
@@ -899,7 +903,7 @@ export class AgentTurnService {
           },
           { role: "user", content: JSON.stringify({ limitOffer: lastAssistant, clientReply }) }
         ]
-      }, { operation: "limit_choice", timeoutMs: this.config.routerAiTimeoutMs, signal: input.signal });
+      }, { operation: "limit_choice", timeoutMs: this.auxiliaryModelTimeoutMs, signal: input.signal });
       const normalized = parseAgentJson(response.choices?.[0]?.message?.content);
       const modelChoice = normalized.choice === "keep_car" || normalized.choice === "parking" || normalized.choice === "undecided"
         ? normalized.choice
@@ -941,7 +945,7 @@ export class AgentTurnService {
           { role: "system", content: "Определи, изменяет ли клиент программу займа в текущей реплике, независимо от текущего этапа. Верни строго JSON {\"program\":\"without_storage\"|\"parking\"|null,\"hasOtherStageAnswer\":boolean,\"question\":string|null}. Выбор определяется по смыслу, не только по точному названию: «давай стоянку тогда», «стоянка устроит», «парковка подойдёт», «этот вариант устраивает», «на стоянку», «со стоянкой», «оставить на парковке», «пускай у вас авто останется», «пускай у вас будет машина», «могу без машины обойтись», «машину могу оставить у вас», «авто может остаться у вас» означают parking. «без изъятия», «без изъятия устроит», «с правом пользования», «с правом пользоваться», «тогда с правом пользования», «пользоваться автомобилем», «машина нужна для пользования», «оставить машину у себя», «мне нужно авто у себя», «мне надо ездить на машине», «чтобы авто у меня осталось», «машина должна быть у меня», «не могу без машины» означают without_storage: клиент сохраняет автомобиль у себя и может им пользоваться. Считай это выбором только когда клиент утверждает, где ему нужен автомобиль, а не задаёт отвлечённый или условный вопрос. Короткие «без» и «со» интерпретируй только после прямого вопроса о программе. Если в реплике есть вопрос или явный ответ на другой этап, поставь hasOtherStageAnswer=true и верни question, если он есть. Не придумывай выбор." },
           { role: "user", content: JSON.stringify({ currentStageQuestion: lastAssistant, clientReply }) }
         ]
-      }, { operation: "program_decision", timeoutMs: this.config.routerAiTimeoutMs, signal: input.signal });
+      }, { operation: "program_decision", timeoutMs: this.auxiliaryModelTimeoutMs, signal: input.signal });
       const classifierResult = parseAgentJson(response.choices?.[0]?.message?.content);
       const program = classifierResult.program;
       const clientQuestion = classifierResult.hasOtherStageAnswer === true
@@ -984,7 +988,7 @@ export class AgentTurnService {
           { role: "system", content: "Определи смысл ответа клиента только относительно последнего вопроса AI: есть ли у него ещё вопросы. Верни строго JSON {\"decision\":\"accept\"|\"reject\"|\"undecided\"}. Ответ, что вопросов нет, всё понятно, больше ничего не нужно — reject. Если клиент хочет что-то уточнить — accept. Нейтральная, несвязанная, оценочная или бессмысленная реплика без ясного смысла — undecided. Не додумывай согласие или отказ. Не добавляй текст." },
           { role: "user", content: JSON.stringify({ lastAssistantQuestion: lastAssistant, clientReply: currentReply }) }
         ]
-      }, { operation: "final_questions_decision", timeoutMs: this.config.routerAiTimeoutMs, signal: input.signal });
+      }, { operation: "final_questions_decision", timeoutMs: this.auxiliaryModelTimeoutMs, signal: input.signal });
       const decision = parseAgentJson(response.choices?.[0]?.message?.content).decision;
       return decision === "reject"
         ? { ...parsed, leadCardPatch: { ...parsed.leadCardPatch, clientClosed: true } }
@@ -1033,7 +1037,7 @@ export class AgentTurnService {
           { role: "system", content: "Нормализуй только название населённого пункта Кыргызстана из ответа клиента. Верни строго JSON {\"locality\": string|null}. Если узнаваемо, дай одно каноническое русское название города, села или области; если нет — null. Не определяй область, не указывай категорию займа и не придумывай населённый пункт." },
           { role: "user", content: JSON.stringify({ lastAssistantQuestion: lastAssistant, clientReply: currentReply, mainModelCandidate: modelRecognizedLocality ? modelCandidate : undefined }) }
         ]
-      }, { operation: "residence_locality_normalization", timeoutMs: this.config.routerAiTimeoutMs, signal: input.signal });
+      }, { operation: "residence_locality_normalization", timeoutMs: this.auxiliaryModelTimeoutMs, signal: input.signal });
       const locality = parseAgentJson(response.choices?.[0]?.message?.content).locality;
       if (typeof locality !== "string") return parsed;
       const resolved = resolveKyrgyzstanLocality(locality);
@@ -1121,7 +1125,7 @@ export class AgentTurnService {
           },
           { role: "user", content: JSON.stringify({ activeQuestion, lastAssistantReply: lastAssistant, clientReply: currentReply }) }
         ]
-      }, { operation: "guarantor_decision", timeoutMs: this.config.routerAiTimeoutMs, signal: input.signal });
+      }, { operation: "guarantor_decision", timeoutMs: this.auxiliaryModelTimeoutMs, signal: input.signal });
       const classifierResult = parseAgentJson(response.choices?.[0]?.message?.content);
       const decision = classifierResult.decision;
       // A compound reply such as «ок, а сколько максимум дадите?» contains
@@ -1171,7 +1175,7 @@ export class AgentTurnService {
           { role: "system", content: "Определи смысл ответа клиента только относительно последнего вопроса AI. Вопрос — согласен ли клиент оформить нотариальное согласие супруга/супруги при визите в офис. Верни строго JSON {\"decision\":\"accept\"|\"reject\"|\"undecided\"}. Разговорное одобрение, похвала варианта или обещание выбрать его означают accept; желание оформить самостоятельно или отказ — reject. Нейтральная, несвязанная, оценочная или бессмысленная реплика без ясного смысла — undecided. Не додумывай согласие или отказ. Не добавляй текст." },
           { role: "user", content: JSON.stringify({ lastAssistantQuestion: lastAssistant, clientReply: currentReply }) }
         ]
-      }, { operation: "office_consent", timeoutMs: this.config.routerAiTimeoutMs, signal: input.signal });
+      }, { operation: "office_consent", timeoutMs: this.auxiliaryModelTimeoutMs, signal: input.signal });
       const decision = parseAgentJson(response.choices?.[0]?.message?.content).decision;
       if (decision !== "accept" && decision !== "reject") return parsed;
       return { ...parsed, leadCardPatch: { ...parsed.leadCardPatch, spouseConsentAtOffice: decision === "accept" } };
@@ -1211,7 +1215,7 @@ export class AgentTurnService {
           { role: "system", content: NORMALIZER_PROMPT },
           { role: "user", content: JSON.stringify(normalizerInput) }
         ]
-      }, { operation: "response_normalization", timeoutMs: this.config.routerAiTimeoutMs, signal: input.signal });
+      }, { operation: "response_normalization", timeoutMs: this.auxiliaryModelTimeoutMs, signal: input.signal });
       const content = response.choices?.[0]?.message?.content;
       const payload = normalizeAgentPayload(parseAgentJson(typeof content === "string" ? content : undefined), input.attachments);
       const parsed = agentTurnResultSchema.safeParse(payload);
