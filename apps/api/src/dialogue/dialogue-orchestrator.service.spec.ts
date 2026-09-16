@@ -6045,6 +6045,97 @@ describe("single-agent dialogue", () => {
     expect(output.reply).toBe(`Да, для наших клиентов есть чай и кофе.\n\n${stageQuestion}`);
   });
 
+  it("returns only a standalone KB answer on the first message without starting a new-loan workflow", async () => {
+    const stageQuestion = "Подскажите, пожалуйста, ориентировочную стоимость автомобиля.";
+    const knowledgeReply = "Да, для наших клиентов есть чай и кофе.";
+    const application = { id: "app", facts: {}, contactId: "contact", stage: "NEW", status: "need_more_data" } as any;
+    const conversation = { id: "conversation", application, channel: "web-test", messages: [] } as any;
+    const store = {
+      getOrCreateConversation: vi.fn().mockResolvedValue({ conversation, application }),
+      addMessage: vi.fn().mockResolvedValue({ id: "message", author: "client", body: "", createdAt: "now" }),
+      updateFacts: vi.fn().mockResolvedValue([]), saveAgentState: vi.fn(), getApplication: vi.fn().mockResolvedValue(application), getConversation: vi.fn().mockResolvedValue(conversation), addAttachment: vi.fn(), createManagerNotification: vi.fn()
+    } as any;
+    const agent = {
+      run: vi.fn().mockResolvedValue({
+        result: { ...validResult, reply: stageQuestion, leadCardPatch: {} },
+        reply: stageQuestion, model: "workflow-model", promptVersion: "v1"
+      }),
+      answerWithKnowledge: vi.fn().mockResolvedValue({ reply: knowledgeReply, answerFound: true, shouldUseReply: true, requestScope: "not_new_loan", model: "knowledge-model" })
+    } as any;
+
+    const output = await new DialogueOrchestratorService(agent, store, { getValues: vi.fn().mockResolvedValue({}) } as any, { log: vi.fn() } as any)
+      .receive({ externalMessageId: "coffee", channel: "web-test", externalContactId: "contact", text: "А кофе чай есть?", attachments: [], timestamp: new Date() });
+
+    expect(agent.answerWithKnowledge).toHaveBeenCalledWith(expect.objectContaining({ isFirstClientMessage: true }));
+    expect(output.reply).toBe(knowledgeReply);
+    expect(output.reply).not.toContain(firstContactGreeting);
+    expect(output.reply).not.toContain(stageQuestion);
+  });
+
+  it.each([
+    ["сколько дадите", "Максимальная сумма зависит от оценочной стоимости автомобиля."],
+    ["какая ставка?", "Ставка определяется по программе займа после оценки автомобиля."]
+  ])("returns only the KB answer for a first-message FAQ: %s", async (text, knowledgeReply) => {
+    const stageQuestion = "Подскажите, пожалуйста, ориентировочную стоимость автомобиля.";
+    const application = { id: "app", facts: {}, contactId: "contact", stage: "NEW", status: "need_more_data" } as any;
+    const conversation = { id: "conversation", application, channel: "web-test", messages: [] } as any;
+    const store = {
+      getOrCreateConversation: vi.fn().mockResolvedValue({ conversation, application }),
+      addMessage: vi.fn().mockResolvedValue({ id: "message", author: "client", body: "", createdAt: "now" }),
+      updateFacts: vi.fn().mockResolvedValue([]), saveAgentState: vi.fn(), getApplication: vi.fn().mockResolvedValue(application), getConversation: vi.fn().mockResolvedValue(conversation), addAttachment: vi.fn(), createManagerNotification: vi.fn()
+    } as any;
+    const agent = {
+      run: vi.fn().mockResolvedValue({
+        result: { ...validResult, reply: stageQuestion, leadCardPatch: {} },
+        reply: stageQuestion, model: "workflow-model", promptVersion: "v1"
+      }),
+      answerWithKnowledge: vi.fn().mockResolvedValue({ reply: knowledgeReply, answerFound: true, shouldUseReply: true, requestScope: "not_new_loan", model: "knowledge-model" })
+    } as any;
+
+    const output = await new DialogueOrchestratorService(agent, store, { getValues: vi.fn().mockResolvedValue({}) } as any, { log: vi.fn() } as any)
+      .receive({ externalMessageId: "faq", channel: "web-test", externalContactId: "contact", text, attachments: [], timestamp: new Date() });
+
+    expect(output.reply).toBe(knowledgeReply);
+    expect(output.reply).not.toContain(firstContactGreeting);
+    expect(output.reply).not.toContain(stageQuestion);
+  });
+
+  it("returns only the existing-contract redirect on the first message", async () => {
+    const stageQuestion = "Подскажите, пожалуйста, ориентировочную стоимость автомобиля.";
+    const redirect = "Я Айлин — виртуальный помощник по вопросам оформления новых займов. Если у Вас уже оформлен займ, пожалуйста, позвоните по телефону +996 502 108 108 или напишите в WhatsApp +996 776 108 108. Наши специалисты проверят информацию по Вашему договору и помогут решить Ваш вопрос.";
+    const application = { id: "app", facts: {}, contactId: "contact", stage: "NEW", status: "need_more_data" } as any;
+    const conversation = { id: "conversation", application, channel: "web-test", messages: [] } as any;
+    const store = {
+      getOrCreateConversation: vi.fn().mockResolvedValue({ conversation, application }),
+      addMessage: vi.fn().mockResolvedValue({ id: "message", author: "client", body: "", createdAt: "now" }),
+      updateFacts: vi.fn().mockResolvedValue([]), saveAgentState: vi.fn(), getApplication: vi.fn().mockResolvedValue(application), getConversation: vi.fn().mockResolvedValue(conversation), addAttachment: vi.fn(), createManagerNotification: vi.fn()
+    } as any;
+    const agent = {
+      run: vi.fn().mockResolvedValue({
+        result: { ...validResult, reply: stageQuestion, leadCardPatch: {} },
+        reply: stageQuestion, model: "workflow-model", promptVersion: "v1"
+      }),
+      answerWithKnowledge: vi.fn().mockResolvedValue({ reply: redirect, answerFound: true, shouldUseReply: true, requestScope: "not_new_loan", model: "knowledge-model" })
+    } as any;
+
+    const output = await new DialogueOrchestratorService(agent, store, { getValues: vi.fn().mockResolvedValue({}) } as any, { log: vi.fn() } as any)
+      .receive({ externalMessageId: "payment", channel: "web-test", externalContactId: "contact", text: "а сколько я на сегодня должен вам", attachments: [], timestamp: new Date() });
+
+    expect(output.reply).toBe(redirect);
+    expect(output.reply).not.toContain(firstContactGreeting);
+    expect(output.reply).not.toContain(stageQuestion);
+  });
+
+  it("instructs the KB to distinguish standalone first-message questions from existing-loan servicing", () => {
+    const prompt = readFileSync(new URL("../ai/prompts/knowledge-agent.system.md", import.meta.url), "utf8");
+
+    expect(prompt).toContain("Самостоятельный вопрос из `knowledge`");
+    expect(prompt).toContain("не превращает диалог в заявку");
+    expect(prompt).toContain("**только** если клиент явно сообщает о намерении оформить/получить новый займ");
+    expect(prompt).toContain("Самостоятельные вопросы «сколько дадите», «какая ставка», «какие условия»");
+    expect(prompt).toContain("ответьте только утверждённым редиректом п. 3.18");
+  });
+
   it("keeps a KB answer without reviving an incomplete stage after a completed scenario", async () => {
     const staleStageQuestion = "Для оформления потребуется нотариальное согласие супруга или супруги. Вам удобно оформить согласие при визите в офис?";
     const knowledgeReply = "Для Вас доступна предварительная оценка суммы займа.";

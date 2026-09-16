@@ -219,6 +219,11 @@ export class DialogueOrchestratorService {
     // This flag is set from the approved KB payload, not from wording the
     // client or a model used to ask about a maximum.
     let receivedMaximumLoanTemplate = false;
+    // On the first client message, a standalone KB question or an existing
+    // contract request is not an application opening. The KB owns this
+    // classification, so its approved reply must not be polluted by the
+    // new-loan compliance greeting at the final delivery boundary.
+    let suppressFirstContactGreeting = false;
     const currentMaximumLoanQuestion = isMaximumLoanKnowledgeQuestion(text);
     const existingContractServiceRequest = isExistingContractServiceRequest(text);
     const deferredMaximumLoanAnswer = !existingContractServiceRequest
@@ -280,6 +285,8 @@ export class DialogueOrchestratorService {
       // answer that the KB explicitly found. Stage facts are protected by the
       // KB's `answerFound: false` workflow sentinel instead.
       if (knowledge?.answerFound || knowledge?.shouldUseReply) {
+        suppressFirstContactGreeting = conversation.messages.length === 0
+          && (knowledge.requestScope === "not_new_loan" || knowledge.requestScope === "unknown");
         receivedMaximumLoanTemplate = hasMaximumLoanPlaceholders(knowledge.reply);
         // The knowledge model is the only author of factual company answers.
         // Never prefix it with the workflow model's prose: that prose may be
@@ -467,6 +474,8 @@ export class DialogueOrchestratorService {
       ? VEHICLE_VALUE_BELOW_MINIMUM_REPLY
       : serverOwnsReply
         ? plannedReply
+        : suppressFirstContactGreeting
+          ? plannedReply
         : enforceFirstContactGreeting(plannedReply, {
       messages: conversation.messages,
       text,
