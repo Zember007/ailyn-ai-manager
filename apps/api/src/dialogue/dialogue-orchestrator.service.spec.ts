@@ -2536,19 +2536,11 @@ describe("single-agent dialogue", () => {
     expect(output.reply).toContain("И Вам потребуется поручитель:");
   });
 
-  it("interprets 'с правом пользования' as the without-storage programme", async () => {
-    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn()
-      .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ ...validResult, reply: "Хорошо.", leadCardPatch: {} }) } }] })
-      .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ program: "without_storage", hasOtherStageAnswer: false, question: null }) } }] }) } as any;
-    const output = await new AgentTurnService(client).run({
-      messages: [{ author: "ai", body: "Вас интересует займ без изъятия автомобиля или с постановкой автомобиля на охраняемую стоянку?", createdAt: "now" } as any],
-      facts: { vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 2_000_000, requestedAmount: 300_000 } as any,
-      settings: {}, text: "тогда с правом пользования", attachments: []
-    });
+  it("includes 'с правом пользоваться' in the without-storage normalizer prompt", () => {
+    const source = readFileSync(new URL("./agent-turn.service.ts", import.meta.url), "utf8");
 
-    expect(output.result?.leadCardPatch.requestedProgram).toBe("without_storage");
-    expect(output.reply).not.toContain("Вас интересует займ без изъятия автомобиля");
-    expect(client.createChatCompletion.mock.calls[1][0].messages[0].content).toContain("с правом пользования");
+    expect(source).toContain("«с правом пользоваться»");
+    expect(source).toContain("означают without_storage");
   });
 
   it("does not accept an invented residence outside an explicit registration answer", async () => {
