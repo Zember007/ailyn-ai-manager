@@ -228,7 +228,7 @@ export class AgentTurnService {
     currentTime?: Date;
     conversationId?: string;
     signal?: AbortSignal;
-  }): Promise<{ reply: string; answerFound: boolean; shouldUseReply?: boolean; requestScope?: "new_loan" | "not_new_loan" | "unknown"; model: string } | undefined> {
+  }): Promise<{ reply: string; answerFound: boolean; questionUnderstood?: boolean; shouldUseReply?: boolean; requestScope?: "new_loan" | "not_new_loan" | "unknown"; model: string } | undefined> {
     if (!this.client.isConfigured()) return undefined;
     const currentMessage = input.text ?? "";
     // The KB request is intentionally made on every inbound turn, including
@@ -346,7 +346,21 @@ export class AgentTurnService {
         });
         throw new Error(`Knowledge response does not match schema: ${parsed.error.issues.map((issue) => issue.path.join(".")).join(", ")}`);
       }
+      const questionText = input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "";
+      const explicitQuestion = isExplicitQuestionText(questionText);
+      // Natural service requests such as «Есть мастер по ремонту у вас» are
+      // questions even without «ли» or a question mark. They must receive
+      // the approved no-information fallback rather than the workflow
+      // sentinel when the corpus has no confirmed answer.
+      const knowledgeQuestionUnderstood = parsed.data.questionUnderstood === true || isLikelyKnowledgeQuestion(questionText);
       const sourceKeys = parsed.data.sourceKeys;
+      // `questionUnderstood=false` is the KB protocol for a workflow fact.
+      // A `lead_card` source without a request is also a prohibited summary.
+      // Never expose arbitrary prose in either case, even if a model
+      // incorrectly also marks `answerFound=true`.
+      const modelReturnedWorkflowStageResponse = !knowledgeQuestionUnderstood && (
+        parsed.data.questionUnderstood === false || sourceKeys?.includes("lead_card") === true
+      );
       const knownKnowledgeKeys = new Set(knowledge.map((chunk) => chunk.key));
       if (sourceKeys && (
         (parsed.data.answerFound && sourceKeys.length === 0)
@@ -359,14 +373,14 @@ export class AgentTurnService {
       // FAQ. The KB may be called on every turn, but it has no authority to
       // introduce this topic unless the client actually asked about it.
       const unaskedGuarantorAnswer = /поручител\p{L}*/iu.test(parsed.data.reply) && !asksAboutGuarantor;
-      const modelAnswerFound = !ungroundedCreditAnswer && !unaskedGuarantorAnswer
+      const modelAnswerFound = !modelReturnedWorkflowStageResponse && !ungroundedCreditAnswer && !unaskedGuarantorAnswer
         && (parsed.data.answerFound || (requiredFallbacks.length > 0 && hasSupportedQuestion));
       const answerFound = modelAnswerFound || guarantorAnswer !== undefined;
       // The complete corpus is available to the KB model on every turn. It,
       // rather than a keyword/retrieval filter, decides which approved rule
       // answers the client's wording. Only live office settings remain
       // server-owned because their values are configuration, not KB prose.
-      const knowledgeReply = unaskedGuarantorAnswer
+      const knowledgeReply = modelReturnedWorkflowStageResponse || unaskedGuarantorAnswer
         ? WORKFLOW_STAGE_RESPONSE_SENTINEL
         : contextualPolicy?.key === "region_10_refusal" && parsed.data.contextualPolicyRelation === "follow_up"
         // The policy is server-approved; keep a model from blending in a
@@ -390,13 +404,12 @@ export class AgentTurnService {
       const reply = maximumLoanQuestion && maximumLoanTemplate
         ? mergeMaximumLoanTemplateWithOtherAnswers(maximumLoanTemplate, replyWithFallbacks)
         : replyWithFallbacks;
-      const explicitQuestion = isExplicitQuestionText(input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "");
       // This marker is protocol-only: it means that the KB was invoked but
       // the current message belongs to the workflow. It must never gain
       // delivery priority merely because a money statement contains «нужно».
       const isWorkflowStageSentinel = reply.trim() === WORKFLOW_STAGE_RESPONSE_SENTINEL;
       const shouldUseReply = !isWorkflowStageSentinel
-        && (parsed.data.questionUnderstood === true || explicitQuestion || guarantorAnswer !== undefined);
+        && (knowledgeQuestionUnderstood || explicitQuestion || guarantorAnswer !== undefined);
       await this.logs?.log("dialogue.knowledge-model", "Knowledge model response received", {
         conversationId: input.conversationId,
         metadata: {
@@ -407,7 +420,7 @@ export class AgentTurnService {
           sourceKeys: parsed.data.sourceKeys ?? [],
           requestScope: parsed.data.requestScope,
           explicitQuestion,
-          questionUnderstood: parsed.data.questionUnderstood === true,
+          questionUnderstood: knowledgeQuestionUnderstood,
           replyMode: answerFound ? "approved_answer" : "knowledge_fallback",
           // Keep both values: the first makes a model mistake diagnosable,
           // while the second shows the exact KB text passed to orchestration
@@ -416,7 +429,7 @@ export class AgentTurnService {
           selectedKnowledgeReply: reply
         }
       });
-      return { reply, answerFound, shouldUseReply, requestScope: parsed.data.requestScope, model: response.model ?? model };
+      return { reply, answerFound, questionUnderstood: knowledgeQuestionUnderstood, shouldUseReply, requestScope: parsed.data.requestScope, model: response.model ?? model };
     } catch (error) {
       if (input.signal?.aborted) throw error;
       const message = formatError(error);
@@ -3785,6 +3798,7 @@ function isExplicitQuestionText(text: string): boolean {
   if (/[?？]/u.test(normalized)) return true;
   if (wordCount(normalized) < 2) return false;
   return /(?:^|\s)(?:что|сколько|скок(?:а)?|какой|какая|какие|где|когда|как|почему|зачем|можно|нужно\s+ли|дадите|дадут|есть\s+ли|будет\s+ли|ставк\p{L}*|процент\p{L}*)(?:\s|$|[?？.,!])/iu.test(normalized)
+    || /^(?:напомни|повтори|подтверж|назови|скажи)\b/iu.test(normalized)
     || /(?:у\s+меня|мо[яйеё])[^.!?]{0,80}(?:авто|автомобил|машин|трекер|gps|гпс|датчик)[^.!?]{0,80}(?:слом|авари|не\s+ед|не\s+работ|отвал|поврежд|эвакуатор)/iu.test(normalized)
     || /(?:слом|авари|не\s+ед|не\s+работ|отвал|поврежд|эвакуатор)[^.!?]{0,80}(?:авто|автомобил|машин|трекер|gps|гпс|датчик)/iu.test(normalized);
 }

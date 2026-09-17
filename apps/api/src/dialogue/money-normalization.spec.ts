@@ -59,6 +59,18 @@ describe("money normalization", () => {
     ]));
   });
 
+  it("recognizes a bare written million as the requested loan amount", () => {
+    const result = resolveMoneyFacts({
+      text: "Я из оша, мне нужен миллион",
+      currentFacts: {}
+    });
+
+    expect(result.requestedAmount).toBe(1_000_000);
+    expect(result.mentions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ sourceText: "миллион", normalizedAmount: 1_000_000, roleCandidate: "requestedAmount" })
+    ]));
+  });
+
   it("keeps the multiplier and currency in a compact foreign amount", () => {
     expect(detectMoneyMentions("Перепутал цену, мне нужно 10 к долларов")).toEqual(expect.arrayContaining([
       expect.objectContaining({ sourceText: "10 к долларов", normalizedAmount: 10_000, currency: "USD" })

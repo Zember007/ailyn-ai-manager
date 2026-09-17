@@ -139,6 +139,7 @@ for (const alias of ["Кашка-Суу", "Кашка Суу"]) {
 const regionalWords: Array<[RegExp, LocalityRegionResolution]> = [
   [/(?:^|\s)(?:бишкек(?:е|а)?|bishkek)(?:$|\s)/u, { category: "BISHKEK_CHUY", residenceRegion: "Бишкек", locality: "Бишкек", match: "exact" }],
   [/(?:^|\s)(?:чу[йи](?:ская)?|chuy(?:skaya)?|chui(?:skaya)?)(?:$|\s)/u, { category: "BISHKEK_CHUY", residenceRegion: "Чуйская область", locality: "Чуйская область", match: "exact" }],
+  [/(?:^|\s)ош(?:а|е|у|ем)?(?:$|\s)/u, { category: "OTHER_KG", residenceRegion: "Другой регион Кыргызстана", locality: "Ош", match: "exact" }],
   [/(?:^|\s)ошская(?:\s+область)?(?:$|\s)/u, { category: "OTHER_KG", residenceRegion: "Другой регион Кыргызстана", locality: "Ошская область", match: "exact" }],
   [/(?:^|\s)баткенская(?:\s+область)?(?:$|\s)/u, { category: "OTHER_KG", residenceRegion: "Другой регион Кыргызстана", locality: "Баткенская область", match: "exact" }],
   [/(?:^|\s)нарынская(?:\s+область)?(?:$|\s)/u, { category: "OTHER_KG", residenceRegion: "Другой регион Кыргызстана", locality: "Нарынская область", match: "exact" }],

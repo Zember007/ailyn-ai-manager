@@ -20,6 +20,12 @@ const managerDeltaFactKeys = new Set(["requestedAmount", "requestedProgram", "vi
 const ANSWER_MAXIMUM_AFTER_PREREQUISITES = "answer_maximum_after_prerequisites";
 const VEHICLE_VALUE_BELOW_MINIMUM_REPLY = "К сожалению, мы не можем принять данный автомобиль в залог, так как его рыночная стоимость должна составлять не менее 300 000 сом.";
 const EXISTING_CONTRACT_REDIRECT_REPLY = "Я Айлин — виртуальный помощник по вопросам оформления новых займов. Если у Вас уже оформлен займ, пожалуйста, позвоните по телефону +996 502 108 108 или напишите в WhatsApp +996 776 108 108. Наши специалисты проверят информацию по Вашему договору и помогут решить Ваш вопрос.";
+const WORKFLOW_STAGE_CLARIFICATION_REPLY = "Я Вас не совсем поняла. Можете, пожалуйста, написать подробнее?";
+const WORKFLOW_FACT_KEYS = new Set<keyof ApplicationFacts>([
+  "vehicleMake", "vehicleModel", "vehicleYear", "vehicleValue", "requestedAmount", "requestedProgram",
+  "residenceText", "residenceRegion", "residenceCategory", "guarantorAvailable", "familyStatus",
+  "visitDate", "visitTime", "documents"
+]);
 
 function formatTimingError(error: unknown): string {
   return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
@@ -96,6 +102,60 @@ function opensNewLoanApplication(
 function hasNewLoanOpeningFacts(facts: Partial<ApplicationFacts>): boolean {
   return Object.entries(facts)
     .some(([key, value]) => newLoanOpeningFactKeys.has(key as keyof ApplicationFacts) && value !== undefined);
+}
+
+/** A workflow question may not be sent twice in a row. Keep this semantic
+ * enough to catch a reworded model retry, but apply it only when that retry
+ * is the entire client reply—an independent KB answer may still legitimately
+ * be followed by the pending collection stage. */
+function workflowQuestionStage(text: string): string | undefined {
+  const normalized = text.toLocaleLowerCase("ru-RU");
+  if (/(?:какая|какую)\s+сумм.*займ|сумм.*займ.*необходим/u.test(normalized)) return "requested_amount";
+  if (/(?:ориентировочн.*)?стоимост.*автомобил|цен.*автомобил/u.test(normalized)) return "vehicle_value";
+  if (/без\s+изъят|(?:со\s+)?стоянк|программ.*займ/u.test(normalized)) return "programme";
+  if (/пропис|бишкек|чуйск|регион\s+кыргызстан/u.test(normalized)) return "residence";
+  if (/поручител/u.test(normalized)) return "guarantor";
+  if (/семейн|в\s+браке|развод/u.test(normalized)) return "family";
+  if (/на\s+какой\s+(?:день|дат)|в\s+какое\s+время|время\s+визита/u.test(normalized)) return "visit";
+  if (/документ|свидетельств.*регистрац|фото/u.test(normalized)) return "documents";
+  if (/модел.*автомоб|год.*выпуск|марку.*автомоб/u.test(normalized)) return "vehicle";
+  return undefined;
+}
+
+function replaceRepeatedWorkflowQuestion(reply: string, lastAssistantMessage: string, options: {
+  workflowFactsChanged: boolean;
+  clientMessageIsEmpty: boolean;
+}): string {
+  const previousStage = workflowQuestionStage(lastAssistantMessage);
+  const replyStage = workflowQuestionStage(reply);
+  if (!previousStage || previousStage !== replyStage || options.workflowFactsChanged) return reply;
+  const normalizedReply = reply.replace(/[?!.]/gu, "").replace(/\s+/gu, " ").trim().toLocaleLowerCase("ru-RU");
+  const normalizedPrevious = lastAssistantMessage.replace(/[?!.]/gu, "").replace(/\s+/gu, " ").trim().toLocaleLowerCase("ru-RU");
+  const isOnlyRepeatedQuestion = normalizedReply === normalizedPrevious
+    || (/\?\s*$/u.test(reply.trim()) && !/[.!]\s+\S/u.test(reply.trim()) && (reply.match(/[?？]/gu)?.length ?? 0) === 1);
+  if (!isOnlyRepeatedQuestion) return reply;
+  // Asking the client to write more is appropriate only when they sent no
+  // content at all. A non-empty reply must not be discarded as "unread".
+  return options.clientMessageIsEmpty ? WORKFLOW_STAGE_CLARIFICATION_REPLY : "Поняла.";
+}
+
+/** A client reply must contain at most one application-stage question. When
+ * a plan accidentally carries several, retain the current server-owned one;
+ * if it is not present, retain the first instead of combining stages. */
+function keepOnlyOneWorkflowQuestion(reply: string, preferredQuestion: string): string {
+  const preferredStage = workflowQuestionStage(preferredQuestion);
+  const sentences = reply.match(/[^.!?]+[.!?]+|[^.!?]+$/gu) ?? [];
+  const workflowQuestionIndexes = sentences
+    .map((sentence, index) => ({ index, stage: workflowQuestionStage(sentence), sentence }))
+    .filter((item) => item.stage && /[?？]/u.test(item.sentence));
+  if (workflowQuestionIndexes.length < 2) return reply;
+  const retained = workflowQuestionIndexes.find((item) => item.stage === preferredStage) ?? workflowQuestionIndexes[0];
+  return sentences
+    .filter((sentence, index) => !workflowQuestionIndexes.some((item) => item.index === index && item.index !== retained.index))
+    .join("")
+    .replace(/[ \t]{2,}/gu, " ")
+    .replace(/\n{3,}/gu, "\n\n")
+    .trim();
 }
 
 @Injectable()
@@ -293,8 +353,14 @@ export class DialogueOrchestratorService {
     const recoveryQuestion = repeatedWorkflowReply
       ? nextRequiredStageQuestion(recoveryFacts, deriveStageCompletion(recoveryFacts, settings))
       : undefined;
+    // "I already wrote it" is not a reason to pretend a non-empty client
+    // message was unread. Reserve the explicit clarification for an actually
+    // empty inbound message; otherwise keep the turn neutral and avoid a
+    // duplicate stage prompt.
     const repeatedWorkflowRecovery = recoveryQuestion
-      ? `К сожалению, я не смогла распознать эту информацию. Пожалуйста, продублируйте её.\n\n${recoveryQuestion}`
+      ? text.trim()
+        ? "Поняла."
+        : WORKFLOW_STAGE_CLARIFICATION_REPLY
       : undefined;
     if (repeatedWorkflowRecovery) {
       const dialogueState = workflowContinuationState(recoveryFacts, settings);
@@ -316,7 +382,7 @@ export class DialogueOrchestratorService {
     // a repeated stage question or an unrelated FAQ answer.
     const existingContractServiceRequest = isExistingContractServiceRequest(text);
     const existingContractRedirect = existingContractServiceRequest
-      || (!repeatedWorkflowRecovery && turn.result?.dialogueState.status === "redirect_existing_contract");
+      || (!repeatedWorkflowReply && !repeatedWorkflowRecovery && turn.result?.dialogueState.status === "redirect_existing_contract");
     const confirmedVisitReply = Boolean(
       turn.result?.leadCardPatch.visitDate
       && turn.result?.leadCardPatch.visitTime
@@ -409,20 +475,28 @@ export class DialogueOrchestratorService {
       const knowledge = serverOwnsReply
         ? undefined
         : await speculativeKnowledgePromise;
-      // The KB owns the decision whether the client asked a meaningful
-      // question. Do not let the workflow model's stage classification, a
-      // missing question mark, or programme-selection heuristics discard an
-      // answer that the KB explicitly found. Stage facts are protected by the
-      // KB's `answerFound: false` workflow sentinel instead.
+      // The KB owns factual answers, but it cannot replace a plain answer to
+      // the active workflow stage. An explicit independent question remains
+      // eligible even without punctuation.
       // The KB is invoked on every turn, but its workflow sentinel is an
       // internal protocol result, never client-facing content. Keep this
       // delivery guard even if a model or adapter incorrectly flags it for
       // use, so it cannot replace a new-loan workflow reply.
       const knowledgeIsWorkflowSentinel = knowledge?.reply.trim() === "__WORKFLOW_STAGE_RESPONSE__";
-      if (!knowledgeIsWorkflowSentinel && (knowledge?.answerFound || knowledge?.shouldUseReply)) {
+      // A confirmed KB answer is authoritative even if the workflow model
+      // mistook the same text for an answer to its active stage. This is
+      // essential for conversational maximum requests («чем больше, тем
+      // лучше»), which may not contain a question mark. Unasked stage input
+      // is still rejected by the KB sentinel/`questionUnderstood` contract.
+      const plainCurrentStageAnswer = turn.result?.currentStageResponse === "answer"
+        && !turn.result.clientQuestion;
+      const confirmedKnowledgeAnswer = knowledge?.questionUnderstood === true
+        && (knowledge.answerFound === true || knowledge.shouldUseReply === true);
+      if ((!plainCurrentStageAnswer || confirmedKnowledgeAnswer) && !knowledgeIsWorkflowSentinel && (knowledge?.answerFound || knowledge?.shouldUseReply)) {
         const standaloneKnowledgeTurn = !newLoanWorkflowStarted;
         suppressFirstContactGreeting = standaloneKnowledgeTurn;
-        receivedMaximumLoanTemplate = hasMaximumLoanPlaceholders(knowledge.reply);
+        const knowledgeReply = stripKnowledgeQuestions(knowledge.reply);
+        receivedMaximumLoanTemplate = hasMaximumLoanPlaceholders(knowledgeReply);
         // The knowledge model is the only author of factual company answers.
         // Never prefix it with the workflow model's prose: that prose may be
         // plausible but unsupported and would reintroduce a hallucination.
@@ -431,10 +505,10 @@ export class DialogueOrchestratorService {
         // KB answer (office address, FAQ, etc.); only a direct rate question
         // may add interest-rate wording.
         const responsePlan = maximumLoanQuestion
-          ? stripWorkflowQuestionsFromMaximumAnswer(knowledge.reply)
+          ? stripWorkflowQuestionsFromMaximumAnswer(knowledgeReply)
           : confirmedVisitReply
-            ? appendWorkflowFollowUp(knowledge.reply, turn.reply)
-            : knowledge.reply;
+            ? appendWorkflowFollowUp(knowledgeReply, turn.reply)
+            : knowledgeReply;
         // A KB answer supplements an application already in progress. Its
         // own topic (for example, tea or coffee) must not end collection of
         // the next missing fact. Scope can stop the workflow only on the very
@@ -599,8 +673,20 @@ export class DialogueOrchestratorService {
     // The output model and server follow-up can independently include the
     // same instruction. Deduplicate at the final delivery boundary so the
     // persisted and returned message are identical.
+    const factsForFinalReply = { ...normalizedFacts, ...(turn.result?.leadCardPatch ?? {}) };
+    const preferredWorkflowQuestion = maximumLoanQuestion
+      ? maximumLoanCalculationFollowUp(factsForFinalReply, nextRequiredStageQuestion(factsForFinalReply) ?? "")
+      : nextRequiredStageQuestion(factsForFinalReply) ?? "";
+    const workflowFactsChanged = changedFactKeys.some((key) => WORKFLOW_FACT_KEYS.has(key as keyof ApplicationFacts));
     const plannedReply = ensureNonEmptyClientReply(
-      stripUnrequestedAssistanceOffers(removeEarlierDuplicateSentences(composeReply(turn.reply, currency.clientText))),
+      replaceRepeatedWorkflowQuestion(
+        keepOnlyOneWorkflowQuestion(
+          stripUnrequestedAssistanceOffers(removeEarlierDuplicateSentences(composeReply(turn.reply, currency.clientText))),
+          preferredWorkflowQuestion
+        ),
+        lastAssistantMessage,
+        { workflowFactsChanged, clientMessageIsEmpty: text.trim().length === 0 }
+      ),
       application.facts
     );
     // Knowledge lookup replaces the main-turn response with its own approved
@@ -710,7 +796,20 @@ export function appendWorkflowFollowUp(reply: string, followUp: string, lastAssi
   const normalizedFollowUp = followUp.replace(/[?!.]/gu, "").replace(/\s+/gu, " ").trim().toLocaleLowerCase("ru-RU");
   const normalizedLastAssistant = lastAssistantMessage.replace(/[?!.]/gu, "").replace(/\s+/gu, " ").trim().toLocaleLowerCase("ru-RU");
   if (!normalizedFollowUp || normalizedReply.includes(normalizedFollowUp) || normalizedLastAssistant.includes(normalizedFollowUp) || (asksForResidenceIn(reply) && asksForResidenceIn(followUp))) return reply;
+  // Amount eligibility is calculated from the current card on the server.
+  // If KB has already narrated the same programme/limit choice, do not join
+  // two near-identical calculations (which may even disagree after a card
+  // update). The canonical server calculation is the sole client-facing one.
+  if (isServerCalculatedLimitAlternative(followUp) && containsLimitAlternative(reply)) return followUp;
   return [reply.trim(), followUp].filter(Boolean).join("\n\n");
+}
+
+function isServerCalculatedLimitAlternative(text: string): boolean {
+  return /(?:по\s+программе\s+(?:без\s+изъятия|со\s+стоянкой)\s+доступно\s+до|сумма\s+[^.!?]+\s+по\s+этой\s+программе\s+не\s+проходит|заявку\s+продолжить\s+нельзя)/iu.test(text);
+}
+
+function containsLimitAlternative(text: string): boolean {
+  return /(?:доступен\s+займ|доступно\s+до|максимальн\p{L}*\s+сумм\p{L}*|сумм\p{L}*\s+(?:возможн\p{L}*|доступн\p{L}*)|только\s+по\s+программе|охраняем\p{L}*\s+парковк\p{L}*)/iu.test(text);
 }
 
 /** A KB answer may use a shorter wording than the canonical residence prompt. */
@@ -1103,6 +1202,19 @@ export function stripUnrequestedAssistanceOffers(reply: string): string {
     .replace(/\s*(?:если\s+хотите,?\s*)?(?:я\s+)?(?<!\p{L})могу(?!\p{L})\s+(?:подсказать|помочь|сориентировать|рассказать|объяснить)[^.!?\n]*[.!?]?/giu, "")
     .replace(/[ \t]{2,}/gu, " ")
     .replace(/\s+([,.!?])/gu, "$1")
+    .replace(/\n{3,}/gu, "\n\n")
+    .trim();
+}
+
+/** KB is an answer-only source. Application questions belong exclusively to
+ * the server workflow, so an accidental question in a KB completion may not
+ * reach the customer or compete with the canonical follow-up. */
+export function stripKnowledgeQuestions(reply: string): string {
+  return reply
+    .split(/(?<=[.!?？])(?=\s|$)/gu)
+    .filter((sentence) => !/[?？]/u.test(sentence))
+    .join("")
+    .replace(/[ \t]{2,}/gu, " ")
     .replace(/\n{3,}/gu, "\n\n")
     .trim();
 }

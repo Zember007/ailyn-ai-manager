@@ -42,6 +42,7 @@ const vehicleCuePattern = /(?:стоит|стои(?=[\s,.!?]|$)|сто[ий]мо
 const requestedCorrectionPattern = /(?:уже|теперь|нет|не\s+так|точнее|лучше|надо\s+больше|нужно\s+больше|хочу\s+больше)[^.!?]{0,40}(?:нужн|надо|сумм|займ|получить|хочу)?/i;
 const vehicleCorrectionPattern = /(?:уже|теперь|нет|не\s+так|точнее|ошиб(?:ся|лась)|перепутал(?:ся|ась)?|сто(?:ит|[ий]мост)|цен[ауы])[^.!?]{0,40}(?:сто(?:ит|[ий]мост)|цен[ауы]|оцен|доллар|евро|тенге|руб)/i;
 const writtenMillionPattern = /(?<!\p{L})(один|одна|два|две|три|четыре|пять|шесть|семь|восемь|девять|десять)\s+(миллион(?:а|ов)?|млн)(?!\p{L})/giu;
+const bareMillionPattern = /(?<!\p{L})(?<!\p{N})(миллион(?:а|ов)?|млн)(?!\p{L})/giu;
 const writtenMillionValues: Record<string, number> = {
   один: 1,
   одна: 1,
@@ -174,6 +175,22 @@ export function detectMoneyMentions(text: string): MoneyMention[] {
       start: match.index,
       end: match.index + raw.length
     });
+  }
+
+  // In a loan request «нужен миллион» is an unambiguous one-million amount.
+  // Do not duplicate a number that the numeric or written-number paths have
+  // already claimed (for example «1 млн» or «пять миллионов»).
+  for (const match of source.matchAll(bareMillionPattern)) {
+    const raw = match[0]?.trim();
+    if (!raw || match.index === undefined) continue;
+    const start = match.index;
+    const end = start + raw.length;
+    if (mentions.some((mention) => (mention.start ?? -1) < end && (mention.end ?? -1) > start)) continue;
+    const contextBefore = source.slice(Math.max(0, start - 32), start);
+    const contextAfter = source.slice(end, Math.min(source.length, end + 32));
+    const role = inferMoneyRoleCandidate(contextBefore, contextAfter);
+    if (role === "unknown") continue;
+    mentions.push({ sourceText: raw, amount: 1_000_000, normalizedAmount: 1_000_000, currency: null, roleCandidate: role, confidence: 0.94, start, end });
   }
 
   // A client can shorten the second value in one clause: "стоит 20 тыс
