@@ -338,6 +338,12 @@ export class AgentTurnService {
       const knowledgeQuestionUnderstood = !isWorkflowFactResponse
         && (parsed.data.questionUnderstood === true || isLikelyKnowledgeQuestion(questionText));
       const sourceKeys = parsed.data.sourceKeys;
+      // A maximum range is a server calculation. Treat both the approved
+      // source key and any unresolved template variable as an instruction to
+      // discard the model's range text and restore the canonical template.
+      // This also protects against a model replacing MAX_LIMIT_* with numbers.
+      const modelSelectedMaximumLoanRange = sourceKeys?.includes("faq_maximum_loan_range") === true
+        || /MAX_LIMIT_(?:WITHOUT|PARK)/iu.test(parsed.data.reply);
       // `questionUnderstood=false` is the KB protocol for a workflow fact.
       // A `lead_card` source without a request is also a prohibited summary.
       // Never expose arbitrary prose in either case, even if a model
@@ -400,8 +406,10 @@ export class AgentTurnService {
       // Explicit fallbacks protect unanswered parts only; they never bypass
       // the KB call itself.
       const replyWithFallbacks = appendKnowledgeFallbacks(knowledgeReply, requiredFallbacks);
-      const reply = maximumLoanQuestion && maximumLoanTemplate
-        ? mergeMaximumLoanTemplateWithOtherAnswers(maximumLoanTemplate, replyWithFallbacks)
+      const onlyMaximumLoanSource = modelSelectedMaximumLoanRange
+        && (sourceKeys?.every((key) => key === "faq_maximum_loan_range") ?? false);
+      const reply = (maximumLoanQuestion || modelSelectedMaximumLoanRange) && maximumLoanTemplate
+        ? mergeMaximumLoanTemplateWithOtherAnswers(maximumLoanTemplate, onlyMaximumLoanSource ? "" : replyWithFallbacks)
         : replyWithFallbacks;
       // This marker is protocol-only: it means that the KB was invoked but
       // the current message belongs to the workflow. It must never gain
@@ -2685,13 +2693,13 @@ function mergeMaximumLoanTemplateWithOtherAnswers(template: string, modelReply: 
   // calculated from the lead card below. Remove the *whole pair* regardless
   // of whitespace before retaining independent answers from a multi-topic
   // message.
-  const maximumRangePair = /(?:Для\s+вас\s+доступно:\s*)?Без\s+изъятия\s*:\s*от\s*50\s*000\s*сом\s*до\s*(?:MAX_LIMIT_WITHOUT|\d[\d\s]*)\s*сом[.!?]?\s*(?:\n|\s)+Со\s+стоянкой\s*:\s*от\s*50\s*000\s*сом\s*до\s*(?:MAX_LIMIT_PARK|\d[\d\s]*)\s*сом[.!?]?/giu;
+  const maximumRangePair = /(?:Для\s+вас\s+доступно:\s*)?(?:[-•]\s*)?Без\s+изъятия\s*:\s*от\s*50\s*000\s*сом\s*до\s*(?:MAX_LIMIT_WITHOUT|\d[\d\s]*)\s*сом[.!?]?\s*(?:\n|\s)+(?:[-•]\s*)?Со\s+стоянкой\s*:\s*от\s*50\s*000\s*сом\s*до\s*(?:MAX_LIMIT_PARK|\d[\d\s]*)\s*сом[.!?]?/giu;
   const remaining = modelReply
     .trim()
     .replace(canonical, "")
     .replace(maximumRangePair, "")
-    .replace(/(?:^|\n)\s*без\s+изъятия\s*:\s*от\s*50\s*000\s*сом\s*до\s*(?:MAX_LIMIT_WITHOUT|\d[\d\s]*)\s*сом\s*(?=\n|$)/giu, "\n")
-    .replace(/(?:^|\n)\s*со\s+стоянкой\s*:\s*от\s*50\s*000\s*сом\s*до\s*(?:MAX_LIMIT_PARK|\d[\d\s]*)\s*сом\s*(?=\n|$)/giu, "\n")
+    .replace(/(?:^|\n)\s*(?:[-•]\s*)?без\s+изъятия\s*:\s*от\s*50\s*000\s*сом\s*до\s*(?:MAX_LIMIT_WITHOUT|\d[\d\s]*)\s*сом\s*(?=\n|$)/giu, "\n")
+    .replace(/(?:^|\n)\s*(?:[-•]\s*)?со\s+стоянкой\s*:\s*от\s*50\s*000\s*сом\s*до\s*(?:MAX_LIMIT_PARK|\d[\d\s]*)\s*сом\s*(?=\n|$)/giu, "\n")
     // A non-canonical maximum claim is never client-facing. It is removed
     // instead of competing with the server-calculated template above.
     .split(/\n{2,}|(?<=[.!?])\s+/u)

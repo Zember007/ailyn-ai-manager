@@ -4374,6 +4374,30 @@ describe("single-agent dialogue", () => {
     expect(reply?.reply).not.toMatch(/не сможем|2 миллиона|только с изъятием/iu);
   });
 
+  it("replaces model-invented limits with server placeholders for a colloquial maximum question", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      reply: "Для вас доступно:\n- Без изъятия: от 50 000 сом до 600 000 сом.\n- Со стоянкой: от 50 000 сом до 2 000 000 сом.",
+      answerFound: true,
+      questionUnderstood: true,
+      sourceKeys: ["faq_maximum_loan_range"],
+      requestScope: "new_loan",
+      contextualPolicyRelation: null
+    }) } }] }) } as any;
+
+    const reply = await new AgentTurnService(client).answerWithKnowledge({
+      messages: [],
+      facts: { vehicleValue: 1_740_000, residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY" } as any,
+      settings: {},
+      text: "А сколько возможна сумма",
+      workflowFollowUp: ""
+    });
+
+    expect(reply?.reply).toBe("Для вас доступно:\nБез изъятия: от 50 000 сом до MAX_LIMIT_WITHOUT сом\nСо стоянкой: от 50 000 сом до MAX_LIMIT_PARK сом");
+    expect(reply?.reply).not.toMatch(/600\s*000|2\s*000\s*000/iu);
+    const context = JSON.parse(client.createChatCompletion.mock.calls[0][0].messages[1].content);
+    expect(context.maximumLoanTemplate).toBeTruthy();
+  });
+
   it("treats 'чем больше, тем лучше' after the amount stage as a maximum-limit request", async () => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
       reply: "Для вас доступно:\nБез изъятия: от 50 000 сом до MAX_LIMIT_WITHOUT сом\nСо стоянкой: от 50 000 сом до MAX_LIMIT_PARK сом",
@@ -6811,6 +6835,14 @@ describe("single-agent dialogue", () => {
     expect(prompt).toContain("**только** если клиент явно сообщает о намерении оформить/получить новый займ");
     expect(prompt).toContain("Самостоятельные вопросы «сколько дадите», «какая ставка», «какие условия»");
     expect(prompt).toContain("ответьте только утверждённым редиректом п. 3.18");
+  });
+
+  it("treats a short statement about a missing FAQ-required item as a knowledge request", () => {
+    const prompt = readFileSync(new URL("../ai/prompts/knowledge-agent.system.md", import.meta.url), "utf8");
+
+    expect(prompt).toContain("«Нужны 2 пары ключей»");
+    expect(prompt).toContain("«я потерял ключи»");
+    expect(prompt).toContain("нехватку или невозможность выполнить требование из утверждённого FAQ");
   });
 
   it("keeps a KB answer without reviving an incomplete stage after a completed scenario", async () => {
