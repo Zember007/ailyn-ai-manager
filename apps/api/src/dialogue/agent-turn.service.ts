@@ -296,7 +296,6 @@ export class AgentTurnService {
     signal?: AbortSignal;
   }): Promise<{ reply: string; answerFound: boolean; questionUnderstood?: boolean; shouldUseReply?: boolean; requestScope?: "new_loan" | "not_new_loan" | "unknown"; model: string } | undefined> {
     if (!this.client.isConfigured()) return undefined;
-    const currentMessage = input.text ?? "";
     // Calls reach this method only after the lightweight knowledge router
     // selected the turn. The remaining guards still protect against a model
     // misclassifying a workflow fact as an independent question.

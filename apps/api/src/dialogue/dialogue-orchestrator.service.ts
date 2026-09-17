@@ -250,8 +250,18 @@ export class DialogueOrchestratorService {
     // amount, still send the reply to RouterAI: the model owns natural-language
     // money understanding, including words, typos, and mixed phrasing.
     const awaitingMoneyField = expectedMoneyFieldFromLastQuestion(modelMessages);
+    // Merely asking for money in the previous assistant message is not enough
+    // to make the current turn a money turn. Without this guard, unrelated
+    // replies such as «где я прописан» paid for a second LLM call and waited
+    // for its empty result before the main agent could start. The main model's
+    // `hasMoney` remains the semantic contract; this lexical gate only decides
+    // whether it is worth starting the dedicated normalizer.
+    const hasMoneyAnswerEvidence = detectMoneyMentions(text).length > 0
+      || isRequestedAmountCorrectionText(text)
+      || currencyOnlyForeignMoneyFromHistory(text, modelMessages).length > 0
+      || (awaitingMoneyField !== undefined && hasWrittenMoneyAmount(text));
     const moneyMentionedWithoutClassifier = !isBareVehicleYearReply(modelMessages, text)
-      && (detectMoneyMentions(text).length > 0 || awaitingMoneyField !== undefined || isRequestedAmountCorrectionText(text) || currencyOnlyForeignMoneyFromHistory(text, modelMessages).length > 0);
+      && hasMoneyAnswerEvidence;
     const normalizeMoneyPromise = moneyMentionedWithoutClassifier && this.agent.normalizeMoney
       ? this.agent.normalizeMoney({ text, facts: factsBeforeTurn, messages: modelMessages, conversationId: conversation.id, signal: options.signal })
       : Promise.resolve<NormalizedMoneyValue[]>([]);
@@ -1141,6 +1151,12 @@ function isRequestedAmountCorrectionText(text: string): boolean {
     String.raw`(?:(?:не|вместо)\s+${amount}\s+(?:а|а\s+не)\s+${amount}|(?:я\s+)?(?:всё\s*[- ]?таки\s+)?(?:хочу|мне\s+(?:нужно|надо)|нужно|надо|требуется|давай(?:те)?|беру)\s+(?:сумм\p{L}*\s+)?${amount}|мне\s+(?:всё\s*[- ]?таки\s+)?(?:нужно|надо)\s+(?:сумм\p{L}*\s+)?${amount}|(?:мне\s+)?(?:кстати\s+)?(?:всё\s*[- ]?таки\s+)?${amount}\s+(?:нужно|надо))`,
     "iu"
   ).test(normalized);
+}
+
+/** Explicit written money amounts that the narrow numeric parser may miss. */
+function hasWrittenMoneyAmount(text: string): boolean {
+  return /(?:один|одна|одно|два|две|три|четыре|пять|шесть|семь|восемь|девять|десять|сто|двести|триста|четыреста|пятьсот|шестьсот|семьсот|восемьсот|девятьсот)\s+(?:тысяч\p{L}*|тыс\.?|миллион\p{L}*|млн|миллиард\p{L}*)/iu.test(text)
+    || /(?:сом\p{L}*|дол+ар\p{L}*|евро|тенг\p{L}*|руб\p{L}*)/iu.test(text);
 }
 
 /** A persisted vehicle price is changed only by an unmistakable price cue. */

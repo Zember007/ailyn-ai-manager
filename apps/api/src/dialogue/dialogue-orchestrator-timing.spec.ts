@@ -241,6 +241,38 @@ describe("DialogueOrchestratorService timing logs", () => {
     expect(agent.normalizeMoney).not.toHaveBeenCalled();
   });
 
+  it("does not run the money normalizer for an unrelated reply while a money field is pending", async () => {
+    const application = { id: "application-1", facts: {}, contactId: "contact-1", stage: "COLLECTING_AMOUNT", status: "need_more_data" } as any;
+    const conversation = {
+      id: "conversation-1", channel: "web-test", application,
+      messages: [{ author: "ai", body: "Какая сумма займа Вам необходима?", createdAt: "now" }]
+    } as any;
+    const store = {
+      getOrCreateConversation: vi.fn().mockResolvedValue({ conversation, application }),
+      addMessage: vi.fn().mockResolvedValue({}), updateFacts: vi.fn().mockResolvedValue([]), saveAgentState: vi.fn(),
+      getApplication: vi.fn().mockResolvedValue(application), getConversation: vi.fn().mockResolvedValue(conversation),
+      addAttachment: vi.fn(), createManagerNotification: vi.fn()
+    } as any;
+    const agent = {
+      normalizeMoney: vi.fn(),
+      run: vi.fn().mockResolvedValue({
+        result: {
+          reply: "Подскажите сумму займа.", hasMoney: false, needsKnowledgeLookup: false, language: "ru", intent: "new_loan", loanQuestionKind: "none",
+          leadCardPatch: {}, cardSummary: "", dialogueState: { stage: "COLLECTING_AMOUNT", status: "need_more_data", nextAction: "continue" },
+          targetEvent: null, managerUpdate: { kind: "none", changedFields: [] }, attachments: []
+        }, reply: "Подскажите сумму займа.", model: "router-fast-model", promptVersion: "single-agent-v3"
+      })
+    } as any;
+    const service = new DialogueOrchestratorService(agent, store, { getValues: vi.fn().mockResolvedValue({}) } as any, { log: vi.fn().mockResolvedValue(undefined) } as any);
+
+    await service.receiveBatch([{
+      externalMessageId: "message-1", externalContactId: "contact-1", channel: "web-test", text: "где я прописан", attachments: [], timestamp: new Date()
+    }]);
+
+    expect(agent.normalizeMoney).not.toHaveBeenCalled();
+    expect(agent.run).toHaveBeenCalledOnce();
+  });
+
   it("never invokes knowledge twice when this turn changes lead facts", async () => {
     const application = { id: "application-1", facts: { reportedInvalidVehicleYear: 2028 }, contactId: "contact-1", stage: "COLLECTING_VEHICLE", status: "need_more_data" } as any;
     const conversation = {
