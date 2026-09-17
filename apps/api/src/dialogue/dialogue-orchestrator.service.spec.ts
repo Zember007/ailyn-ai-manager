@@ -785,6 +785,24 @@ describe("single-agent dialogue", () => {
     expect(output?.reply).toContain("ставка составляет 2,4% в месяц");
   });
 
+  it("rejects an unasked guarantor answer from KB for a programme and residence statement", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      reply: "Поручитель нужен только при займе без изъятия автомобиля для клиентов, зарегистрированных за пределами Бишкека и Чуйской области.",
+      answerFound: true,
+      questionUnderstood: true,
+      sourceKeys: ["lead_card"],
+      requestScope: "new_loan",
+      contextualPolicyRelation: null
+    }) } }] }) } as any;
+
+    const output = await new AgentTurnService(client).answerWithKnowledge({
+      messages: [{ author: "ai", body: "Вас интересует займ без изъятия автомобиля или с постановкой автомобиля на охраняемую стоянку?", createdAt: "now" } as any],
+      facts: {}, settings: {}, text: "без изъятия, я из токмока", workflowFollowUp: "Подскажите, пожалуйста, Вашу прописку."
+    });
+
+    expect(output).toMatchObject({ answerFound: false, shouldUseReply: false });
+  });
+
   it("keeps an inspection question when a known-guarantor answer shares the visit turn", async () => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
       reply: "Осмотр автомобиля проводится в офисе: менеджер оценивает состояние и документы.",
@@ -7968,6 +7986,25 @@ describe("single-agent dialogue", () => {
     });
 
     expect(output.reply).toBe("Прописку приняла, спасибо.\n\nПожалуйста, отправьте фото ID и свидетельства о регистрации автомобиля с обеих сторон.");
+  });
+
+  it("stores Tokmok from a combined programme and residence statement", async () => {
+    const response = { ...validResult, reply: "Поняла.", leadCardPatch: { requestedProgram: "without_storage" } };
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify(response) } }] }) } as any;
+
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "Вас интересует займ без изъятия автомобиля или с постановкой автомобиля на охраняемую стоянку?", createdAt: "now" } as any],
+      facts: { vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 1_740_000, requestedAmount: 200_000 } as any,
+      settings: {}, text: "без изъятия, я из токмока", attachments: []
+    });
+
+    expect(output.result?.leadCardPatch).toMatchObject({
+      requestedProgram: "without_storage",
+      residenceText: "Токмок",
+      residenceRegion: "Чуйская область",
+      residenceCategory: "BISHKEK_CHUY"
+    });
+    expect(output.reply).not.toMatch(/Ваш[ау]\s+пропис/iu);
   });
 
   it("removes a repeated registered-region question after Cholpon-Ata is already categorized", async () => {

@@ -236,7 +236,7 @@ export class AgentTurnService {
     // sentinel when no approved answer applies; delivery still remains under
     // the deterministic stage and orchestration guards below.
     const asksAboutGuarantor = /поручител\p{L}*/iu.test(currentMessage)
-      && /(?:нуж\p{L}*|надо|требу\p{L}*|обязател\p{L}*)/iu.test(currentMessage);
+      && (/[?？]/u.test(currentMessage) || /(?:нуж\p{L}*|надо|требу\p{L}*|обязател\p{L}*|какой|кто|что|почему|зачем)/iu.test(currentMessage));
     const guarantorAnswer = asksAboutGuarantor && input.facts.requestedProgram && input.facts.residenceCategory
       ? (() => {
       const required = requiresGuarantorForFacts(input.facts);
@@ -355,14 +355,20 @@ export class AgentTurnService {
         throw new Error("Knowledge response references missing or insufficient source keys");
       }
       const ungroundedCreditAnswer = isUngroundedVehicleCreditAnswer(parsed.data.reply, input.text ?? "");
-      const modelAnswerFound = !ungroundedCreditAnswer
+      // A guarantor rule is conditional workflow content, never an unsolicited
+      // FAQ. The KB may be called on every turn, but it has no authority to
+      // introduce this topic unless the client actually asked about it.
+      const unaskedGuarantorAnswer = /поручител\p{L}*/iu.test(parsed.data.reply) && !asksAboutGuarantor;
+      const modelAnswerFound = !ungroundedCreditAnswer && !unaskedGuarantorAnswer
         && (parsed.data.answerFound || (requiredFallbacks.length > 0 && hasSupportedQuestion));
       const answerFound = modelAnswerFound || guarantorAnswer !== undefined;
       // The complete corpus is available to the KB model on every turn. It,
       // rather than a keyword/retrieval filter, decides which approved rule
       // answers the client's wording. Only live office settings remain
       // server-owned because their values are configuration, not KB prose.
-      const knowledgeReply = contextualPolicy?.key === "region_10_refusal" && parsed.data.contextualPolicyRelation === "follow_up"
+      const knowledgeReply = unaskedGuarantorAnswer
+        ? WORKFLOW_STAGE_RESPONSE_SENTINEL
+        : contextualPolicy?.key === "region_10_refusal" && parsed.data.contextualPolicyRelation === "follow_up"
         // The policy is server-approved; keep a model from blending in a
         // semantically nearby but unrelated rule such as the 15-year policy.
         ? contextualPolicy.approvedAnswer
@@ -388,7 +394,7 @@ export class AgentTurnService {
       // This marker is protocol-only: it means that the KB was invoked but
       // the current message belongs to the workflow. It must never gain
       // delivery priority merely because a money statement contains «нужно».
-      const isWorkflowStageSentinel = parsed.data.reply.trim() === WORKFLOW_STAGE_RESPONSE_SENTINEL;
+      const isWorkflowStageSentinel = reply.trim() === WORKFLOW_STAGE_RESPONSE_SENTINEL;
       const shouldUseReply = !isWorkflowStageSentinel
         && (parsed.data.questionUnderstood === true || explicitQuestion || guarantorAnswer !== undefined);
       await this.logs?.log("dialogue.knowledge-model", "Knowledge model response received", {
@@ -3176,7 +3182,7 @@ function residencePatchFromExplicitClientText(input: Pick<AgentTurnInput, "text"
   // A guarantor prompt can mention residence requirements, but a plain answer
   // to it is never a new registration answer. Still allow an explicit city or
   // registration correction here: residence can change at every stage.
-  const localityInGuarantorReply = resolveKyrgyzstanLocality(text);
+  const localityInGuarantorReply = residenceLocalityFromClientText(text);
   const explicitlyMentionsResidence = /(?:пропис\p{L}*|зарегистрир\p{L}*|регистрац\p{L}*|место\s+жительств\p{L}*)/iu.test(text ?? "");
   if ((isGuarantorQuestion(lastAssistant) || isGuarantorParkingAlternativeQuestion(lastAssistant)) && !localityInGuarantorReply && !explicitlyMentionsResidence) return {};
   const isResidenceCollectionStage = isResidenceCollectionQuestion(lastAssistant);
@@ -3185,7 +3191,7 @@ function residencePatchFromExplicitClientText(input: Pick<AgentTurnInput, "text"
   // otherwise a stale or hallucinated `residenceStatement` could overwrite
   // a correctly recorded place on a later workflow or summary refresh.
   const isResidenceUpdate = isResidenceUpdateTurn(text ?? "", lastAssistant, previousFacts);
-  const clientLocality = localityInGuarantorReply ?? resolveKyrgyzstanLocality(text);
+  const clientLocality = localityInGuarantorReply ?? residenceLocalityFromClientText(text);
   // The main model can provide a spelling hint only after an explicit
   // residence statement/correction in this turn. It cannot turn an unrelated
   // message such as «давай 200» into a locality it remembered or guessed
@@ -3226,6 +3232,16 @@ function residencePatchFromExplicitClientText(input: Pick<AgentTurnInput, "text"
     residenceCategory: locality.category,
     residenceNeedsClarification: false
   };
+}
+
+/** Extract an explicit first-person locality from a mixed stage answer before
+ * resolving it against SOATE. The resolver deliberately rejects long whole
+ * sentences, so «без изъятия, я из Токмока» needs this narrow boundary. */
+function residenceLocalityFromClientText(text: string | undefined) {
+  const direct = resolveKyrgyzstanLocality(text);
+  if (direct || !text) return direct;
+  const match = text.match(/(?:^|[,.!;]\s*|\s)я\s+(?:из|в)\s+(?:г\.?(?:\s*)?)?([\p{L}-]+(?:\s+[\p{L}-]+){0,2})(?=$|[,.!?;])/iu);
+  return match?.[1] ? resolveKyrgyzstanLocality(match[1]) : undefined;
 }
 
 function isResidenceClarificationQuestion(text: string): boolean {
