@@ -337,7 +337,21 @@ export class AgentTurnService {
       // sentinel when the corpus has no confirmed answer.
       const knowledgeQuestionUnderstood = !isWorkflowFactResponse
         && (parsed.data.questionUnderstood === true || isLikelyKnowledgeQuestion(questionText));
-      const sourceKeys = parsed.data.sourceKeys;
+      const knownKnowledgeKeys = new Set(knowledge.map((chunk) => chunk.key));
+      // FAQ chunks travel to the model with an `faq_` transport prefix, but
+      // models occasionally cite the stable source name without it. Restore
+      // that prefix only when it resolves to a key in this exact packet.
+      const sourceKeys = (parsed.data.sourceKeys ?? []).map((key) =>
+        knownKnowledgeKeys.has(key) || key === "lead_card" || key === "conversation_context"
+          ? key
+          : knownKnowledgeKeys.has(`faq_${key}`)
+            ? `faq_${key}`
+            : key
+      );
+      const hasInvalidSourceKeys = parsed.data.answerFound && (
+        sourceKeys.length === 0
+        || sourceKeys.some((key) => key !== "lead_card" && key !== "conversation_context" && !knownKnowledgeKeys.has(key))
+      );
       // A maximum range is a server calculation. Treat both the approved
       // source key and any unresolved template variable as an instruction to
       // discard the model's range text and restore the canonical template.
@@ -351,13 +365,6 @@ export class AgentTurnService {
       const modelReturnedWorkflowStageResponse = isWorkflowFactResponse || (!knowledgeQuestionUnderstood && (
         parsed.data.questionUnderstood === false || sourceKeys?.includes("lead_card") === true
       ));
-      const knownKnowledgeKeys = new Set(knowledge.map((chunk) => chunk.key));
-      if (sourceKeys && (
-        (parsed.data.answerFound && sourceKeys.length === 0)
-        || sourceKeys.some((key) => key !== "lead_card" && key !== "conversation_context" && !knownKnowledgeKeys.has(key))
-      )) {
-        throw new Error("Knowledge response references missing or insufficient source keys");
-      }
       const ungroundedCreditAnswer = isUngroundedVehicleCreditAnswer(parsed.data.reply, input.text ?? "");
       // The region-10 refusal has a single, narrow triggering condition. A
       // model/year/value supplied for the application (for example «Rio 2020
@@ -373,7 +380,7 @@ export class AgentTurnService {
       const ungroundedRegion10Answer = sourceKeys?.includes("docx_0381") === true
         && !hasExplicitRegion10Mention(questionText)
         && !followsExplicitRegion10;
-      const modelAnswerFound = !modelReturnedWorkflowStageResponse && !ungroundedCreditAnswer && !ungroundedRegion10Answer
+      const modelAnswerFound = !hasInvalidSourceKeys && !modelReturnedWorkflowStageResponse && !ungroundedCreditAnswer && !ungroundedRegion10Answer
         && parsed.data.answerFound;
       const answerFound = modelAnswerFound;
       // The KB owns these answers, but its prose can still repeat the rule
@@ -424,7 +431,8 @@ export class AgentTurnService {
           currentMessage: input.text ?? "",
           modelAnswerFound: parsed.data.answerFound,
           answerFound,
-          sourceKeys: parsed.data.sourceKeys ?? [],
+          sourceKeys,
+          invalidSourceKeys: hasInvalidSourceKeys,
           requestScope: parsed.data.requestScope,
           explicitQuestion,
           questionUnderstood: knowledgeQuestionUnderstood,

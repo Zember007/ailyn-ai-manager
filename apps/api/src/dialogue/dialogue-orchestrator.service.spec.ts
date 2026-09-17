@@ -4323,7 +4323,7 @@ describe("single-agent dialogue", () => {
   });
 
   it("substitutes both maximum-loan placeholders after the knowledge route", async () => {
-    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ reply: "Точный максимум после осмотра.", answerFound: true }) } }] }) } as any;
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ reply: "Точный максимум после осмотра.", answerFound: true, questionUnderstood: true, sourceKeys: ["faq_maximum_loan_range", "faq_interest_rates_overview"], requestScope: "new_loan", contextualPolicyRelation: null }) } }] }) } as any;
     const reply = await new AgentTurnService(client).answerWithKnowledge({
       messages: [],
       facts: { vehicleValue: 3_000_000, residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY" } as any,
@@ -4396,6 +4396,44 @@ describe("single-agent dialogue", () => {
     expect(reply?.reply).not.toMatch(/600\s*000|2\s*000\s*000/iu);
     const context = JSON.parse(client.createChatCompletion.mock.calls[0][0].messages[1].content);
     expect(context.maximumLoanTemplate).toBeTruthy();
+  });
+
+  it("normalizes a maximum FAQ source key without its transport prefix", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      reply: "Для вас доступно: Без изъятия: от 50 000 сом до 600 000 сом. Со стоянкой: от 50 000 сом до 2 000 000 сом.",
+      answerFound: true,
+      questionUnderstood: true,
+      sourceKeys: ["maximum_loan_range"],
+      requestScope: "new_loan",
+      contextualPolicyRelation: null
+    }) } }] }) } as any;
+
+    const reply = await new AgentTurnService(client).answerWithKnowledge({
+      messages: [],
+      facts: { vehicleValue: 1_740_000, residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY" } as any,
+      settings: {}, text: "Какая максимальная сумма?", workflowFollowUp: ""
+    });
+
+    expect(reply?.reply).toContain("MAX_LIMIT_WITHOUT");
+    expect(reply?.reply).toContain("MAX_LIMIT_PARK");
+  });
+
+  it("returns a safe fallback instead of failing the knowledge request for an unknown source key", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      reply: "Да, такая услуга есть.",
+      answerFound: true,
+      questionUnderstood: true,
+      sourceKeys: ["invented_source_key"],
+      requestScope: "not_new_loan",
+      contextualPolicyRelation: null
+    }) } }] }) } as any;
+
+    const reply = await new AgentTurnService(client).answerWithKnowledge({
+      messages: [], facts: {}, settings: {}, text: "Есть ли у вас такая услуга?", workflowFollowUp: ""
+    });
+
+    expect(reply).toMatchObject({ answerFound: false, questionUnderstood: true });
+    expect(reply?.reply).toBe("К сожалению, у меня нет достоверной информации по этому вопросу. Когда Вы приедете, сотрудники с удовольствием подскажут Вам.");
   });
 
   it("treats 'чем больше, тем лучше' after the amount stage as a maximum-limit request", async () => {
@@ -6843,6 +6881,24 @@ describe("single-agent dialogue", () => {
     expect(prompt).toContain("«Нужны 2 пары ключей»");
     expect(prompt).toContain("«я потерял ключи»");
     expect(prompt).toContain("нехватку или невозможность выполнить требование из утверждённого FAQ");
+  });
+
+  it("requires every paraphrased knowledge answer to preserve the source meaning", () => {
+    const prompt = readFileSync(new URL("../ai/prompts/knowledge-agent.system.md", import.meta.url), "utf8");
+
+    expect(prompt).toMatch(/каждое утверждение готового ответа логически следует/iu);
+    expect(prompt).toMatch(/ложная предпосылка клиента не является фактом/iu);
+    expect(prompt).toMatch(/запрещено менять отрицание на утверждение/iu);
+    expect(prompt).toContain("«Второй ключ не требуется.»");
+  });
+
+  it("forbids the knowledge model from adding unsupported claims to an approved answer", () => {
+    const prompt = readFileSync(new URL("../ai/prompts/knowledge-agent.system.md", import.meta.url), "utf8");
+
+    expect(prompt).toContain("Каждое отдельное утверждение");
+    expect(prompt).toContain("обязательность, запрет, отказ, причину или последствие");
+    expect(prompt).toContain("удалите предложение целиком");
+    expect(prompt).toContain("логически противоречат");
   });
 
   it("keeps a KB answer without reviving an incomplete stage after a completed scenario", async () => {
