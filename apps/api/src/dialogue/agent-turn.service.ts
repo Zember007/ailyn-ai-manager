@@ -20,9 +20,9 @@ import type { Stage1Message } from "./stage1-store.service.js";
 
 const PROMPT_VERSION = "single-agent-v4";
 const NEUTRAL_REPLY = "Извините, сейчас не удалось обработать сообщение. Пожалуйста, напишите ещё раз или обратитесь к сотрудникам компании.";
-// A malformed main-agent payload is repaired by the dedicated JSON
-// normalizer immediately. Retrying the same large prompt only adds latency.
-const MAX_MODEL_ATTEMPTS = 1;
+// Retry transient provider failures and malformed structured payloads before
+// falling back to the JSON normalizer or a local recovery path.
+const MAX_MODEL_ATTEMPTS = 3;
 const MAX_LOG_VALUE_LENGTH = 4000;
 const DEFAULT_OFFICE_ADDRESS = "Б. Молодой Гвардии, 22, Бишкек";
 const DEFAULT_TWO_GIS_URL = "https://go.2gis.com/Y34m4";
@@ -706,7 +706,7 @@ export class AgentTurnService {
     if (lastRawAgentResponse) {
       const repaired = await this.normalizeFailedResponse(input, lastRawAgentResponse, lastError);
       if (repaired) {
-        this.logger.warn(`JSON normalizer repaired the main-agent response after its first failed attempt (model=${repaired.model})`);
+        this.logger.warn(`JSON normalizer repaired the response after ${MAX_MODEL_ATTEMPTS} rejected main-agent attempts (model=${repaired.model})`);
         return { result: repaired.result, reply: repaired.result.reply, model: repaired.model, promptVersion: `${PROMPT_VERSION}-normalizer` };
       }
     }

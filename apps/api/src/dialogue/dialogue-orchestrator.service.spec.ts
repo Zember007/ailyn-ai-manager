@@ -7874,24 +7874,46 @@ describe("single-agent dialogue", () => {
     expect(client.createChatCompletion.mock.calls[1][0].messages[0].content).toContain("одну, максимум две короткие фразы");
   });
 
-  it("normalizes a malformed multimodal photo turn without retrying the main agent", async () => {
+  it("retries a malformed multimodal photo turn before the focused ID vision pass", async () => {
     const malformed = { choices: [{ message: { content: JSON.stringify({ ...validResult, dialogueState: { ...validResult.dialogueState, stage: "not-a-stage" } }) } }] };
     const valid = { model: "one-model", choices: [{ message: { content: JSON.stringify(validResult) } }] };
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValueOnce(malformed).mockResolvedValueOnce(valid) } as any;
     const output = await new AgentTurnService(client).run({ messages: [], facts: {}, settings: {}, text: "", attachments: [{ id: "id-front", mimeType: "image/jpeg", contentBase64: "abc" }] });
     expect(output.result).toBeDefined();
     expect(output.model).toBe("one-model");
-    // The third request is the document-identity pass, not a main-agent retry.
+    // The second request is the repaired main-agent retry; the third is the
+    // document-identity pass.
     expect(client.createChatCompletion).toHaveBeenCalledTimes(3);
     expect(client.createChatCompletion.mock.calls[0][0].messages[1].content).toEqual(expect.arrayContaining([expect.objectContaining({ type: "image_url" })]));
-    expect(client.createChatCompletion.mock.calls[1][0].model).toBe("openai/gpt-4o-mini");
+    expect(client.createChatCompletion.mock.calls[1][0].messages[1].content).toEqual(expect.arrayContaining([expect.objectContaining({ type: "image_url" })]));
+    // The focused document pass deliberately receives the image too, but has
+    // a separate narrow document/OCR contract.
+    expect(client.createChatCompletion.mock.calls[2][0].messages[0].content).toContain("OCR документов Кыргызстана");
   });
 
-  it("recovers an attachment locally after a main-agent fetch failure", async () => {
+  it("retries an invalid main-agent field up to the third attempt", async () => {
+    const invalid = {
+      ...validResult,
+      leadCardPatch: { borrowerIsOwner: null }
+    };
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn()
+      .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify(invalid) } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify(invalid) } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify(validResult) } }] })
+    } as any;
+
+    const output = await new AgentTurnService(client).run({ messages: [], facts: {}, settings: {}, text: "", attachments: [] });
+
+    expect(output.result).toBeDefined();
+    expect(client.createChatCompletion).toHaveBeenCalledTimes(3);
+  });
+
+  it("retries a main-agent fetch failure before accepting an attachment locally", async () => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockRejectedValueOnce(new TypeError("fetch failed")).mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify(validResult) } }] }) } as any;
     const output = await new AgentTurnService(client).run({ messages: [], facts: {}, settings: {}, text: "", attachments: [{ id: "id-front", mimeType: "image/jpeg", contentBase64: "abc" }] });
-    expect(output.model).toBe("local-attachment-recovery");
-    expect(client.createChatCompletion).toHaveBeenCalledTimes(1);
+    expect(output.result).toBeDefined();
+    expect(output.model).not.toBe("local-attachment-recovery");
+    expect(client.createChatCompletion).toHaveBeenCalledTimes(3);
     expect(client.createChatCompletion.mock.calls[0][0].messages[1].content).toEqual(expect.arrayContaining([expect.objectContaining({ type: "image_url" })]));
   });
 
@@ -7899,16 +7921,19 @@ describe("single-agent dialogue", () => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockRejectedValue(new TypeError("fetch failed")) } as any;
     const output = await new AgentTurnService(client).run({ messages: [], facts: {}, settings: {}, text: "", attachments: [{ id: "id-front", mimeType: "image/jpeg", contentBase64: "abc" }] });
     expect(output.model).toBe("local-attachment-recovery");
-    expect(output.reply).toContain("Фотографии получили");
+    expect(output.reply).toContain("документы получены");
     expect(output.reply).not.toContain("не удалось обработать");
     expect(output.result?.attachments).toEqual([{ attachmentId: "id-front", type: "unknown", status: "received" }]);
+    expect(client.createChatCompletion).toHaveBeenCalledTimes(3);
   });
 
-  it("uses the cheap normalizer immediately after an invalid main-agent payload", async () => {
+  it("uses the cheap normalizer after three invalid main-agent payloads", async () => {
     const repaired = { ...validResult, leadCardPatch: { vehicleMake: "Toyota", vehicleYear: 2020 } };
     const client = {
       isConfigured: vi.fn().mockReturnValue(true),
       createChatCompletion: vi.fn()
+        .mockResolvedValueOnce({ choices: [{ message: { content: "not json" } }] })
+        .mockResolvedValueOnce({ choices: [{ message: { content: "not json" } }] })
         .mockResolvedValueOnce({ choices: [{ message: { content: "not json" } }] })
         .mockResolvedValueOnce({ model: "cheap-normalizer", choices: [{ message: { content: JSON.stringify(repaired) } }] })
     } as any;
@@ -7919,9 +7944,9 @@ describe("single-agent dialogue", () => {
     expect(output.reply).toContain("Подскажите, пожалуйста, ориентировочную стоимость автомобиля");
     expect(output.model).toBe("cheap-normalizer");
     expect(output.promptVersion).toContain("normalizer");
-    expect(client.createChatCompletion).toHaveBeenCalledTimes(2);
-    expect(client.createChatCompletion.mock.calls[1][0].model).toBe("openai/gpt-4o-mini");
-    const repairContext = JSON.parse(client.createChatCompletion.mock.calls[1][0].messages[1].content);
+    expect(client.createChatCompletion).toHaveBeenCalledTimes(4);
+    expect(client.createChatCompletion.mock.calls[3][0].model).toBe("openai/gpt-4o-mini");
+    const repairContext = JSON.parse(client.createChatCompletion.mock.calls[3][0].messages[1].content);
     expect(repairContext.currentTurnMessages).toEqual(currentTurnMessages);
     expect(repairContext.pricing).toEqual(pricing);
     expect(repairContext.history).toHaveLength(9);
