@@ -31,7 +31,7 @@ export interface ResolvedMoneyFacts {
 // Emergency fallback and numeric post-processing only. Do not expand this into
 // a natural-language understanding layer; RouterAI owns flexible wording.
 const moneyPattern =
-  /(?:(\$|€|₸|₽|usd|dollars?|bucks?|eur(?:o)?s?|kzt|kgs?\.?|rub(?:les?)?|дол+ар(?:ов|а|ы)?|дол(?!\p{L})|бакс\p{L}*|евр\p{L}*|тенг\p{L}*|сом\p{L}*|руб\p{L}*)\s*)?(\d{1,3}(?:[ \u00a0.,]\d{3})+|\d+(?:[.,]\d+)?)(?:\s*)(млн|миллион(?:а|ов)?|лям(?:а|ов)?|тыс(?:яч[аи]?)?|тыщ|[kк])?(?:\s*)(\$|€|₸|₽|usd|dollars?|bucks?|eur(?:o)?s?|kzt|kgs?\.?|rub(?:les?)?|дол+ар(?:ов|а|ы)?|дол(?!\p{L})|бакс\p{L}*|евр\p{L}*|тенг\p{L}*|сом\p{L}*|руб\p{L}*)?/giu;
+  /(?:(\$|€|₸|₽|usd|dollars?|bucks?|eur(?:o)?s?|kzt|kgs?\.?|rub(?:les?)?|дол+ар(?:ов|а|ы)?|дол(?!\p{L})|бакс\p{L}*|евр\p{L}*|тенг\p{L}*|сом\p{L}*|руб\p{L}*)\s*)?(\d{1,3}(?:[ \u00a0.,]\d{3})+|\d+(?:[.,]\d+)?)(?:\s*)(млн|слн|миллион(?:а|ов)?|лям(?:а|ов)?|тыс(?:яч[аи]?)?|тыщ|[kк])?(?:\s*)(\$|€|₸|₽|usd|dollars?|bucks?|eur(?:o)?s?|kzt|kgs?\.?|rub(?:les?)?|дол+ар(?:ов|а|ы)?|дол(?!\p{L})|бакс\p{L}*|евр\p{L}*|тенг\p{L}*|сом\p{L}*|руб\p{L}*)?/giu;
 // A request such as "1 млн дадите?" is a requested loan, never an implied
 // vehicle value merely because the message also names a car and its year.
 const requestedCuePattern = /(нуж\p{L}*|надо|сумм|займ|получить|оформить|хочу|хотел(?:ось)?|надобно|требуется|потреб(?:уется|овалось|ую)|дайте|выдайте|дадите)/iu;
@@ -284,7 +284,7 @@ function parseNormalizedAmount(rawNumber: string, unit: string): number | undefi
   }
 
   const normalizedUnit = unit.toLocaleLowerCase("ru-RU");
-  const multiplier = normalizedUnit.startsWith("млн") || normalizedUnit.startsWith("миллион") || normalizedUnit.startsWith("лям")
+  const multiplier = normalizedUnit.startsWith("млн") || normalizedUnit.startsWith("слн") || normalizedUnit.startsWith("миллион") || normalizedUnit.startsWith("лям")
     ? 1_000_000
     : normalizedUnit.startsWith("тыс") || normalizedUnit.startsWith("тыщ") || normalizedUnit === "к" || normalizedUnit === "k"
       ? 1_000

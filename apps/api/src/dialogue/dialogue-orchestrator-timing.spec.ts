@@ -90,4 +90,88 @@ describe("DialogueOrchestratorService timing logs", () => {
       error: "Error: database unavailable"
     }));
   });
+
+  it("starts the money normalizer and currency clarification concurrently", async () => {
+    let resolveClassifier!: (value: { decision: "accept" }) => void;
+    let resolveNormalizer!: (value: []) => void;
+    const classifier = new Promise<{ decision: "accept" }>((resolve) => { resolveClassifier = resolve; });
+    const normalizer = new Promise<[]>((resolve) => { resolveNormalizer = resolve; });
+    const application = { id: "application-1", facts: {}, contactId: "contact-1", stage: "COLLECTING_AMOUNT", status: "need_more_data" } as any;
+    const conversation = {
+      id: "conversation-1",
+      channel: "web-test",
+      application,
+      messages: [{ author: "ai", body: "Какая сумма займа Вам необходима? Вы имели в виду 500 долларов, верно?", createdAt: "now" }]
+    } as any;
+    const store = {
+      getOrCreateConversation: vi.fn().mockResolvedValue({ conversation, application }),
+      addMessage: vi.fn().mockResolvedValue({}), updateFacts: vi.fn().mockResolvedValue([]), saveAgentState: vi.fn(),
+      getApplication: vi.fn().mockResolvedValue(application), getConversation: vi.fn().mockResolvedValue(conversation),
+      addAttachment: vi.fn(), createManagerNotification: vi.fn()
+    } as any;
+    const agent = {
+      classifyPendingMoneyClarification: vi.fn().mockReturnValue(classifier),
+      normalizeMoney: vi.fn().mockReturnValue(normalizer),
+      run: vi.fn().mockResolvedValue({
+        result: {
+          reply: "Распознано.", hasMoney: true, needsKnowledgeLookup: false, language: "ru", intent: "new_loan", loanQuestionKind: "none",
+          leadCardPatch: {}, cardSummary: "", dialogueState: { stage: "COLLECTING_AMOUNT", status: "need_more_data", nextAction: "continue" },
+          targetEvent: null, managerUpdate: { kind: "none", changedFields: [] }, attachments: []
+        }, reply: "Распознано.", model: "router-fast-model", promptVersion: "single-agent-v3"
+      })
+    } as any;
+    const service = new DialogueOrchestratorService(agent, store, { getValues: vi.fn().mockResolvedValue({}) } as any, { log: vi.fn().mockResolvedValue(undefined) } as any);
+
+    const result = service.receiveBatch([{
+      externalMessageId: "message-1", externalContactId: "contact-1", channel: "web-test", text: "долларов", attachments: [], timestamp: new Date()
+    }]);
+
+    await vi.waitFor(() => {
+      expect(agent.classifyPendingMoneyClarification).toHaveBeenCalledOnce();
+      expect(agent.normalizeMoney).toHaveBeenCalledOnce();
+    });
+    expect(agent.run).not.toHaveBeenCalled();
+
+    resolveClassifier({ decision: "accept" });
+    resolveNormalizer([]);
+    await result;
+  });
+
+  it("starts knowledge resolution before the main agent finishes for a fact-free turn", async () => {
+    let resolveMain!: (value: any) => void;
+    const mainTurn = new Promise<any>((resolve) => { resolveMain = resolve; });
+    const application = { id: "application-1", facts: {}, contactId: "contact-1", stage: "COLLECTING_VALUE", status: "need_more_data" } as any;
+    const conversation = { id: "conversation-1", channel: "web-test", application, messages: [] } as any;
+    const store = {
+      getOrCreateConversation: vi.fn().mockResolvedValue({ conversation, application }),
+      addMessage: vi.fn().mockResolvedValue({}), updateFacts: vi.fn().mockResolvedValue([]), saveAgentState: vi.fn(),
+      getApplication: vi.fn().mockResolvedValue(application), getConversation: vi.fn().mockResolvedValue(conversation),
+      addAttachment: vi.fn(), createManagerNotification: vi.fn()
+    } as any;
+    const agent = {
+      run: vi.fn().mockReturnValue(mainTurn),
+      answerWithKnowledge: vi.fn().mockResolvedValue({ reply: "", answerFound: false, model: "knowledge-model" })
+    } as any;
+    const service = new DialogueOrchestratorService(agent, store, { getValues: vi.fn().mockResolvedValue({}) } as any, { log: vi.fn().mockResolvedValue(undefined) } as any);
+
+    const result = service.receiveBatch([{
+      externalMessageId: "message-1", externalContactId: "contact-1", channel: "web-test", text: "Здравствуйте", attachments: [], timestamp: new Date()
+    }]);
+
+    await vi.waitFor(() => {
+      expect(agent.run).toHaveBeenCalledOnce();
+      expect(agent.answerWithKnowledge).toHaveBeenCalledOnce();
+    });
+
+    resolveMain({
+      result: {
+        reply: "Подскажите, пожалуйста, модель автомобиля.", hasMoney: false, needsKnowledgeLookup: false, language: "ru", intent: "new_loan", loanQuestionKind: "none",
+        leadCardPatch: {}, cardSummary: "", dialogueState: { stage: "COLLECTING_VALUE", status: "need_more_data", nextAction: "continue" },
+        targetEvent: null, managerUpdate: { kind: "none", changedFields: [] }, attachments: []
+      }, reply: "Подскажите, пожалуйста, модель автомобиля.", model: "router-fast-model", promptVersion: "single-agent-v3"
+    });
+    await result;
+
+    expect(agent.answerWithKnowledge).toHaveBeenCalledOnce();
+  });
 });

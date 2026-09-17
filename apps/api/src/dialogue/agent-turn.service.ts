@@ -94,6 +94,8 @@ type AgentTurnInput = {
   hadPriorAssistantMessage?: boolean;
   conversationId?: string;
   signal?: AbortSignal;
+  /** A speculative result for the programme model, started alongside main extraction. */
+  programDecisionPrefetch?: Promise<import("../ai/router-ai/router-ai.types.js").RouterAiChatResponse | undefined>;
 };
 
 export type PendingMoneyClarificationDecision = {
@@ -228,6 +230,19 @@ export class AgentTurnService {
   }): Promise<{ reply: string; answerFound: boolean; shouldUseReply?: boolean; requestScope?: "new_loan" | "not_new_loan" | "unknown"; model: string } | undefined> {
     if (!this.client.isConfigured()) return undefined;
     const currentMessage = input.text ?? "";
+    // «Я уже писал» is a reference to the unanswered collection prompt, not
+    // a factual question and never an existing-contract service request.
+    // This early return also prevents speculative KB prefetch from turning a
+    // missing application fact into a semantically adjacent FAQ response.
+    if (isAlreadyProvidedWorkflowReply(input)) {
+      return { reply: "", answerFound: false, shouldUseReply: false, model: "server-workflow-repeat" };
+    }
+    // A pure choice or value for the active workflow stage belongs to the
+    // extractor and deterministic workflow only. In particular, selecting
+    // "без изъятия" must not let the KB invent a guarantor explanation.
+    if (isResponseToLastWorkflowQuestion(input)) {
+      return { reply: "", answerFound: false, shouldUseReply: false, model: "server-workflow-stage" };
+    }
     const asksAboutGuarantor = /поручител\p{L}*/iu.test(currentMessage)
       && /(?:нуж\p{L}*|надо|требу\p{L}*|обязател\p{L}*)/iu.test(currentMessage);
     if (asksAboutGuarantor && input.facts.requestedProgram && input.facts.residenceCategory) {
@@ -532,6 +547,7 @@ export class AgentTurnService {
       await this.logFallback(input, "routerai_not_configured", []);
       return { reply: NEUTRAL_REPLY, model: "unconfigured", promptVersion: PROMPT_VERSION, error: "routerai_not_configured" };
     }
+    input = { ...input, programDecisionPrefetch: this.prefetchProgramDecision(input) };
     const systemPrompt = loadPrompt("agent.system.md");
     const request = {
       // The configured production model (openai/gpt-5.4-mini) can return an
@@ -938,14 +954,10 @@ export class AgentTurnService {
     const modelSelectedProgram = parsed.leadCardPatch.requestedProgram;
     if (parsed.programStatement && (modelSelectedProgram === "without_storage" || modelSelectedProgram === "parking")) return parsed;
     try {
-      const response = await this.client.createChatCompletion({
-        model: this.config.routerAiTextModel ?? "routerai-text-model-not-configured",
-        temperature: 0, max_tokens: 40, reasoning: { enabled: false }, response_format: { type: "json_object" },
-        messages: [
-          { role: "system", content: "Определи, изменяет ли клиент программу займа в текущей реплике, независимо от текущего этапа. Верни строго JSON {\"program\":\"without_storage\"|\"parking\"|null,\"hasOtherStageAnswer\":boolean,\"question\":string|null}. Выбор определяется по смыслу, не только по точному названию: «давай стоянку тогда», «стоянка устроит», «парковка подойдёт», «этот вариант устраивает», «на стоянку», «со стоянкой», «оставить на парковке», «оставлю авто у вас», «пускай у вас авто останется», «пускай у вас будет машина», «могу без машины обойтись», «машину могу оставить у вас», «авто может остаться у вас» означают parking. «без изъятия», «без изъятия устроит», «с правом пользования», «с правом пользоваться», «тогда с правом пользования», «пользоваться автомобилем», «машина нужна для пользования», «мне нужен авто в использовании», «мне нужен авто», «оставить машину у себя», «мне нужно авто у себя», «мне надо ездить на машине», «чтобы авто у меня осталось», «машина должна быть у меня», «не могу без машины» означают without_storage: клиент сохраняет автомобиль у себя и может им пользоваться. Критично: короткое «мне нужен авто» означает without_storage только когда currentStageQuestion — прямой вопрос о выборе программы; в другом контексте это не выбор и program=null. Считай остальные фразы выбором только когда клиент утверждает, где ему нужен автомобиль, а не задаёт отвлечённый или условный вопрос. Короткие «без» и «со» интерпретируй только после прямого вопроса о программе. Если в реплике есть вопрос или явный ответ на другой этап, поставь hasOtherStageAnswer=true и верни question, если он есть. Не придумывай выбор." },
-          { role: "user", content: JSON.stringify({ currentStageQuestion: lastAssistant, clientReply }) }
-        ]
-      }, { operation: "program_decision", timeoutMs: this.auxiliaryModelTimeoutMs, signal: input.signal });
+      const response = await input.programDecisionPrefetch
+        ?? await this.client.createChatCompletion(this.programDecisionRequest(lastAssistant, clientReply), {
+          operation: "program_decision", timeoutMs: this.auxiliaryModelTimeoutMs, signal: input.signal, conversationId: input.conversationId
+        });
       const classifierResult = parseAgentJson(response.choices?.[0]?.message?.content);
       const program = classifierResult.program;
       const clientQuestion = classifierResult.hasOtherStageAnswer === true
@@ -970,6 +982,34 @@ export class AgentTurnService {
       const program = programFromExplicitReply(clientReply) ?? programFromShortReply(clientReply);
       return program ? { ...parsed, leadCardPatch: { ...parsed.leadCardPatch, requestedProgram: program } } : parsed;
     }
+  }
+
+  private prefetchProgramDecision(input: AgentTurnInput) {
+    // Test doubles deliberately preserve their existing one-call contracts.
+    // Production RouterAiClient is the only client that should spend a
+    // speculative request while the universal extractor is running.
+    if (!(this.client instanceof RouterAiClient)) return undefined;
+    const lastAssistant = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
+    const clientReply = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "").trim();
+    if (!clientReply || (!isProgramSelectionQuestion(lastAssistant) && !hasExplicitProgramSelectionSignal(clientReply))) return undefined;
+    return this.client.createChatCompletion(this.programDecisionRequest(lastAssistant, clientReply), {
+      operation: "program_decision", timeoutMs: this.auxiliaryModelTimeoutMs, signal: input.signal, conversationId: input.conversationId
+    }).catch((error: unknown) => {
+      if (input.signal?.aborted) throw error;
+      this.logger.warn(`Programme classifier prefetch unavailable: ${formatError(error)}`);
+      return undefined;
+    });
+  }
+
+  private programDecisionRequest(lastAssistant: string, clientReply: string) {
+    return {
+      model: this.config.routerAiTextModel ?? "routerai-text-model-not-configured",
+      temperature: 0, max_tokens: 40, reasoning: { enabled: false }, response_format: { type: "json_object" as const },
+      messages: [
+        { role: "system" as const, content: "Определи, изменяет ли клиент программу займа в текущей реплике, независимо от текущего этапа. Верни строго JSON {\"program\":\"without_storage\"|\"parking\"|null,\"hasOtherStageAnswer\":boolean,\"question\":string|null}. Выбор определяется по смыслу, не только по точному названию: «давай стоянку тогда», «стоянка устроит», «парковка подойдёт», «этот вариант устраивает», «на стоянку», «со стоянкой», «оставить на парковке», «оставлю авто у вас», «пускай у вас авто останется», «пускай у вас будет машина», «могу без машины обойтись», «машину могу оставить у вас», «авто может остаться у вас» означают parking. «без изъятия», «без изъятия устроит», «с правом пользования», «с правом пользоваться», «тогда с правом пользования», «пользоваться автомобилем», «машина нужна для пользования», «мне нужен авто в использовании», «мне нужен авто», «оставить машину у себя», «мне нужно авто у себя», «мне надо ездить на машине», «чтобы авто у меня осталось», «машина должна быть у меня», «не могу без машины» означают without_storage: клиент сохраняет автомобиль у себя и может им пользоваться. Критично: короткое «мне нужен авто» означает without_storage только когда currentStageQuestion — прямой вопрос о выборе программы; в другом контексте это не выбор и program=null. Считай остальные фразы выбором только когда клиент утверждает, где ему нужен автомобиль, а не задаёт отвлечённый или условный вопрос. Короткие «без» и «со» интерпретируй только после прямого вопроса о программе. Если в реплике есть вопрос или явный ответ на другой этап, поставь hasOtherStageAnswer=true и верни question, если он есть. Не придумывай выбор." },
+        { role: "user" as const, content: JSON.stringify({ currentStageQuestion: lastAssistant, clientReply }) }
+      ]
+    };
   }
 
   private async resolveFinalQuestionsDecision(parsed: AgentTurnResult, input: AgentTurnInput): Promise<AgentTurnResult> {
@@ -1550,6 +1590,11 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     // In particular, do not retain the previously rejected year when the
     // model omits a terse reply such as «2020» from its patch.
     ...vehicleYearCorrectionPatch(lastAssistantReply, semanticText),
+    // The year is a small but critical numeric fact. When the client answers
+    // the dedicated year prompt with just four digits, do not depend on the
+    // broad extractor to repeat that obvious association: reconciliation
+    // will turn a future value into the required correction message.
+    ...vehicleYearAnswerPatch(lastAssistantReply, semanticText),
     // A client may resume a completed conversation to correct data or ask a
     // new question. The closing acknowledgement is one-shot; every later
     // inbound reopens the final-question state before workflow recalculation.
@@ -2702,6 +2747,15 @@ function isAlreadyProvidedReply(input: Pick<AgentTurnInput, "text" | "currentTur
     || /^(?:я\s+)?(?:это\s+)?(?:уже\s+)?(?:говорил(?:а)?|сказал(?:а)?|писал(?:а)?|написал(?:а)?|указывал(?:а)?)[.!\s]*$/iu.test(text);
 }
 
+/** A concise "I already told you" is meaningful only after an unfinished
+ * server-owned application prompt.  It must not route general conversation
+ * or a genuine existing-contract request away from the knowledge model. */
+export function isAlreadyProvidedWorkflowReply(input: Pick<AgentTurnInput, "text" | "currentTurnMessages" | "messages">): boolean {
+  if (!isAlreadyProvidedReply(input)) return false;
+  const lastAssistant = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
+  return isWorkflowPrompt(lastAssistant);
+}
+
 function requestedAmountLimitReply(pricing: LoanPricing | undefined, facts: ApplicationFacts): string | undefined {
   if (facts.requestedAmount === undefined || !facts.requestedProgram) return undefined;
   const selectedPricing = facts.requestedProgram === "without_storage" ? pricing?.withoutStorage : pricing?.parking;
@@ -3454,6 +3508,15 @@ function vehicleYearCorrectionPatch(lastAssistantReply: string, text: string | u
   const shortYear = reply.match(/(?<!\d)(\d{2})\s*(?:г(?:од(?:а)?)?\.?)(?!\p{L})/iu)?.[1];
   const vehicleYear = fullYear ? Number(fullYear) : shortYear ? 2000 + Number(shortYear) : undefined;
   return vehicleYear === undefined ? {} : { vehicleYear, reportedInvalidVehicleYear: null };
+}
+
+/** Extract a four-digit year only while the immediately preceding server
+ * question explicitly asks for the vehicle's year of manufacture. */
+function vehicleYearAnswerPatch(lastAssistantReply: string, text: string | undefined): Partial<ApplicationFacts> {
+  if (!/(?:год\s+выпуска|какого\s+года\s+(?:ваш(?:а|его)?\s*)?(?:автомобил|машин|авто))/iu.test(lastAssistantReply)) return {};
+  const reply = text?.trim() ?? "";
+  const fullYear = reply.match(/^(?:год(?:а)?\s*)?((?:19|20)\d{2})(?:\s*(?:г(?:од(?:а)?)?\.?)?)?[.!]?$/iu)?.[1];
+  return fullYear ? { vehicleYear: Number(fullYear), reportedInvalidVehicleYear: null } : {};
 }
 
 /** A deterministic safety net for the named alternative after its semantic

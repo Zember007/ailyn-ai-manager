@@ -12,11 +12,20 @@ describe("RouterAiClient timing logs", () => {
     vi.unstubAllGlobals();
   });
 
-  it("logs the operation, model, duration, and successful outcome", async () => {
+  it("logs the operation, model, timing breakdown, prompt size, and token usage", async () => {
     const log = vi.spyOn(Logger.prototype, "log").mockImplementation(() => undefined);
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
       ok: true,
-      json: vi.fn().mockResolvedValue({ model: "router-fast-model", choices: [] })
+      json: vi.fn().mockResolvedValue({
+        model: "router-fast-model",
+        choices: [],
+        usage: {
+          prompt_tokens: 123,
+          completion_tokens: 45,
+          total_tokens: 168,
+          prompt_tokens_details: { cached_tokens: 80 }
+        }
+      })
     }));
 
     await new RouterAiClient().createChatCompletion({
@@ -30,7 +39,29 @@ describe("RouterAiClient timing logs", () => {
       requestedModel: "requested-model",
       model: "router-fast-model",
       outcome: "success",
-      durationMs: expect.any(Number)
+      durationMs: expect.any(Number),
+      timing: expect.objectContaining({
+        requestSerializationMs: expect.any(Number),
+        networkAndServerMs: expect.any(Number),
+        responseDecodingMs: expect.any(Number)
+      }),
+      prompt: expect.objectContaining({
+        messageCount: 1,
+        characters: 4,
+        bytes: 4,
+        systemCharacters: 0,
+        systemBytes: 0,
+        userCharacters: 4,
+        userBytes: 4
+      }),
+      requestBytes: expect.any(Number),
+      responseBytes: expect.any(Number),
+      usage: {
+        promptTokens: 123,
+        completionTokens: 45,
+        totalTokens: 168,
+        cachedTokens: 80
+      }
     }));
   });
 

@@ -1,7 +1,7 @@
 import { Injectable, Logger } from "@nestjs/common";
 import type { ApplicationFacts } from "@ailyn/business-rules";
 import type { NormalizedMoneyValue } from "../ai/ai-provider.interface.js";
-import { AgentTurnService, enforceFirstContactGreeting, isClearMoneyConfirmationRejection, nextRequiredStageQuestion, suppressInactiveGuarantorPrompts, type PendingMoneyClarificationDecision } from "./agent-turn.service.js";
+import { AgentTurnService, enforceFirstContactGreeting, isAlreadyProvidedWorkflowReply, isClearMoneyConfirmationRejection, nextRequiredStageQuestion, suppressInactiveGuarantorPrompts, type PendingMoneyClarificationDecision } from "./agent-turn.service.js";
 import { isExistingContractServiceRequest, isMaximumLoanKnowledgeQuestion } from "./documentation-retrieval.js";
 import { attachmentFactsForCurrentStage, deriveStageCompletion, effectiveFactsForTurn, isCarPhotoStagePrompt, selectedProgramLimit } from "./agent-turn-reconciliation.js";
 import type { InboundMessage } from "../channels/channel.interface.js";
@@ -50,6 +50,29 @@ function isTerminalApplicationHistory(application: Stage1Application): boolean {
     || application.stage === "PAUSED";
 }
 
+/** The model may mislabel a contextual "I already wrote it" as contract
+ * servicing. The server already knows the actual outstanding application
+ * stage, so persist that stage rather than a model-proposed redirect. */
+function workflowContinuationState(facts: ApplicationFacts, settings: object) {
+  const completion = deriveStageCompletion(facts, settings);
+  const stage = !completion.vehicle
+    ? "COLLECTING_VEHICLE" as const
+    : !completion.requestedAmount
+      ? "COLLECTING_AMOUNT" as const
+      : !completion.program
+        ? "ELIGIBILITY_CHECK" as const
+        : !completion.residence
+          ? "COLLECTING_RESIDENCE" as const
+          : !completion.guarantor
+            ? "CHECKING_GUARANTOR" as const
+            : !completion.documents
+              ? "COLLECTING_DOCUMENTS" as const
+              : !completion.family
+                ? "COLLECTING_FAMILY_STATUS" as const
+                : "SCHEDULING_VISIT" as const;
+  return { stage, status: "need_more_data" as const, nextAction: "continue_application" };
+}
+
 const newLoanOpeningFactKeys = new Set<keyof ApplicationFacts>([
   "fullName", "phone", "citizenship", "residenceRegion", "residenceText", "residenceCategory",
   "vehicleRegistrationCountry", "vehicleRegistrationRegion", "vehicleType", "vehicleMake", "vehicleModel", "vehicleYear", "vehicleValue",
@@ -73,6 +96,13 @@ function opensNewLoanApplication(
 function hasNewLoanOpeningFacts(facts: Partial<ApplicationFacts>): boolean {
   return Object.entries(facts)
     .some(([key, value]) => newLoanOpeningFactKeys.has(key as keyof ApplicationFacts) && value !== undefined);
+}
+
+/** A KB answer can depend on lead facts and the current workflow follow-up.
+ * Only language and transient KB-routing metadata leave that context intact. */
+function hasKnowledgeContextChangingPatch(patch: Partial<ApplicationFacts>): boolean {
+  return Object.entries(patch)
+    .some(([key, value]) => key !== "language" && key !== "knowledgeRequest" && value !== undefined);
 }
 
 @Injectable()
@@ -142,18 +172,13 @@ export class DialogueOrchestratorService {
     const attachments = messages.flatMap((message) => message.attachments);
     const settings = await this.settings.getValues();
     const classifyMoneyClarification = (this.agent as Partial<Pick<AgentTurnService, "classifyPendingMoneyClarification">>).classifyPendingMoneyClarification;
-    const classifiedMoneyClarification = classifyMoneyClarification
-      ? await classifyMoneyClarification.call(this.agent, { text, messages: modelMessages, conversationId: conversation.id, signal: options.signal })
-      : undefined;
-    // Do not let an unavailable/undecided classifier route a bare "нет" to
-    // the KB. This is a deterministic response to the immediately preceding
-    // server confirmation, not a free-form semantic inference.
+    // The currency-confirmation classifier and money normalizer both inspect
+    // only the inbound text plus prior history. Run them together: neither
+    // result changes the other's prompt or validation boundary.
+    const moneyClarificationPromise = classifyMoneyClarification
+      ? classifyMoneyClarification.call(this.agent, { text, messages: modelMessages, conversationId: conversation.id, signal: options.signal })
+      : Promise.resolve(undefined);
     const lastAssistantMessage = [...modelMessages].reverse().find((message) => message.author === "ai")?.body ?? "";
-    const moneyClarification = isClearMoneyConfirmationRejection(lastAssistantMessage, text)
-      && (classifiedMoneyClarification === undefined || classifiedMoneyClarification.decision === "undecided")
-      ? { decision: "reject" as const }
-      : classifiedMoneyClarification;
-    throwIfAborted(options.signal);
     // Money roles and FX must be known before the dialogue model builds its
     // answer. Previously this ran only after `run()` and only when the main
     // model set hasMoney; a newer client message could then cancel the second
@@ -166,10 +191,27 @@ export class DialogueOrchestratorService {
     // amount, still send the reply to RouterAI: the model owns natural-language
     // money understanding, including words, typos, and mixed phrasing.
     const awaitingMoneyField = expectedMoneyFieldFromLastQuestion(modelMessages);
-    const moneyMentioned = detectMoneyMentions(text).length > 0 || awaitingMoneyField !== undefined || isRequestedAmountCorrectionText(text) || currencyOnlyForeignMoneyFromHistory(text, modelMessages).length > 0 || moneyClarification?.decision === "accept";
-    const modelNormalizedMoney = moneyMentioned && this.agent.normalizeMoney
-      ? await this.agent.normalizeMoney({ text, facts: factsBeforeTurn, messages: modelMessages, conversationId: conversation.id, signal: options.signal })
-      : [];
+    const moneyMentionedWithoutClassifier = detectMoneyMentions(text).length > 0 || awaitingMoneyField !== undefined || isRequestedAmountCorrectionText(text) || currencyOnlyForeignMoneyFromHistory(text, modelMessages).length > 0;
+    const normalizeMoneyPromise = moneyMentionedWithoutClassifier && this.agent.normalizeMoney
+      ? this.agent.normalizeMoney({ text, facts: factsBeforeTurn, messages: modelMessages, conversationId: conversation.id, signal: options.signal })
+      : Promise.resolve<NormalizedMoneyValue[]>([]);
+    const [classifiedMoneyClarification, earlyNormalizedMoney] = await Promise.all([moneyClarificationPromise, normalizeMoneyPromise]);
+    // Do not let an unavailable/undecided classifier route a bare "нет" to
+    // the KB. This is a deterministic response to the immediately preceding
+    // server confirmation, not a free-form semantic inference.
+    const moneyClarification = isClearMoneyConfirmationRejection(lastAssistantMessage, text)
+      && (classifiedMoneyClarification === undefined || classifiedMoneyClarification.decision === "undecided")
+      ? { decision: "reject" as const }
+      : classifiedMoneyClarification;
+    throwIfAborted(options.signal);
+    // A classifier-only confirmation is rare (for example, a bare currency
+    // name with no recognised prior amount). Preserve the former behaviour by
+    // starting normalization after classification only in that narrow case.
+    const modelNormalizedMoney = moneyMentionedWithoutClassifier
+      ? earlyNormalizedMoney
+      : moneyClarification?.decision === "accept" && this.agent.normalizeMoney
+        ? await this.agent.normalizeMoney({ text, facts: factsBeforeTurn, messages: modelMessages, conversationId: conversation.id, signal: options.signal })
+        : [];
     throwIfAborted(options.signal);
     // The semantic normalizer owns flexible role interpretation. The
     // deterministic parser is deliberately a narrow supplemental path for an
@@ -208,6 +250,27 @@ export class DialogueOrchestratorService {
         conversions: currency.conversions
       }
     });
+    // Knowledge resolution is independent of the universal extractor when
+    // the client turn does not alter the lead card. Start with the already
+    // normalized server facts so routine questions do not wait for two model
+    // round trips. After extraction we retain this result only when its facts
+    // and workflow context are still current; otherwise the established
+    // exact KB path runs below.
+    const repeatedWorkflowReply = isAlreadyProvidedWorkflowReply({ text, currentTurnMessages, messages: modelMessages });
+    const speculativeKnowledgePromise = repeatedWorkflowReply
+      ? undefined
+      : this.agent.answerWithKnowledge?.({
+        conversationId: conversation.id,
+        messages: modelMessages,
+        facts: normalizedFacts,
+        settings,
+        text,
+        currentTurnMessages,
+        currentTime: lastMessage.timestamp,
+        workflowFollowUp: nextRequiredStageQuestion(normalizedFacts, deriveStageCompletion(normalizedFacts, settings)) || "",
+        isFirstClientMessage: conversation.messages.length === 0,
+        signal: options.signal
+      });
     let turn = await this.agent.run({
       conversationId: conversation.id,
       messages: modelMessages,
@@ -222,14 +285,42 @@ export class DialogueOrchestratorService {
       attachments,
       signal: options.signal
     });
+    // A short "I already wrote it" after a collection question is not a
+    // request about a previous contract. Do not let either model reinterpret
+    // it as one. If an earlier value is actually recoverable, the main agent
+    // has already placed it in the patch and the normal flow continues.
+    const { knowledgeRequest: _recoveryKnowledgeRequest, existingContractQuestion: _recoveryExistingContractQuestion, existingContractPaymentMessage: _recoveryExistingContractPaymentMessage, ...recoveryPatch } = turn.result?.leadCardPatch ?? {};
+    const recoveryFacts = { ...normalizedFacts, ...recoveryPatch };
+    const recoveryQuestion = repeatedWorkflowReply
+      ? nextRequiredStageQuestion(recoveryFacts, deriveStageCompletion(recoveryFacts, settings))
+      : undefined;
+    const repeatedWorkflowRecovery = recoveryQuestion
+      ? `К сожалению, я не смогла распознать эту информацию. Пожалуйста, продублируйте её.\n\n${recoveryQuestion}`
+      : undefined;
+    if (repeatedWorkflowRecovery) {
+      const dialogueState = workflowContinuationState(recoveryFacts, settings);
+      turn = {
+        ...turn,
+        reply: repeatedWorkflowRecovery,
+        ...(turn.result ? {
+          result: {
+            ...turn.result,
+            reply: repeatedWorkflowRecovery,
+            leadCardPatch: recoveryPatch,
+            dialogueState
+          }
+        } : {})
+      };
+    }
     // Terminal refusals and complete visit confirmations are closed
     // server-owned replies. The knowledge model must not replace them with
     // a repeated stage question or an unrelated FAQ answer.
     const existingContractServiceRequest = isExistingContractServiceRequest(text);
     const existingContractRedirect = existingContractServiceRequest
-      || turn.result?.dialogueState.status === "redirect_existing_contract";
+      || (!repeatedWorkflowRecovery && turn.result?.dialogueState.status === "redirect_existing_contract");
     let serverOwnsReply = turn.result?.dialogueState.status === "refuse"
       || existingContractRedirect
+      || Boolean(repeatedWorkflowRecovery)
       || Boolean(
         turn.result?.leadCardPatch.visitDate
         && turn.result?.leadCardPatch.visitTime
@@ -312,8 +403,14 @@ export class DialogueOrchestratorService {
       // must never truncate a multi-question client message before knowledge
       // retrieval: the knowledge agent needs every question in this turn.
       const clientQuestion = deferredMaximumLoanAnswer ? "сколько максимум дадите" : text;
+      const canUseSpeculativeKnowledge = !maximumLoanQuestion
+        && !deferredMaximumLoanAnswer
+        && !hasKnowledgeContextChangingPatch(turnFacts)
+        && !(conversation.messages.length === 0 && opensNewLoanApplication(text, turnFacts, currencyFactsForTurn, attachments.length > 0));
       const knowledge = serverOwnsReply
         ? undefined
+        : canUseSpeculativeKnowledge
+          ? await speculativeKnowledgePromise
         : await this.agent.answerWithKnowledge?.({
           conversationId: conversation.id,
           messages: modelMessages,

@@ -98,17 +98,26 @@ const scenarios = [
 
 await assertApiHealth();
 const results = [];
+const latencySamples = [];
 
 for (const scenario of scenarios) {
-  const conversation = await postJson("/conversations/web-test", {
+  const { data: conversation } = await postJson("/conversations/web-test", {
     externalContactId: `${runId}-${scenario.id}`,
     externalConversationId: `${runId}-${scenario.id}`
   });
   let lastResponse;
-  for (const message of scenario.steps) {
-    lastResponse = await postJson("/messages/test-chat", {
+  for (const [stepIndex, message] of scenario.steps.entries()) {
+    const timedResponse = await postJson("/messages/test-chat", {
       conversationId: conversation.id,
       message
+    });
+    lastResponse = timedResponse.data;
+    latencySamples.push({
+      scenarioId: scenario.id,
+      step: stepIndex + 1,
+      durationMs: timedResponse.durationMs,
+      model: lastResponse.routerAiModel ?? "unknown",
+      promptVersion: lastResponse.promptVersion ?? "unknown"
     });
     assertRouterAiResponse(scenario.id, lastResponse);
   }
@@ -131,10 +140,16 @@ for (const scenario of scenarios) {
     promptVersion: lastResponse.promptVersion,
     reply: lastResponse.reply
   });
-  console.log(`PASS ${scenario.id} model=${lastResponse.routerAiModel}`);
+  console.log(`PASS ${scenario.id} model=${lastResponse.routerAiModel} durationMs=${latencySamples.at(-1).durationMs}`);
 }
 
-console.log(JSON.stringify({ apiUrl, runId, passed: results.length, results }, null, 2));
+console.log(JSON.stringify({
+  apiUrl,
+  runId,
+  passed: results.length,
+  latency: summarizeLatency(latencySamples),
+  results
+}, null, 2));
 
 async function assertApiHealth() {
   const health = await getJson("/health");
@@ -150,8 +165,8 @@ function assertRouterAiResponse(scenarioId, response) {
   if (!response.routerAiModel || /fallback|local/i.test(response.routerAiModel)) {
     throw new Error(`${scenarioId}: expected RouterAI model, got ${response.routerAiModel}`);
   }
-  if (!["stage1-routerai-v1", "stage1-response-plan-v1"].includes(response.promptVersion)) {
-    throw new Error(`${scenarioId}: expected stage1-routerai-v1 or stage1-response-plan-v1, got ${response.promptVersion}`);
+  if (!/^single-agent-v3(?:-|\+)/.test(response.promptVersion ?? "")) {
+    throw new Error(`${scenarioId}: expected a single-agent-v3 response, got ${response.promptVersion}`);
   }
 }
 
@@ -164,6 +179,7 @@ async function getJson(path) {
 }
 
 async function postJson(path, body) {
+  const startedAt = Date.now();
   const response = await fetch(`${apiUrl}${path}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -172,7 +188,25 @@ async function postJson(path, body) {
   if (!response.ok) {
     throw new Error(`POST ${path} failed with ${response.status}: ${await response.text()}`);
   }
-  return response.json();
+  return { data: await response.json(), durationMs: Date.now() - startedAt };
+}
+
+function summarizeLatency(samples) {
+  const byModel = Object.groupBy(samples, ({ model }) => model);
+  return Object.fromEntries(Object.entries(byModel).map(([model, modelSamples]) => {
+    const values = modelSamples.map(({ durationMs }) => durationMs).sort((left, right) => left - right);
+    return [model, {
+      turns: values.length,
+      p50Ms: percentile(values, 0.5),
+      p95Ms: percentile(values, 0.95),
+      maxMs: values.at(-1) ?? 0
+    }];
+  }));
+}
+
+function percentile(sortedValues, quantile) {
+  if (sortedValues.length === 0) return 0;
+  return sortedValues[Math.min(sortedValues.length - 1, Math.ceil(sortedValues.length * quantile) - 1)] ?? 0;
 }
 
 function normalizeReply(value) {
