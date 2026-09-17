@@ -41,6 +41,21 @@ const requestedCuePattern = /(нуж\p{L}*|надо|сумм|займ|получ
 const vehicleCuePattern = /(?:стоит|стои(?=[\s,.!?]|$)|сто[ий]мост|цена|оцен|машина|авто|автомобил|рыночн)/i;
 const requestedCorrectionPattern = /(?:уже|теперь|нет|не\s+так|точнее|лучше|надо\s+больше|нужно\s+больше|хочу\s+больше)[^.!?]{0,40}(?:нужн|надо|сумм|займ|получить|хочу)?/i;
 const vehicleCorrectionPattern = /(?:уже|теперь|нет|не\s+так|точнее|ошиб(?:ся|лась)|перепутал(?:ся|ась)?|сто(?:ит|[ий]мост)|цен[ауы])[^.!?]{0,40}(?:сто(?:ит|[ий]мост)|цен[ауы]|оцен|доллар|евро|тенге|руб)/i;
+const writtenMillionPattern = /(?<!\p{L})(один|одна|два|две|три|четыре|пять|шесть|семь|восемь|девять|десять)\s+(миллион(?:а|ов)?|млн)(?!\p{L})/giu;
+const writtenMillionValues: Record<string, number> = {
+  один: 1,
+  одна: 1,
+  два: 2,
+  две: 2,
+  три: 3,
+  четыре: 4,
+  пять: 5,
+  шесть: 6,
+  семь: 7,
+  восемь: 8,
+  девять: 9,
+  десять: 10
+};
 
 export function resolveMoneyFacts(input: {
   text?: string;
@@ -129,6 +144,33 @@ export function detectMoneyMentions(text: string): MoneyMention[] {
       currency,
       roleCandidate: role,
       confidence,
+      start: match.index,
+      end: match.index + raw.length
+    });
+  }
+
+  // The semantic normalizer remains responsible for broad free-form number
+  // understanding. This is a deliberately narrow safety net for an explicit
+  // spelled-out number plus a million unit, where a missed value would block
+  // pricing entirely (for example, «машина стоит пять миллионов»).
+  for (const match of source.matchAll(writtenMillionPattern)) {
+    const raw = match[0]?.trim();
+    const numeral = match[1]?.toLocaleLowerCase("ru-RU");
+    if (!raw || !numeral || match.index === undefined) continue;
+    const multiplier = writtenMillionValues[numeral];
+    if (multiplier === undefined) continue;
+    const contextBefore = source.slice(Math.max(0, match.index - 32), match.index);
+    const contextAfter = source.slice(match.index + raw.length, Math.min(source.length, match.index + raw.length + 32));
+    const role = inferMoneyRoleCandidate(contextBefore, contextAfter);
+    // Never turn an unbound written number into a lead-card value.
+    if (role === "unknown") continue;
+    mentions.push({
+      sourceText: raw,
+      amount: multiplier * 1_000_000,
+      normalizedAmount: multiplier * 1_000_000,
+      currency: null,
+      roleCandidate: role,
+      confidence: 0.96,
       start: match.index,
       end: match.index + raw.length
     });
@@ -379,6 +421,10 @@ function getMoneyContext(
     (currentFacts.requestedAmount !== undefined && requestedCuePattern.test(normalized) && !vehicleCuePattern.test(normalized));
   const allowVehicleRevision =
     vehicleCorrectionPattern.test(normalized) ||
+    // «Оказывается» is an explicit self-correction in chat. Keep it tied to
+    // a vehicle-price cue so a vague change of mind about the loan amount
+    // cannot overwrite the collateral value.
+    (currentFacts.vehicleValue !== undefined && /оказывается/iu.test(normalized) && vehicleCuePattern.test(normalized)) ||
     (currentFacts.vehicleValue !== undefined && vehicleCuePattern.test(normalized) && !requestedCuePattern.test(normalized));
   return { pendingRole, allowRequestedRevision, allowVehicleRevision };
 }

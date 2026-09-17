@@ -47,6 +47,18 @@ describe("money normalization", () => {
     ]);
   });
 
+  it("recognizes a written vehicle price in a correction message", () => {
+    const result = resolveMoneyFacts({
+      text: "мне надо вообще чем больше тем лучше, а машина стоит оказывается пять миллионов",
+      currentFacts: { vehicleValue: 1_000_000 }
+    });
+
+    expect(result.vehicleValue).toBe(5_000_000);
+    expect(result.mentions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ sourceText: "пять миллионов", normalizedAmount: 5_000_000, roleCandidate: "vehicleValue" })
+    ]));
+  });
+
   it("keeps the multiplier and currency in a compact foreign amount", () => {
     expect(detectMoneyMentions("Перепутал цену, мне нужно 10 к долларов")).toEqual(expect.arrayContaining([
       expect.objectContaining({ sourceText: "10 к долларов", normalizedAmount: 10_000, currency: "USD" })

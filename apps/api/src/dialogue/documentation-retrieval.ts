@@ -28,7 +28,10 @@ export function isMaximumLoanKnowledgeQuestion(text: string): boolean {
   // for an amount again. Keeping this narrow avoids interpreting an ordinary
   // phrase such as «самая большая машина» as a loan question.
   const shortMaximumPreference = /^(?:сам(?:ая|ую)\s+больш\p{L}*(?:\s+сумм\p{L}*)?|наибольш\p{L}*(?:\s+сумм\p{L}*)?|больш(?:е|его)\s+всего|по\s+максимум\p{L}*|максимальн\p{L}*(?:\s+сумм\p{L}*)?)[.!\s]*$/iu.test(normalized);
-  return explicitLimitQuestion || shortMaximumPreference;
+  // Conversational response to the amount stage: the client asks for the
+  // highest available loan without using an interrogative form.
+  const conversationalMaximumPreference = /(?:^|[,.!?]\s*|\s)(?:мне\s+)?(?:надо|нужно|хочу)?\s*(?:вообще\s+)?чем\s+больше\s+тем\s+лучше/iu.test(normalized);
+  return explicitLimitQuestion || shortMaximumPreference || conversationalMaximumPreference;
 }
 
 const requiredDocumentKeys = ["id_front", "id_back", "vehicle_registration_front", "vehicle_registration_back"] as const;

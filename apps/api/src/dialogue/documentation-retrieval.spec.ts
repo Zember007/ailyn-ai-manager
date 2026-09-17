@@ -143,6 +143,8 @@ describe("selectRelevantDocumentation", () => {
     "самую большую",
     "наибольшая",
     "больше всего",
+    "мне надо вообще чем больше тем лучше",
+    "мне надо вообще чем больше тем лучше, а машина стоит оказывается пять миллионов",
     "по максимуму"
   ])("routes a maximum-loan wording to the placeholder FAQ: %s", (currentMessage) => {
     const result = selectRelevantDocumentation({ facts: {}, currentMessage, messages: [] });

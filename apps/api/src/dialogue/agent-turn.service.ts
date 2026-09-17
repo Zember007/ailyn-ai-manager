@@ -28,6 +28,7 @@ const DEFAULT_OFFICE_ADDRESS = "Б. Молодой Гвардии, 22, Бишк�
 const DEFAULT_TWO_GIS_URL = "https://go.2gis.com/Y34m4";
 const DEFAULT_GOOGLE_MAPS_URL = "https://maps.app.goo.gl/9xiWLVvdyRgn3Sx4A";
 const UNKNOWN_KNOWLEDGE_ANSWER = "К сожалению, у меня нет достоверной информации по этому вопросу. Когда Вы приедете, сотрудники с удовольствием подскажут Вам.";
+const WORKFLOW_STAGE_RESPONSE_SENTINEL = "__WORKFLOW_STAGE_RESPONSE__";
 // JSON mode validates only that the response is an object, so `{}` is valid
 // there. The KB contract must instead be enforced by the provider before the
 // response reaches the Zod boundary.
@@ -230,29 +231,18 @@ export class AgentTurnService {
   }): Promise<{ reply: string; answerFound: boolean; shouldUseReply?: boolean; requestScope?: "new_loan" | "not_new_loan" | "unknown"; model: string } | undefined> {
     if (!this.client.isConfigured()) return undefined;
     const currentMessage = input.text ?? "";
-    // «Я уже писал» is a reference to the unanswered collection prompt, not
-    // a factual question and never an existing-contract service request.
-    // This early return also prevents speculative KB prefetch from turning a
-    // missing application fact into a semantically adjacent FAQ response.
-    if (isAlreadyProvidedWorkflowReply(input)) {
-      return { reply: "", answerFound: false, shouldUseReply: false, model: "server-workflow-repeat" };
-    }
-    // A pure choice or value for the active workflow stage belongs to the
-    // extractor and deterministic workflow only. In particular, selecting
-    // "без изъятия" must not let the KB invent a guarantor explanation.
-    if (isResponseToLastWorkflowQuestion(input)) {
-      return { reply: "", answerFound: false, shouldUseReply: false, model: "server-workflow-stage" };
-    }
+    // The KB request is intentionally made on every inbound turn, including
+    // a response to the active workflow stage. It returns its own workflow
+    // sentinel when no approved answer applies; delivery still remains under
+    // the deterministic stage and orchestration guards below.
     const asksAboutGuarantor = /поручител\p{L}*/iu.test(currentMessage)
       && /(?:нуж\p{L}*|надо|требу\p{L}*|обязател\p{L}*)/iu.test(currentMessage);
-    if (asksAboutGuarantor && input.facts.requestedProgram && input.facts.residenceCategory) {
+    const guarantorAnswer = asksAboutGuarantor && input.facts.requestedProgram && input.facts.residenceCategory
+      ? (() => {
       const required = requiresGuarantorForFacts(input.facts);
-      return {
-        reply: required ? "Да, в Вашем случае потребуется поручитель." : "Нет, в Вашем случае поручитель не требуется.",
-        answerFound: true,
-        model: "server-guarantor-rule"
-      };
-    }
+        return required ? "Да, в Вашем случае потребуется поручитель." : "Нет, в Вашем случае поручитель не требуется.";
+      })()
+      : undefined;
     const model = this.config.routerAiKnowledgeModel ?? "routerai-knowledge-model-not-configured";
     const documentation = selectRelevantDocumentation({
       facts: input.facts,
@@ -365,8 +355,9 @@ export class AgentTurnService {
         throw new Error("Knowledge response references missing or insufficient source keys");
       }
       const ungroundedCreditAnswer = isUngroundedVehicleCreditAnswer(parsed.data.reply, input.text ?? "");
-      const answerFound = !ungroundedCreditAnswer
+      const modelAnswerFound = !ungroundedCreditAnswer
         && (parsed.data.answerFound || (requiredFallbacks.length > 0 && hasSupportedQuestion));
+      const answerFound = modelAnswerFound || guarantorAnswer !== undefined;
       // The complete corpus is available to the KB model on every turn. It,
       // rather than a keyword/retrieval filter, decides which approved rule
       // answers the client's wording. Only live office settings remain
@@ -375,7 +366,7 @@ export class AgentTurnService {
         // The policy is server-approved; keep a model from blending in a
         // semantically nearby but unrelated rule such as the 15-year policy.
         ? contextualPolicy.approvedAnswer
-        : answerFound
+        : modelAnswerFound
           ? removeInternalPricingInstruction(officeLocationResponse ?? ensureGeneralRateCoverage(parsed.data.reply, input.text))
           // A fact supplied for the application is intentionally not a KB
           // answer. Keep it empty so the workflow model remains the sole
@@ -386,12 +377,20 @@ export class AgentTurnService {
       // The maximum range is server-owned, but it is only one answer in a
       // multi-question turn. Keep the canonical range and retain all other
       // independent KB answers (rate, office amenities, vehicle conditions).
-      const replyWithFallbacks = appendKnowledgeFallbacks(knowledgeReply, requiredFallbacks);
+      const replyWithFallbacks = appendKnowledgeFallbacks(knowledgeReply, [
+        ...requiredFallbacks,
+        ...(guarantorAnswer ? [guarantorAnswer] : [])
+      ]);
       const reply = maximumLoanQuestion && maximumLoanTemplate
         ? mergeMaximumLoanTemplateWithOtherAnswers(maximumLoanTemplate, replyWithFallbacks)
         : replyWithFallbacks;
       const explicitQuestion = isExplicitQuestionText(input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "");
-      const shouldUseReply = parsed.data.questionUnderstood === true || explicitQuestion;
+      // This marker is protocol-only: it means that the KB was invoked but
+      // the current message belongs to the workflow. It must never gain
+      // delivery priority merely because a money statement contains «нужно».
+      const isWorkflowStageSentinel = parsed.data.reply.trim() === WORKFLOW_STAGE_RESPONSE_SENTINEL;
+      const shouldUseReply = !isWorkflowStageSentinel
+        && (parsed.data.questionUnderstood === true || explicitQuestion || guarantorAnswer !== undefined);
       await this.logs?.log("dialogue.knowledge-model", "Knowledge model response received", {
         conversationId: input.conversationId,
         metadata: {
@@ -1835,7 +1834,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     : serverWorkflowFollowUp(loanQuestionKind, effectiveFacts, stageCompletion, requestedAmountLimit, workflowSelectedLimitNotice);
   const answerBeforeWorkflow = isLoanRateQuestion(loanQuestionKind)
     ? ""
-    : pauseNotice ?? workflowStageClarification ?? workflowClarificationAnswer ?? mandatoryKnowledgeAnswer ?? contextualAcknowledgement?.text ?? directAnswer ?? removeIncorrectResidenceClarificationProse(
+    : pauseNotice ?? workflowStageClarification ?? workflowClarificationAnswer ?? directAnswer ?? mandatoryKnowledgeAnswer ?? contextualAcknowledgement?.text ?? removeIncorrectResidenceClarificationProse(
       removeForbiddenMetaPhrases(dropUnsupportedFallbackForNonQuestion(replaceUnsupportedFallbackWithApprovedAnswer(guardedModelReply, mandatoryKnowledgeAnswer, input), semanticText)),
       input,
       effectiveFacts
@@ -3769,7 +3768,7 @@ function isExplicitQuestionText(text: string): boolean {
   if (!normalized) return false;
   if (/[?？]/u.test(normalized)) return true;
   if (wordCount(normalized) < 2) return false;
-  return /(?:^|\s)(?:что|сколько|скок(?:а)?|какой|какая|какие|где|когда|как|почему|зачем|можно|нужно|дадите|дадут|есть\s+ли|будет\s+ли|ставк\p{L}*|процент\p{L}*)(?:\s|$|[?？.,!])/iu.test(normalized)
+  return /(?:^|\s)(?:что|сколько|скок(?:а)?|какой|какая|какие|где|когда|как|почему|зачем|можно|нужно\s+ли|дадите|дадут|есть\s+ли|будет\s+ли|ставк\p{L}*|процент\p{L}*)(?:\s|$|[?？.,!])/iu.test(normalized)
     || /(?:у\s+меня|мо[яйеё])[^.!?]{0,80}(?:авто|автомобил|машин|трекер|gps|гпс|датчик)[^.!?]{0,80}(?:слом|авари|не\s+ед|не\s+работ|отвал|поврежд|эвакуатор)/iu.test(normalized)
     || /(?:слом|авари|не\s+ед|не\s+работ|отвал|поврежд|эвакуатор)[^.!?]{0,80}(?:авто|автомобил|машин|трекер|gps|гпс|датчик)/iu.test(normalized);
 }

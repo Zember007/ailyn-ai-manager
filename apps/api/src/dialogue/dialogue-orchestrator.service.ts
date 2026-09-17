@@ -317,14 +317,23 @@ export class DialogueOrchestratorService {
     const existingContractServiceRequest = isExistingContractServiceRequest(text);
     const existingContractRedirect = existingContractServiceRequest
       || (!repeatedWorkflowRecovery && turn.result?.dialogueState.status === "redirect_existing_contract");
+    const confirmedVisitReply = Boolean(
+      turn.result?.leadCardPatch.visitDate
+      && turn.result?.leadCardPatch.visitTime
+      && /записываю\s+вас\s+на/iu.test(turn.reply)
+    );
+    // A confirmed slot remains server-owned only for a pure booking reply.
+    // If the same message has an independent question, preserve both its KB
+    // answer and the booking confirmation.
+    const visitAlsoHasQuestion = confirmedVisitReply && (
+      /[?？]/u.test(text)
+      || Boolean(turn.result?.clientQuestion)
+      || turn.result?.needsKnowledgeLookup === true
+    );
     let serverOwnsReply = turn.result?.dialogueState.status === "refuse"
       || existingContractRedirect
       || Boolean(repeatedWorkflowRecovery)
-      || Boolean(
-        turn.result?.leadCardPatch.visitDate
-        && turn.result?.leadCardPatch.visitTime
-        && /записываю\s+вас\s+на/iu.test(turn.reply)
-      );
+      || (confirmedVisitReply && !visitAlsoHasQuestion);
     // Servicing an existing contract never opens a new-loan workflow. The
     // normalizer may have reconstructed its reply after a model schema error;
     // that fallback can contain a greeting and an unrelated stage question.
@@ -405,7 +414,12 @@ export class DialogueOrchestratorService {
       // missing question mark, or programme-selection heuristics discard an
       // answer that the KB explicitly found. Stage facts are protected by the
       // KB's `answerFound: false` workflow sentinel instead.
-      if (knowledge?.answerFound || knowledge?.shouldUseReply) {
+      // The KB is invoked on every turn, but its workflow sentinel is an
+      // internal protocol result, never client-facing content. Keep this
+      // delivery guard even if a model or adapter incorrectly flags it for
+      // use, so it cannot replace a new-loan workflow reply.
+      const knowledgeIsWorkflowSentinel = knowledge?.reply.trim() === "__WORKFLOW_STAGE_RESPONSE__";
+      if (!knowledgeIsWorkflowSentinel && (knowledge?.answerFound || knowledge?.shouldUseReply)) {
         const standaloneKnowledgeTurn = !newLoanWorkflowStarted;
         suppressFirstContactGreeting = standaloneKnowledgeTurn;
         receivedMaximumLoanTemplate = hasMaximumLoanPlaceholders(knowledge.reply);
@@ -418,7 +432,9 @@ export class DialogueOrchestratorService {
         // may add interest-rate wording.
         const responsePlan = maximumLoanQuestion
           ? stripWorkflowQuestionsFromMaximumAnswer(knowledge.reply)
-          : knowledge.reply;
+          : confirmedVisitReply
+            ? appendWorkflowFollowUp(knowledge.reply, turn.reply)
+            : knowledge.reply;
         // A KB answer supplements an application already in progress. Its
         // own topic (for example, tea or coffee) must not end collection of
         // the next missing fact. Scope can stop the workflow only on the very
