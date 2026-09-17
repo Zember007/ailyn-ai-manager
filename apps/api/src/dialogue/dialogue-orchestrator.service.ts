@@ -98,13 +98,6 @@ function hasNewLoanOpeningFacts(facts: Partial<ApplicationFacts>): boolean {
     .some(([key, value]) => newLoanOpeningFactKeys.has(key as keyof ApplicationFacts) && value !== undefined);
 }
 
-/** A KB answer can depend on lead facts and the current workflow follow-up.
- * Only language and transient KB-routing metadata leave that context intact. */
-function hasKnowledgeContextChangingPatch(patch: Partial<ApplicationFacts>): boolean {
-  return Object.entries(patch)
-    .some(([key, value]) => key !== "language" && key !== "knowledgeRequest" && value !== undefined);
-}
-
 @Injectable()
 export class DialogueOrchestratorService {
   private readonly logger = new Logger(DialogueOrchestratorService.name);
@@ -191,7 +184,8 @@ export class DialogueOrchestratorService {
     // amount, still send the reply to RouterAI: the model owns natural-language
     // money understanding, including words, typos, and mixed phrasing.
     const awaitingMoneyField = expectedMoneyFieldFromLastQuestion(modelMessages);
-    const moneyMentionedWithoutClassifier = detectMoneyMentions(text).length > 0 || awaitingMoneyField !== undefined || isRequestedAmountCorrectionText(text) || currencyOnlyForeignMoneyFromHistory(text, modelMessages).length > 0;
+    const moneyMentionedWithoutClassifier = !isBareVehicleYearReply(modelMessages, text)
+      && (detectMoneyMentions(text).length > 0 || awaitingMoneyField !== undefined || isRequestedAmountCorrectionText(text) || currencyOnlyForeignMoneyFromHistory(text, modelMessages).length > 0);
     const normalizeMoneyPromise = moneyMentionedWithoutClassifier && this.agent.normalizeMoney
       ? this.agent.normalizeMoney({ text, facts: factsBeforeTurn, messages: modelMessages, conversationId: conversation.id, signal: options.signal })
       : Promise.resolve<NormalizedMoneyValue[]>([]);
@@ -253,9 +247,9 @@ export class DialogueOrchestratorService {
     // Knowledge resolution is independent of the universal extractor when
     // the client turn does not alter the lead card. Start with the already
     // normalized server facts so routine questions do not wait for two model
-    // round trips. After extraction we retain this result only when its facts
-    // and workflow context are still current; otherwise the established
-    // exact KB path runs below.
+    // round trips. A turn has a strict one-KB-call budget: the first response
+    // is used even when this turn updates the card, rather than launching a
+    // second request after reconciliation.
     const repeatedWorkflowReply = isAlreadyProvidedWorkflowReply({ text, currentTurnMessages, messages: modelMessages });
     const speculativeKnowledgePromise = repeatedWorkflowReply
       ? undefined
@@ -271,6 +265,11 @@ export class DialogueOrchestratorService {
         isFirstClientMessage: conversation.messages.length === 0,
         signal: options.signal
       });
+    // Keep the speculative rejection observed so a request skipped because
+    // the server owns the reply cannot become unhandled.
+    void speculativeKnowledgePromise?.catch((error: unknown) => {
+      if (!options.signal?.aborted) this.logger.warn(`Speculative knowledge request failed: ${formatTimingError(error)}`);
+    });
     let turn = await this.agent.run({
       conversationId: conversation.id,
       messages: modelMessages,
@@ -398,34 +397,9 @@ export class DialogueOrchestratorService {
         // A completed application has no further collection action. The
         // knowledge contract still receives a string in that terminal case.
         || "";
-      // A branch classifier may isolate one question while interpreting an
-      // active stage response. That extraction is useful for the stage, but
-      // must never truncate a multi-question client message before knowledge
-      // retrieval: the knowledge agent needs every question in this turn.
-      const clientQuestion = deferredMaximumLoanAnswer ? "сколько максимум дадите" : text;
-      const canUseSpeculativeKnowledge = !maximumLoanQuestion
-        && !deferredMaximumLoanAnswer
-        && !hasKnowledgeContextChangingPatch(turnFacts)
-        && !(conversation.messages.length === 0 && opensNewLoanApplication(text, turnFacts, currencyFactsForTurn, attachments.length > 0));
       const knowledge = serverOwnsReply
         ? undefined
-        : canUseSpeculativeKnowledge
-          ? await speculativeKnowledgePromise
-        : await this.agent.answerWithKnowledge?.({
-          conversationId: conversation.id,
-          messages: modelMessages,
-          // The KB must see facts reconciled from this very client message:
-          // maximum-loan placeholders depend on the just-provided vehicle
-          // value and residence, not only on the persisted pre-turn card.
-          facts: factsForWorkflow,
-          settings,
-          text: clientQuestion,
-          currentTurnMessages,
-          currentTime: lastMessage.timestamp,
-          workflowFollowUp,
-          isFirstClientMessage: conversation.messages.length === 0,
-          signal: options.signal
-        });
+        : await speculativeKnowledgePromise;
       // The KB owns the decision whether the client asked a meaningful
       // question. Do not let the workflow model's stage classification, a
       // missing question mark, or programme-selection heuristics discard an
@@ -1022,13 +996,20 @@ function expectedMoneyFieldFromLastQuestion(messages: Stage1Message[]): "vehicle
 }
 
 function pendingMoneyFieldFromHistory(messages: Stage1Message[], startIndex: number): "vehicleValue" | "requestedAmount" | undefined {
-  for (let index = startIndex; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (message?.author !== "ai") continue;
-    if (/(?:какая\s+)?сумм\p{L}*\s+займ/iu.test(message.body)) return "requestedAmount";
-    if (/(?:ориентировочн\p{L}*\s+)?стоимост\p{L}*\s+автомобил/iu.test(message.body)) return "vehicleValue";
-  }
+  const message = messages[startIndex];
+  if (message?.author !== "ai") return undefined;
+  if (/(?:какая\s+)?сумм\p{L}*\s+займ/iu.test(message.body)) return "requestedAmount";
+  if (/(?:ориентировочн\p{L}*\s+)?стоимост\p{L}*\s+автомобил/iu.test(message.body)) return "vehicleValue";
   return undefined;
+}
+
+/** A bare number is a year only when it answers the immediately preceding
+ * vehicle-year question. This prevents 2020 / 22 год from invoking the money
+ * model merely because an older assistant message mentioned an amount. */
+function isBareVehicleYearReply(messages: Stage1Message[], text: string): boolean {
+  const lastAssistantMessage = [...messages].reverse().find((message) => message.author === "ai")?.body ?? "";
+  if (!/(?:год\s+выпуска|какого\s+года\s+(?:ваш(?:а|его)?\s*)?(?:автомобил|машин|авто))/iu.test(lastAssistantMessage)) return false;
+  return /^(?:(?:ладно|тогда|ну|ок(?:ей)?)\s*,?\s*)?(?:год(?:а)?\s*)?(?:(?:19|20)\d{2}|\d{2})(?:\s*(?:г(?:од(?:а)?)?\.?)?)?[.!]?$/iu.test(text.trim());
 }
 
 function confirmedForeignMoneyFromHistory(text: string, messages: Stage1Message[]): NormalizedMoneyValue[] {

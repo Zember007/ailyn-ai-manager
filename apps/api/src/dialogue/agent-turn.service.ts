@@ -1343,12 +1343,9 @@ function explicitlyMentionsCurrency(text: string | undefined, currency: Exclude<
 function pendingMoneyFieldFromHistory(messages: Stage1Message[]): "vehicleValue" | "requestedAmount" | undefined {
   const lastAssistantIndex = [...messages].map((message) => message.author).lastIndexOf("ai");
   if (lastAssistantIndex < 0) return undefined;
-  for (let index = lastAssistantIndex; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (message?.author !== "ai") continue;
-    if (/(?:какая\s+)?сумм\p{L}*\s+займ/iu.test(message.body)) return "requestedAmount";
-    if (/(?:ориентировочн\p{L}*\s+)?стоимост\p{L}*\s+автомобил/iu.test(message.body)) return "vehicleValue";
-  }
+  const message = messages[lastAssistantIndex];
+  if (/(?:какая\s+)?сумм\p{L}*\s+займ/iu.test(message.body)) return "requestedAmount";
+  if (/(?:ориентировочн\p{L}*\s+)?стоимост\p{L}*\s+автомобил/iu.test(message.body)) return "vehicleValue";
   return undefined;
 }
 
@@ -3510,13 +3507,15 @@ function vehicleYearCorrectionPatch(lastAssistantReply: string, text: string | u
   return vehicleYear === undefined ? {} : { vehicleYear, reportedInvalidVehicleYear: null };
 }
 
-/** Extract a four-digit year only while the immediately preceding server
+/** Extract a full or short year only while the immediately preceding server
  * question explicitly asks for the vehicle's year of manufacture. */
 function vehicleYearAnswerPatch(lastAssistantReply: string, text: string | undefined): Partial<ApplicationFacts> {
   if (!/(?:год\s+выпуска|какого\s+года\s+(?:ваш(?:а|его)?\s*)?(?:автомобил|машин|авто))/iu.test(lastAssistantReply)) return {};
   const reply = text?.trim() ?? "";
   const fullYear = reply.match(/^(?:год(?:а)?\s*)?((?:19|20)\d{2})(?:\s*(?:г(?:од(?:а)?)?\.?)?)?[.!]?$/iu)?.[1];
-  return fullYear ? { vehicleYear: Number(fullYear), reportedInvalidVehicleYear: null } : {};
+  const shortYear = reply.match(/^(?:год(?:а)?\s*)?(\d{2})(?:\s*(?:г(?:од(?:а)?)?\.?)?)?[.!]?$/iu)?.[1];
+  const vehicleYear = fullYear ? Number(fullYear) : shortYear ? 2000 + Number(shortYear) : undefined;
+  return vehicleYear !== undefined ? { vehicleYear, reportedInvalidVehicleYear: null } : {};
 }
 
 /** A deterministic safety net for the named alternative after its semantic
@@ -3710,7 +3709,7 @@ function requiresKnowledgeAnswer(input: Pick<AgentTurnInput, "text" | "currentTu
 function isLikelyKnowledgeQuestion(text: string): boolean {
   if (/[?？]/u.test(text)) return true;
   if (wordCount(text) < 2) return false;
-  return /^(?:(?:(?:а|и|ну)\s+)?(?:есть|можно|сколько|какой|какая|какие|где|когда|как|работает|ставите|нужн(?:о|а|ы)?|дадите|оформить|оформлю|приеду)(?=\s|$)|(?:так\s+)?что\s+делать(?:\s+дальше)?|(?:авто|машин).{0,40}(?:кредит|залоге|арест|ограничен)|(?:датчик|gps|гпс|трекер|парковк|стоянк|вещ|багаж)|(?:(?:а|и|ну|с)\s+)?(?:кофе|чай|wi-?fi|туалет|соб[ао](?:а)?к\p{L}*|животн\p{L}*).{0,60}(?:есть|можно\p{L}*|пуска\p{L}*|разреш\p{L}*))/iu.test(text.trim());
+  return /(?:^|[.!;]\s*|\s+(?:а|и|ну)\s+)(?:(?:(?:а|и|ну)\s+)?(?:есть|можно|сколько|какой|какая|какие|где|когда|как|работает|ставите|нужн(?:о|а|ы)?|дадите|оформить|оформлю|приеду)(?=\s|$)|(?:так\s+)?что\s+делать(?:\s+дальше)?|(?:авто|машин).{0,40}(?:кредит|залоге|арест|ограничен)|(?:датчик|gps|гпс|трекер|парковк|стоянк|вещ|багаж)|(?:(?:а|и|ну|с)\s+)?(?:кофе|чай|wi-?fi|туалет|соб[ао](?:а)?к\p{L}*|животн\p{L}*).{0,60}(?:есть|можно\p{L}*|пуска\p{L}*|разреш\p{L}*))/iu.test(text.trim());
 }
 
 /** A policy candidate is deliberately narrow: the model decides whether the

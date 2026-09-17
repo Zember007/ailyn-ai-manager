@@ -413,6 +413,26 @@ describe("single-agent dialogue", () => {
     expect(output.result?.leadCardPatch.vehicleYear).toBeUndefined();
   });
 
+  it.each([
+    ["22", 2022],
+    ["22 год", 2022],
+    ["2020", 2020]
+  ])("accepts the terse vehicle-year reply %s as %d", async (text, vehicleYear) => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult,
+      reply: "Приняла.",
+      leadCardPatch: {}
+    }) } }] }) } as any;
+
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "Подскажите, пожалуйста, год выпуска автомобиля.", createdAt: "now" } as any],
+      facts: { vehicleModel: "Camry", vehicleValue: 1_500_000 } as any,
+      settings: {}, text, attachments: []
+    });
+
+    expect(output.result?.leadCardPatch).toMatchObject({ vehicleYear, reportedInvalidVehicleYear: null });
+  });
+
   it("answers a typo-tolerant non-owner disclosure with the approved UNA-registration FAQ", async () => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
       ...validResult,
@@ -746,6 +766,23 @@ describe("single-agent dialogue", () => {
     expect(output?.reply).toContain("ставка определяется индивидуально");
     expect(output?.reply).toContain("ставка составляет 2,4% в месяц");
     expect(output?.reply).toContain("130 сом в сутки");
+  });
+
+  it("sends a rate question in the same message as a residence answer to knowledge", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      reply: "По программе без изъятия ставка определяется индивидуально после осмотра автомобиля. По программе со стоянкой ставка составляет 2,4% в месяц.",
+      answerFound: true
+    }) } }] }) } as any;
+
+    const output = await new AgentTurnService(client).answerWithKnowledge({
+      messages: [{ author: "ai", body: "Подскажите, пожалуйста, Вашу прописку — Бишкек, Чуйская область или другой регион Кыргызстана.", createdAt: "now" } as any],
+      facts: {}, settings: {}, text: "Я прописан в Токмоке А какой у вас процент", workflowFollowUp: ""
+    });
+
+    expect(client.createChatCompletion).toHaveBeenCalledOnce();
+    expect(output?.answerFound).toBe(true);
+    expect(output?.reply).toContain("ставка определяется индивидуально");
+    expect(output?.reply).toContain("ставка составляет 2,4% в месяц");
   });
 
   it("never exposes internal publicMax instructions from a rate knowledge response", async () => {

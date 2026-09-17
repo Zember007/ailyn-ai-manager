@@ -174,4 +174,69 @@ describe("DialogueOrchestratorService timing logs", () => {
 
     expect(agent.answerWithKnowledge).toHaveBeenCalledOnce();
   });
+
+  it("does not run the money normalizer for a bare year after the active year question", async () => {
+    const application = { id: "application-1", facts: {}, contactId: "contact-1", stage: "COLLECTING_VEHICLE", status: "need_more_data" } as any;
+    const conversation = {
+      id: "conversation-1", channel: "web-test", application,
+      messages: [
+        { author: "ai", body: "Какая сумма займа Вам необходима?", createdAt: "earlier" },
+        { author: "ai", body: "2028 год ещё не наступил. Уточните, пожалуйста, верный год выпуска автомобиля.", createdAt: "now" }
+      ]
+    } as any;
+    const store = {
+      getOrCreateConversation: vi.fn().mockResolvedValue({ conversation, application }),
+      addMessage: vi.fn().mockResolvedValue({}), updateFacts: vi.fn().mockResolvedValue([]), saveAgentState: vi.fn(),
+      getApplication: vi.fn().mockResolvedValue(application), getConversation: vi.fn().mockResolvedValue(conversation),
+      addAttachment: vi.fn(), createManagerNotification: vi.fn()
+    } as any;
+    const agent = {
+      normalizeMoney: vi.fn().mockResolvedValue([]),
+      run: vi.fn().mockResolvedValue({
+        result: {
+          reply: "Вас интересует займ без изъятия автомобиля или с постановкой автомобиля на охраняемую стоянку?", hasMoney: false, needsKnowledgeLookup: false, language: "ru", intent: "new_loan", loanQuestionKind: "none",
+          leadCardPatch: { vehicleYear: 2020 }, cardSummary: "", dialogueState: { stage: "ELIGIBILITY_CHECK", status: "need_more_data", nextAction: "continue" },
+          targetEvent: null, managerUpdate: { kind: "none", changedFields: [] }, attachments: []
+        }, reply: "Вас интересует займ без изъятия автомобиля или с постановкой автомобиля на охраняемую стоянку?", model: "router-fast-model", promptVersion: "single-agent-v3"
+      })
+    } as any;
+    const service = new DialogueOrchestratorService(agent, store, { getValues: vi.fn().mockResolvedValue({}) } as any, { log: vi.fn().mockResolvedValue(undefined) } as any);
+
+    await service.receiveBatch([{
+      externalMessageId: "message-1", externalContactId: "contact-1", channel: "web-test", text: "2020", attachments: [], timestamp: new Date()
+    }]);
+
+    expect(agent.normalizeMoney).not.toHaveBeenCalled();
+  });
+
+  it("never invokes knowledge twice when this turn changes lead facts", async () => {
+    const application = { id: "application-1", facts: { reportedInvalidVehicleYear: 2028 }, contactId: "contact-1", stage: "COLLECTING_VEHICLE", status: "need_more_data" } as any;
+    const conversation = {
+      id: "conversation-1", channel: "web-test", application,
+      messages: [{ author: "ai", body: "2028 год ещё не наступил. Уточните, пожалуйста, верный год выпуска автомобиля.", createdAt: "now" }]
+    } as any;
+    const store = {
+      getOrCreateConversation: vi.fn().mockResolvedValue({ conversation, application }),
+      addMessage: vi.fn().mockResolvedValue({}), updateFacts: vi.fn().mockResolvedValue([]), saveAgentState: vi.fn(),
+      getApplication: vi.fn().mockResolvedValue(application), getConversation: vi.fn().mockResolvedValue(conversation),
+      addAttachment: vi.fn(), createManagerNotification: vi.fn()
+    } as any;
+    const agent = {
+      run: vi.fn().mockResolvedValue({
+        result: {
+          reply: "Вас интересует займ без изъятия автомобиля или с постановкой автомобиля на охраняемую стоянку?", hasMoney: false, needsKnowledgeLookup: false, language: "ru", intent: "new_loan", loanQuestionKind: "none",
+          leadCardPatch: { vehicleYear: 2020, reportedInvalidVehicleYear: null }, cardSummary: "", dialogueState: { stage: "ELIGIBILITY_CHECK", status: "need_more_data", nextAction: "continue" },
+          targetEvent: null, managerUpdate: { kind: "none", changedFields: [] }, attachments: []
+        }, reply: "Вас интересует займ без изъятия автомобиля или с постановкой автомобиля на охраняемую стоянку?", model: "router-fast-model", promptVersion: "single-agent-v3"
+      }),
+      answerWithKnowledge: vi.fn().mockResolvedValue({ reply: "", answerFound: false, model: "knowledge-model" })
+    } as any;
+    const service = new DialogueOrchestratorService(agent, store, { getValues: vi.fn().mockResolvedValue({}) } as any, { log: vi.fn().mockResolvedValue(undefined) } as any);
+
+    await service.receiveBatch([{
+      externalMessageId: "message-1", externalContactId: "contact-1", channel: "web-test", text: "2020", attachments: [], timestamp: new Date()
+    }]);
+
+    expect(agent.answerWithKnowledge).toHaveBeenCalledOnce();
+  });
 });
