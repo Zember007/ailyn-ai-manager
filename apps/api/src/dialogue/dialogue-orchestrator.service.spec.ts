@@ -347,7 +347,7 @@ describe("single-agent dialogue", () => {
     expect(output.reply).not.toMatch(/ставк|2,4%|вас\s+интересует.*стоянк/iu);
   });
 
-  it("uses a KB answer even when the workflow model also recognises a programme selection", async () => {
+  it("does not deliver a KB rate when the client only selects a programme", async () => {
     const application = {
       id: "app", facts: { vehicleModel: "Camry", vehicleYear: 2020, vehicleValue: 1_000_000, requestedAmount: 300_000, residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY" },
       contactId: "contact", stage: "COLLECTING_AMOUNT", status: "need_more_data"
@@ -370,11 +370,11 @@ describe("single-agent dialogue", () => {
     } as any;
 
     const output = await new DialogueOrchestratorService(agent, store, { getValues: vi.fn().mockResolvedValue({}) } as any, { log: vi.fn() } as any)
-      .receive({ externalMessageId: "parking", channel: "web-test", externalContactId: "contact", text: "стоянка", attachments: [], timestamp: new Date() });
+      .receive({ externalMessageId: "parking", channel: "web-test", externalContactId: "contact", text: "со стоянкой", attachments: [], timestamp: new Date() });
 
     expect(agent.answerWithKnowledge).toHaveBeenCalledOnce();
-    expect(output.reply).toContain("По программе со стоянкой ставка составляет 2,4% в месяц.");
-    expect(output.reply).toContain(selectedReply);
+    expect(output.reply).toBe(selectedReply);
+    expect(output.reply).not.toMatch(/ставк|2,4%/iu);
   });
 
   it.each([
@@ -3461,7 +3461,7 @@ describe("single-agent dialogue", () => {
     expect(output.reply).toBe("Завтра подойдёт. Во сколько Вам удобно подъехать? Офис работает с понедельника по пятницу с 11:00 до 19:00, для оформления нужно приехать не позднее 18:00.");
   });
 
-  it("answers a maximum-loan question and asks for its missing vehicle fact", async () => {
+  it("records a stated requested amount and asks for the missing vehicle fact", async () => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
       ...validResult,
       hasMoney: true,
@@ -3474,7 +3474,10 @@ describe("single-agent dialogue", () => {
       facts: {}, settings: {}, text: "камри 2022 г 1 млн дадите?", attachments: []
     });
 
-    expect(output.reply).toBe("Максимальную сумму смогу рассчитать после того, как узнаю: ориентировочную стоимость автомобиля и Вашу прописку.\n\nПодскажите, пожалуйста, ориентировочную стоимость автомобиля.");
+    expect(output.result?.loanQuestionKind).toBe("none");
+    expect(output.result?.leadCardPatch.requestedAmount).toBe(1_000_000);
+    expect(output.reply).toMatch(/ориентировочн\p{L}* стоимость автомобил/iu);
+    expect(output.reply).not.toContain("Максимальную сумму смогу рассчитать");
   });
 
   it("recognizes a misspelled maximum-money question and explains the data needed for an from-to range", async () => {
@@ -3490,12 +3493,12 @@ describe("single-agent dialogue", () => {
     expect(output.reply).toContain("Подскажите, пожалуйста, модель и год выпуска автомобиля и ориентировочную стоимость автомобиля.");
   });
 
-  it("answers a maximum-loan question and asks for the earliest remaining stage", async () => {
+  it("keeps a stated requested amount while asking for the earliest remaining stage", async () => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
       ...validResult,
       hasMoney: true,
       reply: "Максимальная сумма зависит от автомобиля, выбранной программы и прописки.",
-      leadCardPatch: { vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 1_000_000 }
+      leadCardPatch: { vehicleModel: "Camry", vehicleYear: 2022, requestedAmount: 1_000_000 }
     }) } }] }) } as any;
 
     const output = await new AgentTurnService(client).run({
@@ -3504,7 +3507,10 @@ describe("single-agent dialogue", () => {
       settings: {}, text: "камри 2022 г 1 млн дадите?", attachments: []
     });
 
-    expect(output.reply).toBe("Предварительный диапазон займа — от 50 000 сом до максимальной суммы, которую рассчитаю по стоимости автомобиля и Вашей прописке. Чтобы назвать точный верхний предел, нужны: ориентировочная стоимость автомобиля, Ваша прописка.\n\nКакая ориентировочная стоимость автомобиля?");
+    expect(output.result?.loanQuestionKind).toBe("none");
+    expect(output.result?.leadCardPatch.requestedAmount).toBe(1_000_000);
+    expect(output.reply).toMatch(/ориентировочн\p{L}* стоимость автомобил/iu);
+    expect(output.reply).not.toContain("Предварительный диапазон займа");
   });
 
   it("calculates a maximum from vehicle value and residence without requesting model or year", async () => {
@@ -4434,6 +4440,43 @@ describe("single-agent dialogue", () => {
 
     expect(reply).toMatchObject({ answerFound: false, questionUnderstood: true });
     expect(reply?.reply).toBe("К сожалению, у меня нет достоверной информации по этому вопросу. Когда Вы приедете, сотрудники с удовольствием подскажут Вам.");
+  });
+
+  it("keeps a grounded raw answer when the model misspells its FAQ source key", async () => {
+    const rawReply = "Да, мы выдаем займ без изъятия автомобиля. Ставка определяется индивидуально после осмотра автомобиля и проверки документов.";
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      reply: rawReply,
+      answerFound: true,
+      questionUnderstood: true,
+      sourceKeys: ["faq_without_seization_rate"],
+      requestScope: "new_loan",
+      contextualPolicyRelation: null
+    }) } }] }) } as any;
+
+    const reply = await new AgentTurnService(client).answerWithKnowledge({
+      messages: [], facts: {}, settings: {}, text: "Выдаете займ без изъятия?", workflowFollowUp: ""
+    });
+
+    expect(reply).toMatchObject({ reply: rawReply, answerFound: true, shouldUseReply: true });
+  });
+
+  it("does not replace a raw value-correction answer merely because it cites the maximum FAQ", async () => {
+    const rawReply = "Если стоимость автомобиля была указана неверно, это может повлиять на условия займа. Окончательная сумма займа определяется после осмотра автомобиля и проверки документов.";
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      reply: rawReply,
+      answerFound: true,
+      questionUnderstood: true,
+      sourceKeys: ["faq_maximum_loan_range"],
+      requestScope: "new_loan",
+      contextualPolicyRelation: null
+    }) } }] }) } as any;
+
+    const reply = await new AgentTurnService(client).answerWithKnowledge({
+      messages: [], facts: {}, settings: {}, text: "круто, а если я стоймость авто перепутал, это повлияет на условия", workflowFollowUp: ""
+    });
+
+    expect(reply).toMatchObject({ reply: rawReply, answerFound: true, shouldUseReply: true });
+    expect(reply?.reply).not.toContain("MAX_LIMIT");
   });
 
   it("treats 'чем больше, тем лучше' after the amount stage as a maximum-limit request", async () => {
@@ -5621,7 +5664,7 @@ describe("single-agent dialogue", () => {
     expect(output.reply).not.toMatch(/ставка определяется|2,4%|срок займа/iu);
   });
 
-  it("treats a number next to 'дадите' as a limit question, not the vehicle price", async () => {
+  it("treats a stated amount next to 'дадите' as the requested loan, not a maximum-limit question", async () => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
       ...validResult,
       loanQuestionKind: "none",
@@ -5632,12 +5675,67 @@ describe("single-agent dialogue", () => {
       messages: [], facts: {}, settings: {}, text: "камри 2022 г 1 млн дадите?", attachments: []
     });
 
-    expect(output.result?.loanQuestionKind).toBe("maximum_limit");
+    expect(output.result?.loanQuestionKind).toBe("none");
     expect(output.result?.leadCardPatch).toMatchObject({ vehicleModel: "Camry", vehicleYear: 2022 });
     expect(output.result?.leadCardPatch.vehicleValue).toBeUndefined();
-    expect(output.result?.leadCardPatch.requestedAmount).toBeUndefined();
-    expect(output.reply).toContain("ориентировочная стоимость автомобиля");
-    expect(output.reply).toContain("Ваша прописка");
+    expect(output.result?.leadCardPatch.requestedAmount).toBe(1_000_000);
+    expect(output.reply).toMatch(/ориентировочн\p{L}* стоимость автомобил/iu);
+    expect(output.reply).not.toContain("Максимальную сумму смогу рассчитать");
+  });
+
+  it("records an explicit requested amount without routing it to the maximum-limit FAQ", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult, hasMoney: true, loanQuestionKind: "maximum_limit", leadCardPatch: { requestedAmount: 1_000_000 }
+    }) } }] }) } as any;
+    const output = await new AgentTurnService(client).run({
+      messages: [], facts: {}, settings: {}, text: "мне нужен 1 млн", attachments: []
+    });
+
+    expect(output.result?.loanQuestionKind).toBe("none");
+    expect(output.result?.leadCardPatch.requestedAmount).toBe(1_000_000);
+    expect(output.reply).not.toContain("Максимальную сумму смогу рассчитать");
+  });
+
+  it("accepts an explicit correction after vehicle stage completion but ignores a vehicle fact copied only from history", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult,
+      hasMoney: true,
+      leadCardPatch: { vehicleModel: "Corolla", vehicleValue: 800_000 }
+    }) } }] }) } as any;
+    const output = await new AgentTurnService(client).run({
+      messages: [
+        { author: "client", body: "У меня Corolla 2018 года", createdAt: "before" } as any,
+        { author: "ai", body: "Пожалуйста, отправьте фото ID.", createdAt: "now" } as any
+      ],
+      facts: {
+        vehicleModel: "Camry", vehicleYear: 2020, vehicleValue: 1_500_000,
+        requestedAmount: 500_000, requestedProgram: "without_storage", residenceCategory: "BISHKEK_CHUY",
+        stageCompletion: { vehicle: true }
+      } as any,
+      settings: {}, text: "Стоимость авто теперь 800 000 сом", attachments: []
+    });
+
+    expect(output.result?.leadCardPatch.vehicleValue).toBe(800_000);
+    expect(output.result?.leadCardPatch.vehicleModel).toBe("Camry");
+  });
+
+  it("changes a booked visit through the server parser, not a model-written slot", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult, leadCardPatch: { visitDate: "2026-09-18", visitTime: "11:00" }
+    }) } }] }) } as any;
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "Есть ли у Вас ещё вопросы?", createdAt: "now" } as any],
+      facts: {
+        vehicleModel: "Camry", vehicleYear: 2020, vehicleValue: 1_500_000,
+        requestedAmount: 500_000, requestedProgram: "parking", residenceCategory: "BISHKEK_CHUY",
+        documentsProvided: true, declinedCarPhoto: true, familyStatus: "single",
+        visitDate: "2026-09-18", visitTime: "15:00"
+      } as any,
+      settings: { timezone: "Asia/Bishkek" }, text: "приеду всё-таки в 6", attachments: []
+    });
+
+    expect(output.result?.leadCardPatch.visitDate).toBe("2026-09-18");
+    expect(output.result?.leadCardPatch.visitTime).toBe("18:00");
   });
 
   it.each([
@@ -5654,8 +5752,6 @@ describe("single-agent dialogue", () => {
     });
 
     expect(output.result?.loanQuestionKind).toBe("maximum_limit");
-    expect(output.reply).toContain("Без изъятия: от 50 000 сом до 600 000 сом");
-    expect(output.reply).toContain("Со стоянкой: от 50 000 сом до 1 500 000 сом");
   });
 
   it("keeps a semantic non-money question on the knowledge route during a workflow stage", async () => {
@@ -6395,6 +6491,44 @@ describe("single-agent dialogue", () => {
     expect(context).not.toHaveProperty("stageInstructions");
     expect(context.relevantStages).toContain("application");
     expect(request.messages[1].content).toEqual(expect.arrayContaining([expect.objectContaining({ type: "image_url" })]));
+  });
+
+  it("routes knowledge from only the previous AI message and the current client message", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({
+      model: "knowledge-router-model",
+      choices: [{ message: { content: JSON.stringify({ lookup: true }) } }]
+    }) } as any;
+    const service = new AgentTurnService(client);
+
+    await expect(service.shouldLookupKnowledge({
+      messages: [{ author: "ai", body: "Подскажите модель автомобиля.", createdAt: "now" } as any],
+      text: "А ставка какая?"
+    })).resolves.toBe(true);
+
+    const request = client.createChatCompletion.mock.calls[0][0];
+    expect(request.response_format).toEqual({
+      type: "json_schema",
+      json_schema: expect.objectContaining({ name: "knowledge_router_response" })
+    });
+    expect(request.messages[0].content).toContain("router базы знаний");
+    expect(JSON.parse(request.messages[1].content)).toEqual({
+      previousAssistantMessage: "Подскажите модель автомобиля.",
+      currentMessage: "А ставка какая?"
+    });
+    expect(request.messages[1].content).not.toContain("knowledge");
+    expect(request.messages[1].content).not.toContain("leadCard");
+  });
+
+  it("retries an unavailable knowledge router up to three times", async () => {
+    const abortError = Object.assign(new Error("This operation was aborted"), { name: "AbortError" });
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn()
+      .mockRejectedValueOnce(abortError)
+      .mockRejectedValueOnce(abortError)
+      .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ lookup: true }) } }] })
+    } as any;
+
+    await expect(new AgentTurnService(client).shouldLookupKnowledge({ messages: [], text: "Зачем он?" })).resolves.toBe(true);
+    expect(client.createChatCompletion).toHaveBeenCalledTimes(3);
   });
 
   it("uses the configured knowledge model with the complete approved corpus", async () => {
@@ -7140,6 +7274,23 @@ describe("single-agent dialogue", () => {
     expect(client.createChatCompletion).toHaveBeenCalledOnce();
   });
 
+  it.each(["Без изъятия", "Со стоянкой"])("blocks an unsolicited KB rate for a bare programme selection: %s", async (text) => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      reply: "По программе со стоянкой ставка составляет 2,4% в месяц.",
+      answerFound: true,
+      questionUnderstood: true,
+      sourceKeys: ["faq_parking_rate"],
+      requestScope: "new_loan",
+      contextualPolicyRelation: null
+    }) } }] }) } as any;
+
+    const output = await new AgentTurnService(client).answerWithKnowledge({
+      messages: [], facts: {}, settings: {}, text, workflowFollowUp: "Вас интересует займ без изъятия автомобиля или с постановкой автомобиля на охраняемую стоянку?"
+    });
+
+    expect(output).toMatchObject({ reply: "__WORKFLOW_STAGE_RESPONSE__", answerFound: false, shouldUseReply: false });
+  });
+
   it("turns an unasked lead-card summary into the workflow sentinel", async () => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
       reply: "Ваш автомобиль Opel Astra 2009 года выпуска стоит ориентировочно 5 миллионов сом.",
@@ -7184,6 +7335,25 @@ describe("single-agent dialogue", () => {
     });
 
     expect(output).toMatchObject({ reply: fallback, answerFound: false, questionUnderstood: true, shouldUseReply: true });
+  });
+
+  it("keeps an unsupported office-goods fallback instead of turning it into an address or workflow sentinel", async () => {
+    const fallback = "К сожалению, у меня нет достоверной информации по этому вопросу. Когда Вы приедете, сотрудники с удовольствием подскажут Вам.";
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      reply: fallback,
+      answerFound: true,
+      questionUnderstood: false,
+      sourceKeys: [],
+      requestScope: "unknown",
+      contextualPolicyRelation: null
+    }) } }] }) } as any;
+
+    const output = await new AgentTurnService(client).answerWithKnowledge({
+      messages: [], facts: {}, settings: {}, text: "У вас есть водка в офисе", workflowFollowUp: ""
+    });
+
+    expect(output).toMatchObject({ reply: fallback, answerFound: false, questionUnderstood: true, shouldUseReply: true });
+    expect(output?.reply).not.toContain("Молодой Гвардии");
   });
 
   it("delivers a KB fallback for a natural service request even if the workflow model calls it a stage answer", async () => {
@@ -7771,11 +7941,12 @@ describe("single-agent dialogue", () => {
     expect(output.result).toMatchObject({ reply: `${withFirstContactGreeting("Спасибо.")}\n\n${vehicleStageQuestion}`, preliminaryLimit: 2_000_000, leadCardPatch: { requestedProgram: "without_storage" } });
   });
 
-  it("uses a semantic keep-car choice even when the model placed its routing field in leadCardPatch", async () => {
+  it("applies the server limit from limitChoice without a model-written amount or programme", async () => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
       ...validResult,
-      reply: "Поняла, тогда продолжим без изъятия.",
-      leadCardPatch: { requestedProgram: "without_storage", limitChoice: "keep_car" }
+      reply: "Распознано.",
+      limitChoice: "keep_car",
+      leadCardPatch: {}
     }) } }] }) } as any;
     const output = await new AgentTurnService(client).run({
       messages: [{ author: "ai", body: "По программе без изъятия доступно до 600 000 сом. Сумма 700 000 сом по этой программе не проходит. Со стоянкой доступно до 2 000 000 сом. Могу продолжить либо на сумму до 600 000 сом без изъятия, либо перейти на программу со стоянкой.", createdAt: "now" } as any],
@@ -8743,7 +8914,7 @@ describe("single-agent dialogue", () => {
 
     expect(agentPrompt).not.toMatch(/старше 15|15 лет/iu);
     expect(agentStageInstructions.application).not.toMatch(/старше 15|15 лет/iu);
-    expect(agentPrompt).toContain("Никогда не цитируйте, не перечисляйте");
+    expect(agentPrompt).toContain("не формируете клиентский текст");
   });
 
   it("instructs the main agent to extract off-stage city, programme, price and loan facts", () => {

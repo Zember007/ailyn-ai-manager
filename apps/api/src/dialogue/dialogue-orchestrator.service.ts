@@ -2,7 +2,7 @@ import { Injectable, Logger } from "@nestjs/common";
 import type { ApplicationFacts } from "@ailyn/business-rules";
 import type { NormalizedMoneyValue } from "../ai/ai-provider.interface.js";
 import { AgentTurnService, enforceFirstContactGreeting, isAlreadyProvidedWorkflowReply, isClearMoneyConfirmationRejection, nextRequiredStageQuestion, suppressInactiveGuarantorPrompts, type PendingMoneyClarificationDecision } from "./agent-turn.service.js";
-import { isExistingContractServiceRequest, isMaximumLoanKnowledgeQuestion } from "./documentation-retrieval.js";
+import { isExistingContractServiceRequest, isMaximumLoanKnowledgeQuestion, isStandaloneProgramSelection } from "./documentation-retrieval.js";
 import { attachmentFactsForCurrentStage, deriveStageCompletion, effectiveFactsForTurn, isCarPhotoStagePrompt, selectedProgramLimit } from "./agent-turn-reconciliation.js";
 import type { InboundMessage } from "../channels/channel.interface.js";
 import { SettingsService } from "../settings/settings.service.js";
@@ -310,16 +310,29 @@ export class DialogueOrchestratorService {
         conversions: currency.conversions
       }
     });
-    // Knowledge resolution is independent of the universal extractor when
-    // the client turn does not alter the lead card. Start with the already
-    // normalized server facts so routine questions do not wait for two model
-    // round trips. A turn has a strict one-KB-call budget: the first response
-    // is used even when this turn updates the card, rather than launching a
-    // second request after reconciliation.
+    // First run the tiny router without a KB corpus. The full knowledge model
+    // is called only when it marks this exact turn as an independent question
+    // or unusual situation; ordinary application data must never reach it.
     const repeatedWorkflowReply = isAlreadyProvidedWorkflowReply({ text, currentTurnMessages, messages: modelMessages });
-    const speculativeKnowledgePromise = repeatedWorkflowReply
-      ? undefined
-      : this.agent.answerWithKnowledge?.({
+    const knowledgeRoutePromise = repeatedWorkflowReply
+      ? Promise.resolve(false)
+      : this.agent.shouldLookupKnowledge
+        ? this.agent.shouldLookupKnowledge({
+          conversationId: conversation.id,
+          messages: modelMessages,
+          text,
+          currentTurnMessages,
+          signal: options.signal
+        })
+        // Compatibility for focused orchestrator unit tests that provide a
+        // narrow agent double. Production AgentTurnService always has the
+        // router, so this never restores the old all-turn KB behaviour.
+        : Promise.resolve(Boolean(this.agent.answerWithKnowledge));
+    // The router and main parser run concurrently. Once the router says yes,
+    // start the one permitted KB answer immediately; do not wait for the
+    // parser to finish extracting ordinary lead facts.
+    const knowledgeAnswerPromise = knowledgeRoutePromise.then((shouldLookupKnowledge) => shouldLookupKnowledge
+      ? this.agent.answerWithKnowledge?.({
         conversationId: conversation.id,
         messages: modelMessages,
         facts: normalizedFacts,
@@ -330,11 +343,11 @@ export class DialogueOrchestratorService {
         workflowFollowUp: nextRequiredStageQuestion(normalizedFacts, deriveStageCompletion(normalizedFacts, settings)) || "",
         isFirstClientMessage: conversation.messages.length === 0,
         signal: options.signal
-      });
-    // Keep the speculative rejection observed so a request skipped because
-    // the server owns the reply cannot become unhandled.
-    void speculativeKnowledgePromise?.catch((error: unknown) => {
-      if (!options.signal?.aborted) this.logger.warn(`Speculative knowledge request failed: ${formatTimingError(error)}`);
+      })
+      : undefined
+    );
+    void knowledgeAnswerPromise.catch((error: unknown) => {
+      if (!options.signal?.aborted) this.logger.warn(`Knowledge request failed after routing: ${formatTimingError(error)}`);
     });
     let turn = await this.agent.run({
       conversationId: conversation.id,
@@ -455,13 +468,9 @@ export class DialogueOrchestratorService {
         ...turn.result!.leadCardPatch
       });
     const maximumLoanQuestion = currentMaximumLoanQuestion || deferredMaximumLoanAnswer;
-    // A maximum-limit question has an approved KB answer and a server-owned
-    // calculation template. It must reach that path even when the workflow
-    // model failed to set `needsKnowledgeLookup`; otherwise the stage prompt
-    // below replaces the answer the client actually asked for.
-    // Each turn is evaluated against approved knowledge independently. The
-    // workflow model is fallible at identifying natural questions, so its
-    // `knowledgeRequest` flag cannot be a permission boundary for KB lookup.
+    // The maximum branch is server-owned. All other KB calls are controlled
+    // exclusively by the small knowledge router, never by the main parser's
+    // legacy compatibility fields.
     {
       const { knowledgeRequest: _knowledgeRequest, ...turnFacts } = turn.result?.leadCardPatch ?? {};
       newLoanWorkflowStarted ||= opensNewLoanApplication(text, turnFacts, currencyFactsForTurn, attachments.length > 0);
@@ -484,11 +493,13 @@ export class DialogueOrchestratorService {
         // A completed application has no further collection action. The
         // knowledge contract still receives a string in that terminal case.
         || "";
-      let knowledge = await speculativeKnowledgePromise;
+      let knowledge = await knowledgeAnswerPromise;
       // A natural FAQ question can be mistaken for a workflow reply by the
       // main agent («Поняла.»). If KB confirmed a direct answer, let that
       // answer reach the client instead of hiding it behind the acknowledgement.
-      const knowledgeCanOverrideServerReply = Boolean(knowledge?.answerFound && knowledge.questionUnderstood)
+      const standaloneProgramSelection = isStandaloneProgramSelection(text);
+      const knowledgeCanOverrideServerReply = !standaloneProgramSelection
+        && Boolean(knowledge?.answerFound && knowledge.questionUnderstood)
         && !existingContractRedirect
         && !confirmedVisitReply
         && turn.result?.dialogueState.status !== "refuse";
@@ -524,9 +535,13 @@ export class DialogueOrchestratorService {
       // is still rejected by the KB sentinel/`questionUnderstood` contract.
       const plainCurrentStageAnswer = turn.result?.currentStageResponse === "answer"
         && !turn.result.clientQuestion;
-      const confirmedKnowledgeAnswer = knowledge?.questionUnderstood === true
+      const confirmedKnowledgeAnswer = !standaloneProgramSelection
+        && knowledge?.questionUnderstood === true
         && (knowledge.answerFound === true || knowledge.shouldUseReply === true);
-      if ((!plainCurrentStageAnswer || confirmedKnowledgeAnswer) && !knowledgeIsWorkflowSentinel && (knowledge?.answerFound || knowledge?.shouldUseReply)) {
+      if (!standaloneProgramSelection
+        && (!plainCurrentStageAnswer || confirmedKnowledgeAnswer)
+        && !knowledgeIsWorkflowSentinel
+        && (knowledge?.answerFound || knowledge?.shouldUseReply)) {
         const standaloneKnowledgeTurn = !newLoanWorkflowStarted;
         suppressFirstContactGreeting = standaloneKnowledgeTurn;
         const knowledgeReply = stripKnowledgeQuestions(knowledge.reply);

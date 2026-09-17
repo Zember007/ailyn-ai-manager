@@ -84,7 +84,10 @@ export const approvedKnowledgeSeeds: Omit<KnowledgeItemDto, "id">[] = [
   {
     key: "office_location",
     category: "office",
-    aliases: ["адрес", "где вы", "где находится офис", "где ваш офис", "офис", "как доехать", "куда ехать", "куда приезжать", "куда подъехать"],
+    // A bare «офис» is not a location request: it appears in questions about
+    // amenities and goods («у вас есть ... в офисе?»). Keep only location
+    // intents here so they cannot be answered with the address by accident.
+    aliases: ["адрес", "где вы", "где находится офис", "где ваш офис", "как доехать", "куда ехать", "куда приезжать", "куда подъехать"],
     answerRu: "Наш офис находится на бульваре Молодой Гвардии, 22, в Бишкеке. Мы работаем с понедельника по пятницу с 11:00 до 19:00. Вы можете приехать в любое удобное время в рамках рабочего графика.\nhttps://go.2gis.com/Y34m4\nhttps://maps.app.goo.gl/9xiWLVvdyRgn3Sx4A",
     priority: 100,
     status: "approved",
@@ -98,7 +101,8 @@ export const approvedKnowledgeSeeds: Omit<KnowledgeItemDto, "id">[] = [
     answerRu: "По программе без изъятия автомобиль остаётся у Вас. Ставка определяется индивидуально после осмотра автомобиля и проверки документов.",
     priority: 90,
     status: "approved",
-    version: 3,
+    // Version bump replaces historical broad rate aliases in persisted KB.
+    version: 4,
     active: true
   },
   {
@@ -163,7 +167,8 @@ export const approvedKnowledgeSeeds: Omit<KnowledgeItemDto, "id">[] = [
     category: "loan_terms",
     aliases: ["ставка по стоянке", "процент по стоянке", "стоянка процент", "парковка ставка", "что такое постановка на стоянку", "что значит постановка автомобиля", "как работает стоянка", "что такое охраняемая стоянка", "что вообще такое с постановкой автомобиля на охраняемую стоянку", "с постановкой автомобиля на охраняемую стоянку"],
     answerRu: "Программа со стоянкой означает, что на время займа автомобиль размещается на охраняемой парковке компании. Ставка составляет 2,4% в месяц, дополнительно оплачивается парковка 130 сом в сутки.",
-    priority: 100, status: "approved", version: 3, active: true
+    // Version bump replaces historical broad rate aliases in persisted KB.
+    priority: 100, status: "approved", version: 4, active: true
   },
   {
     key: "loan_program_comparison",

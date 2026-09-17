@@ -10,15 +10,15 @@ import type { InboundAttachment } from "../channels/channel.interface.js";
 import { BackendLogsService } from "../logs/backend-logs.service.js";
 import { attachmentFactsForCurrentStage, deriveStageCompletion, effectiveFactsForTurn, isCarPhotoStagePrompt } from "./agent-turn-reconciliation.js";
 import { isContextualKnowledgeFollowUpText } from "./contextual-knowledge-follow-up.js";
-import { compactKnowledgeForPrompt, hasApprovedKnowledgeMatch, isExistingContractServiceRequest, isMaximumLoanKnowledgeQuestion, prioritizedKnowledgeForQuestion, selectRelevantDocumentation } from "./documentation-retrieval.js";
+import { compactKnowledgeForPrompt, hasApprovedKnowledgeMatch, isExistingContractServiceRequest, isMaximumLoanKnowledgeQuestion, isStandaloneProgramSelection, prioritizedKnowledgeForQuestion, selectRelevantDocumentation } from "./documentation-retrieval.js";
 import { agentTurnResultSchema, dialogueSummarySchema, knowledgeAnswerSchema, type AgentTurnResult } from "./agent-turn.contracts.js";
 import { moneyNormalizationSchema } from "./pipeline.contracts.js";
 import { calculateLoanPricing, MINIMUM_VEHICLE_VALUE, type LoanPricing, type LoanPricingSettings } from "./loan-pricing.js";
 import { referencesOtherPersonsVehicle, removeOtherPersonsVehicleFacts } from "./lead-card-ownership.js";
-import { detectMoneyMentions, formatSomMoney, resolveMoneyFacts, roundSomAmount } from "./money-normalization.js";
+import { detectMoneyMentions, formatSomMoney, hasExplicitRequestedAmountMention, resolveMoneyFacts, roundSomAmount } from "./money-normalization.js";
 import type { Stage1Message } from "./stage1-store.service.js";
 
-const PROMPT_VERSION = "single-agent-v3";
+const PROMPT_VERSION = "single-agent-v4";
 const NEUTRAL_REPLY = "Извините, сейчас не удалось обработать сообщение. Пожалуйста, напишите ещё раз или обратитесь к сотрудникам компании.";
 // A malformed main-agent payload is repaired by the dedicated JSON
 // normalizer immediately. Retrying the same large prompt only adds latency.
@@ -54,6 +54,16 @@ const KNOWLEDGE_RESPONSE_JSON_SCHEMA = {
     required: ["reply", "answerFound", "questionUnderstood", "sourceKeys", "requestScope", "contextualPolicyRelation"]
   }
 } as const;
+const KNOWLEDGE_ROUTER_RESPONSE_JSON_SCHEMA = {
+  name: "knowledge_router_response",
+  strict: true,
+  schema: {
+    type: "object",
+    additionalProperties: false,
+    properties: { lookup: { type: "boolean" } },
+    required: ["lookup"]
+  }
+} as const;
 export const OLDER_VEHICLE_PROGRAM_NOTICE = "По общему правилу мы принимаем в залог автомобили старше 15 лет только на стоянку, но если вы планируете получить займ без изъятия, то мы готовы рассмотреть вашу заявку индивидуально.";
 type ContextualKnowledgePolicy = { key: "region_10_refusal" | "previous_assistant_answer"; approvedAnswer: string };
 // The complete lead card keeps durable facts, while a compact recent tail is
@@ -63,6 +73,7 @@ const MAX_AGENT_RESPONSE_TOKENS = 500;
 // Auxiliary classifiers and JSON normalizers have deterministic fallbacks.
 // They must never make a client wait for the full dialogue-model timeout.
 const AUXILIARY_MODEL_TIMEOUT_MS = 5_000;
+const MAX_KNOWLEDGE_ROUTER_ATTEMPTS = 3;
 const unnormalizedMoneyFactKeys = new Set(["vehicleValue", "requestedAmount", "vehicleValueSourceCurrency", "requestedAmountSourceCurrency"]);
 const NORMALIZER_PROMPT = `Вы — технический JSON-нормализатор ответа менеджера.
 Верните только один валидный JSON строго по переданной схеме AgentTurnResult.
@@ -212,6 +223,61 @@ export class AgentTurnService {
   }
 
   /**
+   * A tiny gate before the expensive knowledge answer. It intentionally sees
+   * no lead card or KB corpus: only enough dialogue context to distinguish a
+   * workflow answer from an independent question.
+   */
+  async shouldLookupKnowledge(input: {
+    messages: Stage1Message[];
+    text?: string;
+    currentTurnMessages?: Array<{ index: number; text: string }>;
+    conversationId?: string;
+    signal?: AbortSignal;
+  }): Promise<boolean> {
+    const currentMessage = input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "";
+    if (!this.client.isConfigured() || !currentMessage.trim()) return false;
+    const previousAssistantMessage = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
+    const model = this.config.routerAiKnowledgeRouterModel
+      ?? this.config.routerAiKnowledgeModel
+      ?? "routerai-knowledge-router-model-not-configured";
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= MAX_KNOWLEDGE_ROUTER_ATTEMPTS; attempt += 1) {
+      try {
+        const response = await this.client.createChatCompletion({
+          model,
+          temperature: 0,
+          max_tokens: 20,
+          reasoning: { enabled: false },
+          response_format: { type: "json_schema", json_schema: KNOWLEDGE_ROUTER_RESPONSE_JSON_SCHEMA },
+          structured_outputs: true,
+          messages: [
+            { role: "system", content: loadPrompt("knowledge-router.system.md") },
+            { role: "user", content: JSON.stringify({ previousAssistantMessage, currentMessage }) }
+          ]
+        }, { operation: "knowledge_routing", timeoutMs: this.auxiliaryModelTimeoutMs, signal: input.signal });
+        const lookup = parseAgentJson(response.choices?.[0]?.message?.content).lookup === true;
+        await this.logs?.log("dialogue.knowledge-router", "Knowledge route decided", {
+          conversationId: input.conversationId,
+          metadata: { model: response.model ?? model, lookup, currentMessage, attempt }
+        });
+        return lookup;
+      } catch (error) {
+        if (input.signal?.aborted) throw error;
+        lastError = error;
+        if (attempt < MAX_KNOWLEDGE_ROUTER_ATTEMPTS) {
+          this.logger.warn(`Knowledge router attempt ${attempt} failed: ${formatError(error)}; retrying`);
+        }
+      }
+    }
+    this.logger.warn(`Knowledge router unavailable after ${MAX_KNOWLEDGE_ROUTER_ATTEMPTS} attempts: ${formatError(lastError)}`);
+    await this.logs?.warn("dialogue.knowledge-router", "Knowledge route failed; skipping lookup", {
+      conversationId: input.conversationId,
+      metadata: { model, error: formatError(lastError), currentMessage, attempts: MAX_KNOWLEDGE_ROUTER_ATTEMPTS }
+    });
+    return false;
+  }
+
+  /**
    * Atypical questions do not need the main workflow prompt. This model sees
    * the complete approved corpus and can either cite it faithfully or state
    * honestly that the answer is outside the chat's approved information.
@@ -231,10 +297,9 @@ export class AgentTurnService {
   }): Promise<{ reply: string; answerFound: boolean; questionUnderstood?: boolean; shouldUseReply?: boolean; requestScope?: "new_loan" | "not_new_loan" | "unknown"; model: string } | undefined> {
     if (!this.client.isConfigured()) return undefined;
     const currentMessage = input.text ?? "";
-    // The KB request is intentionally made on every inbound turn, including
-    // a response to the active workflow stage. It returns its own workflow
-    // sentinel when no approved answer applies; delivery still remains under
-    // the deterministic stage and orchestration guards below.
+    // Calls reach this method only after the lightweight knowledge router
+    // selected the turn. The remaining guards still protect against a model
+    // misclassifying a workflow fact as an independent question.
     const model = this.config.routerAiKnowledgeModel ?? "routerai-knowledge-model-not-configured";
     const requiredFallbacks = unsupportedKnowledgeFallbacks(input.text ?? "");
     const officeLocationResponse = isOfficeLocationQuestion(input.text)
@@ -325,6 +390,7 @@ export class AgentTurnService {
       }
       const questionText = input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "";
       const explicitQuestion = isExplicitQuestionText(questionText);
+      const standaloneProgramSelection = isStandaloneProgramSelection(questionText);
       const lastAssistantQuestion = lastActiveAssistantMessage(input.messages);
       const isWorkflowFactResponse = isResidenceWorkflowFactResponse(
         questionText,
@@ -336,33 +402,35 @@ export class AgentTurnService {
       // the approved no-information fallback rather than the workflow
       // sentinel when the corpus has no confirmed answer.
       const knowledgeQuestionUnderstood = !isWorkflowFactResponse
-        && (parsed.data.questionUnderstood === true || isLikelyKnowledgeQuestion(questionText));
+        && !standaloneProgramSelection
+        && (
+          parsed.data.questionUnderstood === true
+          || isLikelyKnowledgeQuestion(questionText)
+          // A server-recognised unsupported topic is still a question even
+          // when the model incorrectly labels it as a workflow fact. Without
+          // this, its honest raw fallback becomes the workflow sentinel and
+          // an unrelated main-agent reply can win delivery priority.
+          || requiredFallbacks.length > 0
+        );
       const knownKnowledgeKeys = new Set(knowledge.map((chunk) => chunk.key));
       // FAQ chunks travel to the model with an `faq_` transport prefix, but
       // models occasionally cite the stable source name without it. Restore
       // that prefix only when it resolves to a key in this exact packet.
-      const sourceKeys = (parsed.data.sourceKeys ?? []).map((key) =>
-        knownKnowledgeKeys.has(key) || key === "lead_card" || key === "conversation_context"
-          ? key
-          : knownKnowledgeKeys.has(`faq_${key}`)
-            ? `faq_${key}`
-            : key
-      );
+      const sourceKeys = normalizeKnowledgeSourceKeys(parsed.data.sourceKeys ?? [], knownKnowledgeKeys);
       const hasInvalidSourceKeys = parsed.data.answerFound && (
         sourceKeys.length === 0
         || sourceKeys.some((key) => key !== "lead_card" && key !== "conversation_context" && !knownKnowledgeKeys.has(key))
       );
-      // A maximum range is a server calculation. Treat both the approved
-      // source key and any unresolved template variable as an instruction to
-      // discard the model's range text and restore the canonical template.
-      // This also protects against a model replacing MAX_LIMIT_* with numbers.
-      const modelSelectedMaximumLoanRange = sourceKeys?.includes("faq_maximum_loan_range") === true
-        || /MAX_LIMIT_(?:WITHOUT|PARK)/iu.test(parsed.data.reply);
+      // A maximum range is a server calculation, but only the current client
+      // question may select that branch. A model can cite the maximum FAQ as
+      // nearby context while its raw answer addresses another topic (for
+      // example, a corrected vehicle value). A citation alone must never
+      // replace that answer with a limit template.
       // `questionUnderstood=false` is the KB protocol for a workflow fact.
       // A `lead_card` source without a request is also a prohibited summary.
       // Never expose arbitrary prose in either case, even if a model
       // incorrectly also marks `answerFound=true`.
-      const modelReturnedWorkflowStageResponse = isWorkflowFactResponse || (!knowledgeQuestionUnderstood && (
+      const modelReturnedWorkflowStageResponse = isWorkflowFactResponse || standaloneProgramSelection || (!knowledgeQuestionUnderstood && (
         parsed.data.questionUnderstood === false || sourceKeys?.includes("lead_card") === true
       ));
       const ungroundedCreditAnswer = isUngroundedVehicleCreditAnswer(parsed.data.reply, input.text ?? "");
@@ -413,9 +481,9 @@ export class AgentTurnService {
       // Explicit fallbacks protect unanswered parts only; they never bypass
       // the KB call itself.
       const replyWithFallbacks = appendKnowledgeFallbacks(knowledgeReply, requiredFallbacks);
-      const onlyMaximumLoanSource = modelSelectedMaximumLoanRange
-        && (sourceKeys?.every((key) => key === "faq_maximum_loan_range") ?? false);
-      const reply = (maximumLoanQuestion || modelSelectedMaximumLoanRange) && maximumLoanTemplate
+      const onlyMaximumLoanSource = sourceKeys.length > 0
+        && sourceKeys.every((key) => key === "faq_maximum_loan_range");
+      const reply = maximumLoanQuestion && maximumLoanTemplate
         ? mergeMaximumLoanTemplateWithOtherAnswers(maximumLoanTemplate, onlyMaximumLoanSource ? "" : replyWithFallbacks)
         : replyWithFallbacks;
       // This marker is protocol-only: it means that the KB was invoked but
@@ -1462,7 +1530,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   // contains no number for the normalizer, while the main model must still be
   // able to commit the public limit that the client just accepted.
   const {
-    knowledgeRequest: modelKnowledgeRequest,
+    knowledgeRequest: _modelKnowledgeRequest,
     // This is server-owned state. A maximum question only becomes an amount
     // preference when it answers the canonical amount-stage question.
     ...leadCardFacts
@@ -1476,10 +1544,9 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   // The model is the primary semantic classifier for money questions. Text
   // patterns below are deliberately only an outage/legacy fallback.
   const loanQuestionKind = resolveLoanQuestionKind(parsed.loanQuestionKind, semanticText);
-  // The deterministic FAQ matcher catches common wording, while
-  // `loanQuestionKind` retains the model/normalizer's semantic recognition
-  // for typos and compact forms such as «1 млн дадите». Both denote the same
-  // server-owned maximum calculation path.
+  // The deterministic FAQ matcher catches general maximum-limit wording.
+  // A concrete requested amount has already been excluded from that route by
+  // the shared money predicate above.
   const maximumLoanQuestion = isMaximumLoanKnowledgeQuestion(semanticText ?? "")
     || loanQuestionKind === "maximum_limit"
     || loanQuestionKind === "maximum_limit_and_rate";
@@ -1550,7 +1617,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   const leadCardQuestion = isLeadCardQuestion(semanticText ?? "");
   const approvedKnowledgeTopic = relationshipEligibilityQuestion || leadCardQuestion || identityQuestion || hasApprovedKnowledgeMatch(semanticText ?? "");
   const modelMarksCurrentStageUnrelated = parsed.currentStageResponse === "unrelated";
-  const stageResponse = !approvedKnowledgeTopic && !modelMarksCurrentStageUnrelated && (Boolean(workflowStageClarification) || modelCurrentStageClarification || activeWorkflowClarification || inactiveGuarantorClarification || parkingAlternativeGuarantorAnswer || (isResponseToLastWorkflowQuestion(input) && modelKnowledgeRequest?.required !== true));
+  const stageResponse = !approvedKnowledgeTopic && !modelMarksCurrentStageUnrelated && (Boolean(workflowStageClarification) || modelCurrentStageClarification || activeWorkflowClarification || inactiveGuarantorClarification || parkingAlternativeGuarantorAnswer || isResponseToLastWorkflowQuestion(input));
   // The main model semantically detects natural-language questions which do
   // not have a question mark (for example «А кофе есть»). Pattern matching
   // remains only the fallback inside requiresKnowledgeAnswer.
@@ -1565,8 +1632,6 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     relationshipEligibilityQuestion
     || leadCardQuestion
     || approvedKnowledgeTopic
-    ||
-    modelKnowledgeRequest?.required === true
     || maximumLoanQuestion
     || requiresKnowledgeAnswer(semanticInput, leadCardFacts, loanQuestionKind)
     || isVehicleRegistrationOwnershipQuestion(semanticText ?? "")
@@ -1583,7 +1648,7 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   // FAQ.  Do not let the generic one-word guard discard it before retrieval.
   const knowledgeRequest = (!approvedKnowledgeTopic && ((bareNonQuestion && !maximumLoanQuestion) || (!maximumLoanQuestion && stageResponse))) || !mayNeedKnowledge
     ? undefined
-    : modelKnowledgeRequest ?? (relationshipEligibilityQuestion || maximumLoanQuestion || leadCardQuestion || approvedKnowledgeTopic || ownershipRegistrationQuestion || independentOfficeQuestion || isExplicitQuestionText(semanticText ?? "")
+    : (relationshipEligibilityQuestion || maximumLoanQuestion || leadCardQuestion || approvedKnowledgeTopic || ownershipRegistrationQuestion || independentOfficeQuestion || isExplicitQuestionText(semanticText ?? "")
       ? { required: true as const, reason: "missing_approved_answer" as const }
       : isLikelyKnowledgeQuestion(semanticText ?? "")
         ? { required: true as const, reason: "missing_approved_answer" as const }
@@ -1640,6 +1705,11 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
   if (referencesOtherPersonsVehicle(semanticText)) {
     rawModelPatch = removeOtherPersonsVehicleFacts(rawModelPatch);
   }
+  // The prompt sees compact history to interpret short answers. Do not let a
+  // model copy a closed vehicle fact from that history into the current turn:
+  // a closed fact may change only when its replacement is explicit in the
+  // current client text.
+  rawModelPatch = removeUncorroboratedClosedVehicleChanges(rawModelPatch, input);
   // A guarantor decision has meaning only as an answer to its own active
   // question. A question about another vehicle must not let the broad model
   // erase a confirmed guarantor and send the customer backwards in the flow.
@@ -1897,10 +1967,10 @@ function finalizeAgentPayload(parsed: AgentTurnResult, input: AgentTurnInput): A
     ...parsed,
     clientQuestion,
     loanQuestionKind,
-    // `knowledgeRequest` is the sole route to the knowledge model. Never
-    // retain a stale top-level model hint after server validation rejected it.
-    needsKnowledgeLookup: knowledgeRequest?.required ?? false,
-    leadCardPatch: { ...effectiveFacts, ...(knowledgeRequest ? { knowledgeRequest } : {}) },
+    // The separate knowledge router is the sole authority for lookup. Keep
+    // compatibility fields out of every new main-agent result.
+    needsKnowledgeLookup: false,
+    leadCardPatch: effectiveFacts,
     dialogueState: effectiveFacts.clientPaused
       ? { stage: "PAUSED", status: "target_reached", nextAction: "pause" }
       : existingContractServiceRequest
@@ -2660,6 +2730,10 @@ function resolveLoanQuestionKind(modelKind: LoanQuestionKind, text: string | und
   // «А максимум сколько денег дадите?» can receive a FAQ about interest.
   const normalized = text?.toLocaleLowerCase("ru-RU") ?? "";
   const asksRate = /(?:ставк\p{L}*|процент\p{L}*|сколько\s*%)/iu.test(normalized);
+  // An explicitly stated requested amount is not a maximum-limit question.
+  // Preserve a simultaneous rate question, but keep the amount on the money
+  // pipeline instead of sending it to the MAX_LIMIT FAQ.
+  if (hasExplicitRequestedAmountMention(normalized)) return asksRate ? "loan_rate" : "none";
   const asksLimit = isMaximumLoanKnowledgeQuestion(normalized) || /(?:дадите|(?:скольк|сколк)\p{L}*[^?!]{0,40}(?:денег|деньг|баб|лав[еэ]|сом|дад\p{L}*|получ\p{L}*)|(?:лимит|максимум|макс|потолок)\p{L}*|(?:денег|деньг|баб|лав[еэ])[^?!]{0,40}(?:(?:скольк|сколк)\p{L}*|дад\p{L}*|может\p{L}*\s+дат\p{L}*|можно|получ\p{L}*)|от\s+(?:скольк|сколк)\p{L}*|до\s+(?:скольк|сколк)\p{L}*(?:\s+дад\p{L}*)?)/iu.test(normalized);
   if (asksLimit) return asksRate ? "maximum_limit_and_rate" : "maximum_limit";
   if (asksRate) return "loan_rate";
@@ -3833,6 +3907,10 @@ function unsupportedKnowledgeFallbacks(text: string): string[] {
 }
 
 function appendKnowledgeFallbacks(reply: string, fallbacks: string[]): string {
+  // The knowledge model can already return an approved no-information
+  // fallback in its own concise wording. Do not append a second server
+  // fallback just because the wording differs slightly.
+  if (/нет\s+достоверн\p{L}*\s+информац/iu.test(reply)) return reply.trim();
   const missing = fallbacks.filter((fallback) => !reply.includes(fallback));
   return [...new Set([reply.trim(), ...missing].filter(Boolean))].join("\n\n");
 }
@@ -4113,12 +4191,22 @@ function modelMoneyPatchForTurn(patch: Partial<ApplicationFacts>, input: Pick<Ag
   if (isMaximumLoanKnowledgeQuestion(text)) return result;
   const deterministicMoney = resolveMoneyFacts({ text, currentFacts: {} });
   const onlyMention = deterministicMoney.mentions.length === 1 ? deterministicMoney.mentions[0] : undefined;
-  // A single amount with an explicit client-side role is already resolved by
-  // the dedicated money normalizer before this agent runs. The dialogue model
-  // must not reinterpret it from history and write a second role into the
-  // card. In particular, «требуется 1 миллион» is only a requested loan,
-  // never an implied price of the vehicle.
+  // A single amount with an explicit client-side role is normally resolved by
+  // the dedicated money normalizer before this agent runs. Accept the main
+  // model only when it agrees exactly with that turn-local deterministic
+  // mention; this keeps the standalone agent boundary correct without giving
+  // it authority to reinterpret an amount from history.
   if (onlyMention?.roleCandidate === "requestedAmount" || onlyMention?.roleCandidate === "vehicleValue") {
+    const field = onlyMention.roleCandidate;
+    const modelValue = patch[field];
+    if (hasMoney
+      && (onlyMention.currency === null || onlyMention.currency === "KGS")
+      && typeof modelValue === "number"
+      && Number.isFinite(modelValue)
+      && modelValue > 0
+      && roundSomAmount(modelValue) === roundSomAmount(onlyMention.normalizedAmount)) {
+      result[field] = roundSomAmount(modelValue);
+    }
     return result;
   }
   const foreignCurrencyMentioned = /(?:\busd\b|\$|dollars?|bucks?|дол+ар|дол(?!\p{L})|бакс|\beur(?:o)?s?\b|€|евр|\bkzt\b|₸|тенг|\brub(?:les?)?\b|₽|руб)/iu.test(input.text ?? "");
@@ -4136,17 +4224,38 @@ function modelMoneyPatchForTurn(patch: Partial<ApplicationFacts>, input: Pick<Ag
     input.pricing?.parking.publicMax
   ].filter((value): value is number => typeof value === "number"));
   const requestedAmountCorrection = isRequestedAmountCorrectionText(text);
+  const vehicleValueCorrection = deterministicMoney.mentions.some((mention) => mention.roleCandidate === "vehicleValue");
   for (const key of ["vehicleValue", "requestedAmount"] as const) {
     // The model occasionally assigns the same corrected number to both
     // money fields. A client correcting what they want to borrow cannot
     // change the already known market value of the vehicle by implication.
-    if (key === "vehicleValue" && requestedAmountCorrection) continue;
+    if (key === "vehicleValue" && requestedAmountCorrection && !vehicleValueCorrection) continue;
     const value = patch[key];
     if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) continue;
     const rounded = roundSomAmount(value);
     if (modelOwnsKgsMoney || offeredPublicLimits.has(rounded)) result[key] = rounded;
   }
   return result;
+}
+
+function removeUncorroboratedClosedVehicleChanges(
+  patch: Partial<ApplicationFacts>,
+  input: Pick<AgentTurnInput, "facts" | "text" | "currentTurnMessages" | "settings">
+): Partial<ApplicationFacts> {
+  if (!deriveStageCompletion(input.facts, input.settings as LoanPricingSettings).vehicle) return patch;
+  const text = (input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "").toLocaleLowerCase("ru-RU");
+  const guarded = { ...patch };
+  for (const field of ["vehicleMake", "vehicleModel"] as const) {
+    const proposed = guarded[field];
+    if (typeof proposed !== "string" || proposed === input.facts[field]) continue;
+    if (!text.includes(proposed.toLocaleLowerCase("ru-RU"))) delete guarded[field];
+  }
+  if (typeof guarded.vehicleYear === "number"
+    && guarded.vehicleYear !== input.facts.vehicleYear
+    && !new RegExp(`(?<!\\d)${guarded.vehicleYear}(?!\\d)`, "u").test(text)) {
+    delete guarded.vehicleYear;
+  }
+  return guarded;
 }
 
 function isRequestedAmountCorrectionText(text: string): boolean {
@@ -4263,6 +4372,54 @@ function isSafeRenderedReply(reply: string, responsePlan: string): boolean {
   // back to the exact server plan that answers the client first.
   return [...replyWords].every((word) => planWords.has(word))
     && [...planWords].every((word) => replyWords.has(word));
+}
+
+/**
+ * Source citations are diagnostic grounding, not client-facing prose. Models
+ * occasionally make a small transliteration/spelling error in a stable FAQ
+ * key (for example `without_seization` instead of `without_seizure`). Resolve
+ * only an unambiguous near FAQ key so an otherwise grounded raw answer does
+ * not get replaced by the generic fallback. Unknown keys remain invalid.
+ */
+function normalizeKnowledgeSourceKeys(keys: string[], knownKnowledgeKeys: Set<string>): string[] {
+  const known = [...knownKnowledgeKeys];
+  const normalized = keys.map((rawKey) => {
+    const key = rawKey.trim();
+    if (knownKnowledgeKeys.has(key) || key === "lead_card" || key === "conversation_context") return key;
+    const withFaqPrefix = key.startsWith("faq_") ? key : `faq_${key}`;
+    if (knownKnowledgeKeys.has(withFaqPrefix)) return withFaqPrefix;
+    if (!withFaqPrefix.startsWith("faq_")) return key;
+
+    const candidates = known
+      .filter((candidate) => candidate.startsWith("faq_"))
+      .map((candidate) => ({ candidate, distance: levenshteinDistance(withFaqPrefix, candidate) }))
+      .sort((left, right) => left.distance - right.distance);
+    const closest = candidates[0];
+    const threshold = Math.ceil(withFaqPrefix.length * 0.25);
+    const isUnambiguous = closest
+      && closest.distance <= threshold
+      && (candidates[1] === undefined || candidates[1].distance > closest.distance);
+    return isUnambiguous ? closest.candidate : key;
+  });
+  return [...new Set(normalized)];
+}
+
+function levenshteinDistance(left: string, right: string): number {
+  const previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+  for (let leftIndex = 1; leftIndex <= left.length; leftIndex += 1) {
+    let diagonal = previous[0];
+    previous[0] = leftIndex;
+    for (let rightIndex = 1; rightIndex <= right.length; rightIndex += 1) {
+      const above = previous[rightIndex];
+      previous[rightIndex] = Math.min(
+        previous[rightIndex] + 1,
+        previous[rightIndex - 1] + 1,
+        diagonal + (left[leftIndex - 1] === right[rightIndex - 1] ? 0 : 1)
+      );
+      diagonal = above;
+    }
+  }
+  return previous[right.length];
 }
 
 function parseAgentJson(value: string | null | undefined): Record<string, unknown> {

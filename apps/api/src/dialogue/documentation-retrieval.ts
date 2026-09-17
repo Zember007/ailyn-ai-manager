@@ -1,4 +1,5 @@
 import type { ApplicationFacts } from "@ailyn/business-rules";
+import { hasExplicitRequestedAmountMention } from "./money-normalization.js";
 import { generatedDocumentationChunks } from "./documentation-chunks.generated.js";
 import { agentStageInstructions } from "./agent-stage-instructions.js";
 import type { Stage1Message } from "./stage1-store.service.js";
@@ -22,6 +23,9 @@ const stageInstructionsByStage: Partial<Record<DocumentationStage, string>> = ag
  */
 export function isMaximumLoanKnowledgeQuestion(text: string): boolean {
   const normalized = text.toLocaleLowerCase("ru-RU");
+  // «1 млн дадите?» names the amount the client wants to receive. It belongs
+  // to money normalization, while «сколько дадите?» still reaches this FAQ.
+  if (hasExplicitRequestedAmountMention(normalized)) return false;
   const explicitLimitQuestion = /(?:максим\p{L}*|макс\b|лимит\p{L}*|потолок\p{L}*|до\s+какой\s+сумм\p{L}*|скольк\p{L}*[^?!\n]{0,45}(?:денег|деньг|дад\p{L}*|дат\p{L}*|может\p{L}*\s+дат\p{L}*|получ\p{L}*|можно\s+взять|возможн\p{L}*\s+сумм\p{L}*|доступн\p{L}*\s+сумм\p{L}*)|(?:денег|деньг)[^?!\n]{0,45}(?:скольк\p{L}*|дад\p{L}*|дат\p{L}*|получ\p{L}*|можно\s+взять)|какую\s+сумм\p{L}*[^?!\n]{0,30}(?:дад\p{L}*|дат\p{L}*|можно\s+получ\p{L}*)|(?:какая|какую|какой)\s+(?:возможн\p{L}*|доступн\p{L}*)\s+сумм\p{L}*)/iu.test(normalized);
   // These short forms occur specifically as answers to «Какая сумма займа
   // Вам необходима?». Treat them as a maximum request rather than asking
@@ -32,6 +36,15 @@ export function isMaximumLoanKnowledgeQuestion(text: string): boolean {
   // highest available loan without using an interrogative form.
   const conversationalMaximumPreference = /(?:^|[,.!?]\s*|\s)(?:мне\s+)?(?:надо|нужно|хочу)?\s*(?:вообще\s+)?чем\s+больше\s*,?\s*тем\s+лучше/iu.test(normalized);
   return explicitLimitQuestion || shortMaximumPreference || conversationalMaximumPreference;
+}
+
+/**
+ * These are answers to the programme-selection stage, not questions about a
+ * programme or its rate. Keep this deliberately narrow: a longer phrase
+ * asking about conditions must still reach the knowledge model.
+ */
+export function isStandaloneProgramSelection(text: string): boolean {
+  return /^(?:без\s+изъят\p{L}*|со\s+стоянк\p{L}*|с\s+постановкой(?:\s+автомобил\p{L}*)?\s+на\s+(?:охран\p{L}*\s+)?стоянк\p{L}*)[.!?\s]*$/iu.test(text.trim());
 }
 
 const requiredDocumentKeys = ["id_front", "id_back", "vehicle_registration_front", "vehicle_registration_back"] as const;

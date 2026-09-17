@@ -13,6 +13,19 @@ describe("KnowledgeService approved resolution", () => {
     ]));
   });
 
+  it("does not treat a bare office mention as a request for the address", async () => {
+    const service = new KnowledgeService(createMemoryPrisma() as any);
+    const answers = await service.resolveAll("У вас есть водка в офисе?", "ru");
+
+    expect(answers.map((answer) => answer.key)).not.toContain("office_location");
+  });
+
+  it.each(["Без изъятия", "Со стоянкой"])("does not resolve a programme choice as a rate FAQ: %s", async (text) => {
+    const service = new KnowledgeService(createMemoryPrisma() as any);
+
+    expect(await service.resolveAll(text, "ru")).toEqual([]);
+  });
+
   it("prefers the specific approved parking rate over the general rate answer", async () => {
     const service = new KnowledgeService(createMemoryPrisma() as any);
     const answers = await service.resolveAll("Какая ставка по стоянке?", "ru");

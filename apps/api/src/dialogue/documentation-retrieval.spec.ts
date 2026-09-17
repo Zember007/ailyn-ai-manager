@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compactKnowledgeForPrompt, hasApprovedKnowledgeMatch, isExistingContractServiceRequest, isMaximumLoanKnowledgeQuestion, prioritizedKnowledgeForQuestion, selectRelevantDocumentation } from "./documentation-retrieval.js";
+import { compactKnowledgeForPrompt, hasApprovedKnowledgeMatch, isExistingContractServiceRequest, isMaximumLoanKnowledgeQuestion, isStandaloneProgramSelection, prioritizedKnowledgeForQuestion, selectRelevantDocumentation } from "./documentation-retrieval.js";
 import { generatedDocumentationChunks } from "./documentation-chunks.generated.js";
 import { approvedKnowledgeSeeds } from "../knowledge/knowledge.service.js";
 
@@ -11,6 +11,20 @@ describe("selectRelevantDocumentation", () => {
 
     const result = selectRelevantDocumentation({ facts: {}, currentMessage: "машина не находу", messages: [] });
     expect(result.mandatoryAnswer).toContain("принять его в залог не сможем");
+  });
+
+  it("does not retrieve the office address for an unsupported goods question", () => {
+    const text = "У вас есть водка в офисе?";
+    const result = selectRelevantDocumentation({ facts: {}, currentMessage: text, messages: [] });
+
+    expect(hasApprovedKnowledgeMatch(text)).toBe(false);
+    expect(result.mandatoryAnswer).toBeUndefined();
+    expect(result.knowledge.some((chunk) => chunk.key === "faq_office_location")).toBe(false);
+  });
+
+  it.each(["Без изъятия", "Со стоянкой"])("recognizes a bare programme phrase as workflow input: %s", (text) => {
+    expect(isStandaloneProgramSelection(text)).toBe(true);
+    expect(isStandaloneProgramSelection(`${text}, какая ставка?`)).toBe(false);
   });
 
   it("always supplies only the compact approved-answer core", () => {

@@ -245,6 +245,13 @@ export function detectMoneyMentions(text: string): MoneyMention[] {
   return dedupeMentions(mentions);
 }
 
+/** A concrete amount paired with an intent to receive a loan is a lead-card
+ * fact, not a question about the maximum possible limit. This boundary is
+ * shared by the money and knowledge routes. */
+export function hasExplicitRequestedAmountMention(text: string): boolean {
+  return detectMoneyMentions(text).some((mention) => mention.roleCandidate === "requestedAmount");
+}
+
 export function formatMoney(value: number): string {
   return new Intl.NumberFormat("ru-RU").format(value).replace(/\u00a0/g, " ");
 }
