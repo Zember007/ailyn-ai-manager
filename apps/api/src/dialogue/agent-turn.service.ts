@@ -235,31 +235,8 @@ export class AgentTurnService {
     // a response to the active workflow stage. It returns its own workflow
     // sentinel when no approved answer applies; delivery still remains under
     // the deterministic stage and orchestration guards below.
-    const asksAboutGuarantor = /поручител\p{L}*/iu.test(currentMessage)
-      && (/[?？]/u.test(currentMessage) || /(?:нуж\p{L}*|надо|требу\p{L}*|обязател\p{L}*|какой|кто|что|почему|зачем)/iu.test(currentMessage));
-    const guarantorAnswer = asksAboutGuarantor && input.facts.requestedProgram && input.facts.residenceCategory
-      ? (() => {
-      const required = requiresGuarantorForFacts(input.facts);
-        return required ? "Да, в Вашем случае потребуется поручитель." : "Нет, в Вашем случае поручитель не требуется.";
-      })()
-      : undefined;
     const model = this.config.routerAiKnowledgeModel ?? "routerai-knowledge-model-not-configured";
-    const documentation = selectRelevantDocumentation({
-      facts: input.facts,
-      currentMessage: input.text,
-      messages: input.messages,
-      includeCrossStageMatches: true
-    });
     const requiredFallbacks = unsupportedKnowledgeFallbacks(input.text ?? "");
-    const hasSupportedQuestion = hasSupportedKnowledgeQuestion(input.text ?? "", documentation.mandatoryAnswer);
-    if (requiredFallbacks.length > 0 && !hasSupportedQuestion) {
-      return {
-        reply: requiredFallbacks.join("\n\n"),
-        answerFound: false,
-        shouldUseReply: isExplicitQuestionText(input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? ""),
-        model: "server-knowledge-fallback"
-      };
-    }
     const officeLocationResponse = isOfficeLocationQuestion(input.text)
       ? officeLocationReply(input.settings)
       : undefined;
@@ -348,19 +325,26 @@ export class AgentTurnService {
       }
       const questionText = input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "";
       const explicitQuestion = isExplicitQuestionText(questionText);
+      const lastAssistantQuestion = lastActiveAssistantMessage(input.messages);
+      const isWorkflowFactResponse = isResidenceWorkflowFactResponse(
+        questionText,
+        lastAssistantQuestion,
+        input.workflowFollowUp
+      );
       // Natural service requests such as «Есть мастер по ремонту у вас» are
       // questions even without «ли» or a question mark. They must receive
       // the approved no-information fallback rather than the workflow
       // sentinel when the corpus has no confirmed answer.
-      const knowledgeQuestionUnderstood = parsed.data.questionUnderstood === true || isLikelyKnowledgeQuestion(questionText);
+      const knowledgeQuestionUnderstood = !isWorkflowFactResponse
+        && (parsed.data.questionUnderstood === true || isLikelyKnowledgeQuestion(questionText));
       const sourceKeys = parsed.data.sourceKeys;
       // `questionUnderstood=false` is the KB protocol for a workflow fact.
       // A `lead_card` source without a request is also a prohibited summary.
       // Never expose arbitrary prose in either case, even if a model
       // incorrectly also marks `answerFound=true`.
-      const modelReturnedWorkflowStageResponse = !knowledgeQuestionUnderstood && (
+      const modelReturnedWorkflowStageResponse = isWorkflowFactResponse || (!knowledgeQuestionUnderstood && (
         parsed.data.questionUnderstood === false || sourceKeys?.includes("lead_card") === true
-      );
+      ));
       const knownKnowledgeKeys = new Set(knowledge.map((chunk) => chunk.key));
       if (sourceKeys && (
         (parsed.data.answerFound && sourceKeys.length === 0)
@@ -369,38 +353,53 @@ export class AgentTurnService {
         throw new Error("Knowledge response references missing or insufficient source keys");
       }
       const ungroundedCreditAnswer = isUngroundedVehicleCreditAnswer(parsed.data.reply, input.text ?? "");
-      // A guarantor rule is conditional workflow content, never an unsolicited
-      // FAQ. The KB may be called on every turn, but it has no authority to
-      // introduce this topic unless the client actually asked about it.
-      const unaskedGuarantorAnswer = /поручител\p{L}*/iu.test(parsed.data.reply) && !asksAboutGuarantor;
-      const modelAnswerFound = !modelReturnedWorkflowStageResponse && !ungroundedCreditAnswer && !unaskedGuarantorAnswer
-        && (parsed.data.answerFound || (requiredFallbacks.length > 0 && hasSupportedQuestion));
-      const answerFound = modelAnswerFound || guarantorAnswer !== undefined;
+      // The region-10 refusal has a single, narrow triggering condition. A
+      // model/year/value supplied for the application (for example «Rio 2020
+      // пять миллионов») must never be interpreted as a registration region.
+      // Do not let the KB promote that rule unless the client named region 10
+      // in this turn or in the immediately relevant history.
+      // Keep a continuation of a client statement about region 10
+      // valid, including when the previous assistant message was an
+      // unhelpful fallback. The short history window is the same one passed
+      // to the KB for that recovery.
+      const followsExplicitRegion10 = input.messages.slice(-8)
+        .some((message) => message.author === "client" && hasExplicitRegion10Mention(message.body));
+      const ungroundedRegion10Answer = sourceKeys?.includes("docx_0381") === true
+        && !hasExplicitRegion10Mention(questionText)
+        && !followsExplicitRegion10;
+      const modelAnswerFound = !modelReturnedWorkflowStageResponse && !ungroundedCreditAnswer && !ungroundedRegion10Answer
+        && parsed.data.answerFound;
+      const answerFound = modelAnswerFound;
+      // The KB owns these answers, but its prose can still repeat the rule
+      // before stating the already-known result. Normalize that KB payload
+      // to the short answer contract; do not append a separate server reply.
+      const normalizedKnowledgeReply = modelAnswerFound
+        ? normalizeConciseEligibilityReply(parsed.data.reply, input.facts, questionText, sourceKeys)
+        : parsed.data.reply;
       // The complete corpus is available to the KB model on every turn. It,
       // rather than a keyword/retrieval filter, decides which approved rule
       // answers the client's wording. Only live office settings remain
       // server-owned because their values are configuration, not KB prose.
-      const knowledgeReply = modelReturnedWorkflowStageResponse || unaskedGuarantorAnswer
+      const knowledgeReply = modelReturnedWorkflowStageResponse || ungroundedRegion10Answer
         ? WORKFLOW_STAGE_RESPONSE_SENTINEL
         : contextualPolicy?.key === "region_10_refusal" && parsed.data.contextualPolicyRelation === "follow_up"
         // The policy is server-approved; keep a model from blending in a
         // semantically nearby but unrelated rule such as the 15-year policy.
         ? contextualPolicy.approvedAnswer
         : modelAnswerFound
-          ? removeInternalPricingInstruction(officeLocationResponse ?? ensureGeneralRateCoverage(parsed.data.reply, input.text))
+          ? removeInternalPricingInstruction(officeLocationResponse ?? ensureGeneralRateCoverage(normalizedKnowledgeReply, input.text))
           // A fact supplied for the application is intentionally not a KB
           // answer. Keep it empty so the workflow model remains the sole
           // author of the client-facing continuation.
           : parsed.data.questionUnderstood === false
             ? parsed.data.reply
-            : UNKNOWN_KNOWLEDGE_ANSWER;
+            : requiredFallbacks[0] ?? UNKNOWN_KNOWLEDGE_ANSWER;
       // The maximum range is server-owned, but it is only one answer in a
       // multi-question turn. Keep the canonical range and retain all other
       // independent KB answers (rate, office amenities, vehicle conditions).
-      const replyWithFallbacks = appendKnowledgeFallbacks(knowledgeReply, [
-        ...requiredFallbacks,
-        ...(guarantorAnswer ? [guarantorAnswer] : [])
-      ]);
+      // Explicit fallbacks protect unanswered parts only; they never bypass
+      // the KB call itself.
+      const replyWithFallbacks = appendKnowledgeFallbacks(knowledgeReply, requiredFallbacks);
       const reply = maximumLoanQuestion && maximumLoanTemplate
         ? mergeMaximumLoanTemplateWithOtherAnswers(maximumLoanTemplate, replyWithFallbacks)
         : replyWithFallbacks;
@@ -409,7 +408,7 @@ export class AgentTurnService {
       // delivery priority merely because a money statement contains «нужно».
       const isWorkflowStageSentinel = reply.trim() === WORKFLOW_STAGE_RESPONSE_SENTINEL;
       const shouldUseReply = !isWorkflowStageSentinel
-        && (knowledgeQuestionUnderstood || explicitQuestion || guarantorAnswer !== undefined);
+        && (knowledgeQuestionUnderstood || explicitQuestion);
       await this.logs?.log("dialogue.knowledge-model", "Knowledge model response received", {
         conversationId: input.conversationId,
         metadata: {
@@ -2715,6 +2714,13 @@ function isUngroundedVehicleCreditAnswer(reply: string, clientText: string): boo
   return !/(?:кредит\p{L}*|авто\p{L}*\s+в\s+залоге|машин\p{L}*\s+в\s+залоге)/iu.test(clientText);
 }
 
+/** Region 10 is a registration fact, never an inference from the vehicle's
+ * make, model, year, price or any arbitrary number in the message. */
+function hasExplicitRegion10Mention(text: string): boolean {
+  const regionMarker = "(?:рег\\p{L}*|реон\\p{L}*)";
+  return new RegExp(`(?:^|[\\s,.;:!?])(?:10\\s*(?:-?\\s*)?${regionMarker}|${regionMarker}\\s*(?:№|#)?\\s*10)(?=$|[\\s,.;:!?])`, "iu").test(text);
+}
+
 /** Knowledge chunks may describe server implementation, but that prose is never client-facing. */
 function removeInternalPricingInstruction(reply: string): string {
   return reply
@@ -3300,6 +3306,18 @@ function isResidenceCollectionQuestion(text: string): boolean {
   return /(?:пропис|зарегистрирован|место\s+жительств)/iu.test(text);
 }
 
+/** A plain registration statement supplies the active workflow field. Even
+ * if the KB model hallucinates a related FAQ answer, it must not surface it
+ * as an unsolicited offer about guarantors or any other condition. */
+function isResidenceWorkflowFactResponse(text: string, lastAssistant: string, workflowFollowUp: string): boolean {
+  const normalized = text.trim();
+  if (!normalized || /[?？]/u.test(normalized)) return false;
+  const asksResidence = isResidenceCollectionQuestion(`${lastAssistant} ${workflowFollowUp}`);
+  if (!asksResidence) return false;
+  return Boolean(residenceLocalityFromClientText(normalized))
+    || /(?:я\s+в|я\s+из|пропис\p{L}*\s*(?:в|на)|зарегистрир\p{L}*\s*(?:в|на))/iu.test(normalized);
+}
+
 /**
  * The workflow stage is not a permission boundary for corrections. This gate
  * admits only a direct statement about the client's own registration/location
@@ -3460,6 +3478,35 @@ function divorcePurchaseTimingFallback(text: string): boolean | undefined {
 
 function requiresGuarantorForFacts(facts: ApplicationFacts): boolean {
   return facts.requestedProgram === "without_storage" && facts.residenceCategory === "OTHER_KG";
+}
+
+function normalizeConciseEligibilityReply(
+  reply: string,
+  facts: ApplicationFacts,
+  questionText: string,
+  sourceKeys?: string[]
+): string {
+  const text = questionText.toLocaleLowerCase("ru-RU");
+  const mentionsGuarantor = /поручител\p{L}*/iu.test(text);
+  const guarantorSource = sourceKeys?.some((key) => /guarantor|поручител/iu.test(key)) === true;
+  if (mentionsGuarantor && guarantorSource && facts.requestedProgram && facts.residenceCategory) {
+    return requiresGuarantorForFacts(facts)
+      ? "Да, в Вашем случае потребуется поручитель."
+      : "Нет, в Вашем случае поручитель не требуется.";
+  }
+
+  if (/(?:супруг|супруги|супругу|жен[ау]|муж)/iu.test(text)) {
+    if (facts.familyStatus === "married" && facts.spouseConsentReady !== true) {
+      return "Да, потребуется нотариальное согласие супруга или супруги.";
+    }
+    if (facts.familyStatus === "single" || facts.familyStatus === "divorced") {
+      return "Нет, в Вашем случае супруга или супруг не требуется.";
+    }
+    if (facts.spouseConsentReady === true) {
+      return "Нет, присутствие супруга или супруги не требуется.";
+    }
+  }
+  return reply;
 }
 
 function guarantorResetForProgramChange(previous: ApplicationFacts, patch: Partial<ApplicationFacts>): Partial<ApplicationFacts> {
@@ -3767,11 +3814,6 @@ function unsupportedKnowledgeFallbacks(text: string): string[] {
     fallbacks.push("По этому вопросу у меня нет достоверной информации. Это можно уточнить у менеджера при визите.");
   }
   return fallbacks;
-}
-
-function hasSupportedKnowledgeQuestion(text: string, mandatoryAnswer: string | undefined): boolean {
-  return Boolean(mandatoryAnswer)
-    || /(?:чай|кофе|стоянк|парковк|адрес|где\s+вы\s+находитесь|график|режим\s+работы)/iu.test(text);
 }
 
 function appendKnowledgeFallbacks(reply: string, fallbacks: string[]): string {
@@ -4398,6 +4440,12 @@ function buildMessage(input: Pick<AgentTurnInput, "messages" | "facts" | "settin
   const visitCalendar = retrieval.stages.includes("visit") ? buildVisitCalendar(now) : undefined;
   const currentTurnMessages = input.currentTurnMessages ?? (input.text === undefined ? [] : [{ index: 1, text: input.text }]);
   const history = activeWorkflowHistory(input.messages);
+  // Keep this explicit small window alongside the compact workflow history.
+  // The main model must compare the current reply with the exact latest AI
+  // prompt before it treats a short word as a correction to another field.
+  const lastTwoDialogueMessages = input.messages
+    .slice(-2)
+    .map(({ author, body, createdAt }) => ({ author, text: body, createdAt }));
   // Guarantor answers are stateful server-side workflow details. Do not give
   // them to the general model: it must neither decide the requirement nor
   // mutate the answer, otherwise a stale JSON field can reopen that branch.
@@ -4416,7 +4464,7 @@ function buildMessage(input: Pick<AgentTurnInput, "messages" | "facts" | "settin
   const knownLeadCardFields = Object.entries(leadCard)
     .filter(([, value]) => value !== undefined && value !== null)
     .map(([key]) => key);
-  const context = { now, timezone, history, leadCard, knownLeadCardFields, currentMessage: input.text ?? "", currentTurnMessages, pricing, pricingAuthority: "Pricing is calculated by the server. Use only available publicMax; never calculate or expose rawMax.", currencyConversions: input.currencyConversions ?? [], ...(visitCalendar ? { visitCalendar } : {}), relevantStages: retrieval.stages, knowledge: retrieval.knowledge };
+  const context = { now, timezone, history, lastTwoDialogueMessages, leadCard, knownLeadCardFields, currentMessage: input.text ?? "", currentTurnMessages, pricing, pricingAuthority: "Pricing is calculated by the server. Use only available publicMax; never calculate or expose rawMax.", currencyConversions: input.currencyConversions ?? [], ...(visitCalendar ? { visitCalendar } : {}), relevantStages: retrieval.stages, knowledge: retrieval.knowledge };
   const parts: Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string; detail: "high" } }> = [{ type: "text", text: JSON.stringify(context) }];
   for (const attachment of input.attachments) {
     parts.push({ type: "text", text: JSON.stringify({ attachment: { id: attachment.id, fileName: attachment.fileName, mimeType: attachment.mimeType, textContent: attachment.textContent, metadata: attachment.metadata } }) });

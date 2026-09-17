@@ -9,6 +9,8 @@ describe("repeat-loan helpers", () => {
     expect(isRepeatLoanRequest("Я выкупился и снова нужны деньги")).toBe(true);
     expect(isRepeatLoanRequest("Выкупил машину три дня назад")).toBe(true);
     expect(isRepeatLoanRequest("Займ снова дадите?")).toBe(true);
+    expect(isRepeatLoanRequest("нужен новый займ")).toBe(true);
+    expect(isRepeatLoanRequest("я могу новый займ оформить, уже расплатился")).toBe(true);
   });
 
   it("does not treat a service request for an active contract as a repeat loan", () => {

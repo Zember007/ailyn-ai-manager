@@ -206,8 +206,14 @@ export class DialogueOrchestratorService {
     const text = messages.map((message) => message.text?.trim()).filter((value): value is string => Boolean(value)).join("\n");
     const startsRepeatLoan = !isExistingContractServiceRequest(text) && isRepeatLoanRequest(text);
     if (startsRepeatLoan) {
+      // A client may explicitly request a new loan before the previous
+      // application was marked CLOSED (for example after saying they have
+      // already repaid it). Close that stale card here so the repeat-loan
+      // flow cannot fall through to the generic «Поняла.» response.
       const closedApplication = await this.store.findLatestClosedApplication(application.contactId)
-        ?? (isTerminalApplicationHistory(application) ? await this.store.closeApplicationForRepeatLoan(application) : undefined);
+        ?? (isTerminalApplicationHistory(application) || hasNewLoanOpeningFacts(application.facts)
+          ? await this.store.closeApplicationForRepeatLoan(application)
+          : undefined);
       if (closedApplication) application = await this.store.createRepeatLoanApplication(conversation, closedApplication);
     }
     const repeatLoanStarted = application.id !== initialApplication.id;
@@ -443,7 +449,11 @@ export class DialogueOrchestratorService {
     const deferredMaximumLoanAnswer = !existingContractServiceRequest
       && application.agentState?.nextAction === ANSWER_MAXIMUM_AFTER_PREREQUISITES
       && Boolean(turn.result)
-      && hasMaximumLoanPrerequisites(turn.result!.leadCardPatch);
+      && hasMaximumLoanPrerequisites({
+        ...normalizedFacts,
+        ...application.facts,
+        ...turn.result!.leadCardPatch
+      });
     const maximumLoanQuestion = currentMaximumLoanQuestion || deferredMaximumLoanAnswer;
     // A maximum-limit question has an approved KB answer and a server-owned
     // calculation template. It must reach that path even when the workflow
@@ -464,7 +474,9 @@ export class DialogueOrchestratorService {
       // factual question to knowledge. Do not let the KB answer terminate the
       // application: derive the next required action from server-owned facts.
       const workflowFollowUp = maximumLoanQuestion
-        ? maximumLoanCalculationFollowUp(factsForWorkflow, canonicalWorkflowFollowUp)
+        ? deferredMaximumLoanAnswer && hasMaximumLoanPrerequisites(factsForWorkflow)
+          ? ""
+          : maximumLoanCalculationFollowUp(factsForWorkflow, canonicalWorkflowFollowUp)
         : deferredMaximumLoanAnswer || turn.result?.dialogueState.status === "redirect_existing_contract"
         ? ""
         : canonicalWorkflowFollowUp
@@ -472,9 +484,31 @@ export class DialogueOrchestratorService {
         // A completed application has no further collection action. The
         // knowledge contract still receives a string in that terminal case.
         || "";
-      const knowledge = serverOwnsReply
-        ? undefined
-        : await speculativeKnowledgePromise;
+      let knowledge = await speculativeKnowledgePromise;
+      // A natural FAQ question can be mistaken for a workflow reply by the
+      // main agent («Поняла.»). If KB confirmed a direct answer, let that
+      // answer reach the client instead of hiding it behind the acknowledgement.
+      const knowledgeCanOverrideServerReply = Boolean(knowledge?.answerFound && knowledge.questionUnderstood)
+        && !existingContractRedirect
+        && !confirmedVisitReply
+        && turn.result?.dialogueState.status !== "refuse";
+      if (knowledgeCanOverrideServerReply) serverOwnsReply = false;
+      // The maximum preference is a server-owned deferred action. Once the
+      // last prerequisite arrives, calculate and deliver both limits directly
+      // even if the speculative KB call was started before the workflow model
+      // recognized the newly supplied fact.
+      if (deferredMaximumLoanAnswer && hasMaximumLoanPrerequisites(factsForWorkflow)) {
+        const displayMaximums = calculateLoanRangeDisplayMaximums(factsForWorkflow, settings);
+        const displayLimit = (value: number | null) => value === null ? "недоступно" : formatSomMoney(value);
+        knowledge = {
+          ...(knowledge ?? {}),
+          reply: `Без изъятия: от 50 000 сом до ${displayLimit(displayMaximums.withoutStorage)} сом\nСо стоянкой: от 50 000 сом до ${displayLimit(displayMaximums.parking)} сом`,
+          answerFound: true,
+          questionUnderstood: true,
+          shouldUseReply: true,
+          model: knowledge?.model ?? "server-maximum"
+        };
+      }
       // The KB owns factual answers, but it cannot replace a plain answer to
       // the active workflow stage. An explicit independent question remains
       // eligible even without punctuation.

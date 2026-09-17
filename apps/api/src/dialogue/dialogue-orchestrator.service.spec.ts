@@ -4,6 +4,7 @@ import { AgentTurnService, nextRequiredStageQuestion, OLDER_VEHICLE_PROGRAM_NOTI
 import { agentStageInstructions } from "./agent-stage-instructions.js";
 import { appendWorkflowFollowUp, DialogueOrchestratorService, composeReply, removeEarlierDuplicateSentences, replaceMaximumLimitPlaceholders, resolveForeignCurrencyFacts, resolveNormalizedMoneyFacts, stripKnowledgeQuestions, stripUnrequestedAssistanceOffers, workflowFollowUpAfterKnowledge } from "./dialogue-orchestrator.service.js";
 import { approvedKnowledgeSeeds } from "../knowledge/knowledge.service.js";
+import { isMaximumLoanKnowledgeQuestion } from "./documentation-retrieval.js";
 
 process.env.DATABASE_URL ??= "postgresql://test:test@localhost:5432/ailyn";
 process.env.REDIS_URL ??= "redis://localhost:6379";
@@ -160,6 +161,29 @@ describe("single-agent dialogue", () => {
     expect(output.reply).not.toMatch(/нотариальн|супруг/iu);
   });
 
+  it("starts a fresh application when an existing card receives an explicit new-loan request", async () => {
+    const application = { id: "active-app", contactId: "contact", stage: "COLLECTING_VEHICLE", status: "need_more_data", facts: { vehicleModel: "Camry", vehicleYear: 2020, vehicleValue: 1_000_000 } } as any;
+    const closedApplication = { ...application, stage: "CLOSED", status: "closed" } as any;
+    const newApplication = { id: "new-app", contactId: "contact", stage: "NEW", status: "need_more_data", facts: {} } as any;
+    const conversation = { id: "conversation", messages: [], application, channel: "web-test" } as any;
+    const store = {
+      getOrCreateConversation: vi.fn().mockResolvedValue({ conversation, application }),
+      findLatestClosedApplication: vi.fn().mockResolvedValue(undefined),
+      closeApplicationForRepeatLoan: vi.fn().mockResolvedValue(closedApplication),
+      createRepeatLoanApplication: vi.fn().mockResolvedValue(newApplication),
+      addMessage: vi.fn().mockResolvedValue({ id: "message", createdAt: "now" }), updateFacts: vi.fn().mockResolvedValue([]), saveAgentState: vi.fn(),
+      getApplication: vi.fn().mockResolvedValue(newApplication), getConversation: vi.fn().mockResolvedValue({ ...conversation, application: newApplication }), addAttachment: vi.fn(), createManagerNotification: vi.fn()
+    } as any;
+    const agent = { run: vi.fn().mockResolvedValue({ result: { ...validResult, leadCardPatch: {}, attachments: [] }, reply: "Поняла.", model: "one", promptVersion: "v1" }) } as any;
+
+    const output = await new DialogueOrchestratorService(agent, store, { getValues: vi.fn().mockResolvedValue({}) } as any, { log: vi.fn(), warn: vi.fn() } as any)
+      .receive({ externalMessageId: "new", channel: "web-test", externalContactId: "contact", text: "нужен новый займ", attachments: [], timestamp: new Date() });
+
+    expect(store.closeApplicationForRepeatLoan).toHaveBeenCalledWith(application);
+    expect(store.createRepeatLoanApplication).toHaveBeenCalledWith(conversation, closedApplication);
+    expect(output.reply).toContain("оформляем новую заявку");
+  });
+
   it("removes unrequested assistance offers from a knowledge answer", () => {
     expect(stripUnrequestedAssistanceOffers("Если не успеете закрыть долг вовремя, займ можно продлевать. Если хотите, я могу подсказать, как лучше подготовиться к продлению займа.")).toBe("Если не успеете закрыть долг вовремя, займ можно продлевать.");
     expect(stripUnrequestedAssistanceOffers("Максимальную сумму рассчитаем после оценки. Если хотите, я помогу сориентироваться по сумме точнее после осмотра.")).toBe("Максимальную сумму рассчитаем после оценки.");
@@ -173,6 +197,24 @@ describe("single-agent dialogue", () => {
     const serverLimit = "По программе без изъятия доступно до 600 000 сом. Сумма 700 000 сом по этой программе не проходит. Со стоянкой при текущей стоимости автомобиля доступно до 1 000 000 сом. Могу продолжить либо на сумму до 600 000 сом без изъятия, либо перейти на программу со стоянкой и рассмотреть сумму до 1 000 000 сом.";
     expect(appendWorkflowFollowUp(knowledgeLimit, serverLimit)).toBe(serverLimit);
     expect(stripKnowledgeQuestions("Ставка определяется индивидуально после осмотра автомобиля. Какую программу Вы предпочитаете?\nПодскажите, пожалуйста, сумму?")).toBe("Ставка определяется индивидуально после осмотра автомобиля.");
+  });
+
+  it("passes the two latest dialogue messages to the main agent for semantic stage matching", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify(validResult) } }] }) } as any;
+    await new AgentTurnService(client).run({
+      messages: [
+        { author: "client", body: "Фотографии отправил", createdAt: "first" },
+        { author: "ai", body: "Фотографии получены. Подскажите, пожалуйста, Ваше семейное положение — Вы в браке, в разводе или не в браке.", createdAt: "second" }
+      ] as any,
+      facts: { residenceRegion: "Бишкек", residenceCategory: "BISHKEK_CHUY" } as any,
+      settings: {}, text: "холост", attachments: []
+    });
+
+    const context = JSON.parse(client.createChatCompletion.mock.calls[0][0].messages[1].content[0].text);
+    expect(context.lastTwoDialogueMessages).toEqual([
+      { author: "client", text: "Фотографии отправил", createdAt: "first" },
+      { author: "ai", text: "Фотографии получены. Подскажите, пожалуйста, Ваше семейное положение — Вы в браке, в разводе или не в браке.", createdAt: "second" }
+    ]);
   });
 
   it("repeats the current stage question after a KB answer only when it was not the last stage prompt", () => {
@@ -789,7 +831,7 @@ describe("single-agent dialogue", () => {
     expect(output?.reply).toContain("ставка составляет 2,4% в месяц");
   });
 
-  it("rejects an unasked guarantor answer from KB for a programme and residence statement", async () => {
+  it("keeps the KB model authoritative for guarantor classification", async () => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
       reply: "Поручитель нужен только при займе без изъятия автомобиля для клиентов, зарегистрированных за пределами Бишкека и Чуйской области.",
       answerFound: true,
@@ -804,7 +846,64 @@ describe("single-agent dialogue", () => {
       facts: {}, settings: {}, text: "без изъятия, я из токмока", workflowFollowUp: "Подскажите, пожалуйста, Вашу прописку."
     });
 
-    expect(output).toMatchObject({ answerFound: false, shouldUseReply: false });
+    expect(output).toMatchObject({ answerFound: true, shouldUseReply: true });
+  });
+
+  it("uses only the KB answer for a guarantor question without appending a server duplicate", async () => {
+    const reply = "Да, в Вашем случае потребуется поручитель.";
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      reply, answerFound: true, questionUnderstood: true, sourceKeys: ["lead_card"], requestScope: "new_loan", contextualPolicyRelation: null
+    }) } }] }) } as any;
+
+    const output = await new AgentTurnService(client).answerWithKnowledge({
+      messages: [], facts: { requestedProgram: "without_storage", residenceCategory: "OTHER_KG" } as any,
+      settings: {}, text: "а нужен поручитель будет мне?", workflowFollowUp: ""
+    });
+
+    expect(output?.reply).toBe(reply);
+    expect(output?.reply.match(/поручител/giu)).toHaveLength(1);
+  });
+
+  it("delivers a KB guarantor answer for an unpunctuated natural question", async () => {
+    const reply = "Да, в Вашем случае потребуется поручитель.";
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      reply, answerFound: true, questionUnderstood: true, sourceKeys: ["faq_guarantor_requirement"], requestScope: "new_loan", contextualPolicyRelation: null
+    }) } }] }) } as any;
+
+    const output = await new AgentTurnService(client).answerWithKnowledge({
+      messages: [], facts: { requestedProgram: "without_storage", residenceCategory: "OTHER_KG" } as any,
+      settings: {}, text: "А поручителя искать", workflowFollowUp: ""
+    });
+
+    expect(output).toMatchObject({ reply, answerFound: true, shouldUseReply: true });
+  });
+
+  it("reduces a verbose KB guarantor explanation to the direct answer", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      reply: "Поручитель нужен только при займе без изъятия автомобиля для клиентов, зарегистрированных за пределами Бишкека и Чуйской области. В Вашем случае, поскольку прописка указана как \"Другой регион Кыргызстана\", поручитель потребуется.",
+      answerFound: true, questionUnderstood: true, sourceKeys: ["faq_guarantor_requirement"], requestScope: "new_loan", contextualPolicyRelation: null
+    }) } }] }) } as any;
+
+    const output = await new AgentTurnService(client).answerWithKnowledge({
+      messages: [], facts: { requestedProgram: "without_storage", residenceCategory: "OTHER_KG" } as any,
+      settings: {}, text: "А поручитель нужен?", workflowFollowUp: ""
+    });
+
+    expect(output?.reply).toBe("Да, в Вашем случае потребуется поручитель.");
+  });
+
+  it("does not turn a residence fact into an unsolicited guarantor answer", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      reply: "Поручитель потребуется только для программы без изъятия при прописке за пределами Бишкека и Чуйской области.",
+      answerFound: true, questionUnderstood: true, sourceKeys: ["faq_guarantor_requirement"], requestScope: "new_loan", contextualPolicyRelation: null
+    }) } }] }) } as any;
+
+    const output = await new AgentTurnService(client).answerWithKnowledge({
+      messages: [{ author: "ai", body: "Подскажите, пожалуйста, Вашу прописку.", createdAt: "now" } as any],
+      facts: {}, settings: {}, text: "Я в чуйске прописан", workflowFollowUp: "Подскажите, пожалуйста, Вашу прописку."
+    });
+
+    expect(output).toMatchObject({ reply: "__WORKFLOW_STAGE_RESPONSE__", answerFound: false, shouldUseReply: false });
   });
 
   it("keeps an inspection question when a known-guarantor answer shares the visit turn", async () => {
@@ -822,7 +921,7 @@ describe("single-agent dialogue", () => {
     expect(client.createChatCompletion).toHaveBeenCalledOnce();
     expect(output?.answerFound).toBe(true);
     expect(output?.reply).toContain("Осмотр автомобиля проводится");
-    expect(output?.reply).toContain("поручитель не требуется");
+    expect(output?.reply).not.toContain("поручитель не требуется");
   });
 
   it("records tomorrow at six from a mixed inspection and guarantor message", async () => {
@@ -2280,7 +2379,7 @@ describe("single-agent dialogue", () => {
     const output = await new DialogueOrchestratorService(agent, store, { getValues: vi.fn().mockResolvedValue({}) } as any, { log: vi.fn() } as any)
       .receive({ externalMessageId: "m", channel: "web-test", externalContactId: "c", text: "самая большая", attachments: [], timestamp: new Date() });
 
-    expect(output.reply).toBe("Максимальную сумму смогу рассчитать после того, как узнаю: Ваша прописка.\n\nПодскажите, пожалуйста, Вашу прописку — Бишкек, Чуйская область или другой регион Кыргызстана.");
+    expect(output.reply).toBe("Максимальную сумму смогу рассчитать после того, как узнаю: Вашу прописку.\n\nПодскажите, пожалуйста, Вашу прописку — Бишкек, Чуйская область или другой регион Кыргызстана.");
     expect(output.reply).not.toContain(amountStageQuestion);
     expect(store.saveAgentState).toHaveBeenCalledWith(application, expect.objectContaining({ nextAction: "answer_maximum_after_prerequisites" }));
   });
@@ -2311,7 +2410,7 @@ describe("single-agent dialogue", () => {
       .receive({ externalMessageId: "m", channel: "web-test", externalContactId: "c", text: "А сколько можете дать", attachments: [], timestamp: new Date() });
 
     const residenceQuestion = "Подскажите, пожалуйста, Вашу прописку — Бишкек, Чуйская область или другой регион Кыргызстана.";
-    expect(agent.answerWithKnowledge).toHaveBeenCalledWith(expect.objectContaining({ workflowFollowUp: residenceQuestion }));
+    expect(agent.answerWithKnowledge).toHaveBeenCalledWith(expect.objectContaining({ workflowFollowUp: amountStageQuestion }));
     expect(output.reply).toContain(residenceQuestion);
     expect(output.reply).not.toContain("модель и год выпуска");
   });
@@ -2336,7 +2435,9 @@ describe("single-agent dialogue", () => {
     } as any;
     const agent = {
       run: vi.fn().mockResolvedValue({
-        result: { ...validResult, leadCardPatch: resolvedFacts },
+        // The workflow model normally returns only the newly recognized
+        // residence. Vehicle facts are already persisted on the application.
+        result: { ...validResult, leadCardPatch: { residenceText: resolvedFacts.residenceText, residenceRegion: resolvedFacts.residenceRegion, residenceCategory: resolvedFacts.residenceCategory } },
         reply: "Поняла.", model: "workflow-model", promptVersion: "v1"
       }),
       answerWithKnowledge: vi.fn().mockResolvedValue({
@@ -2349,7 +2450,7 @@ describe("single-agent dialogue", () => {
     const output = await new DialogueOrchestratorService(agent, store, { getValues: vi.fn().mockResolvedValue({}) } as any, { log: vi.fn() } as any)
       .receive({ externalMessageId: "m", channel: "web-test", externalContactId: "c", text: "Бишкек", attachments: [], timestamp: new Date() });
 
-    expect(agent.answerWithKnowledge).toHaveBeenCalledWith(expect.objectContaining({ text: "сколько максимум дадите", workflowFollowUp: "" }));
+    expect(agent.answerWithKnowledge).toHaveBeenCalledWith(expect.objectContaining({ text: "Бишкек", workflowFollowUp: amountStageQuestion }));
     expect(output.reply).toBe("Без изъятия: от 50 000 сом до 600 000 сом\nСо стоянкой: от 50 000 сом до 1 500 000 сом");
   });
 
@@ -4873,6 +4974,27 @@ describe("single-agent dialogue", () => {
     expect(output.reply).toContain("Вашу прописку");
   });
 
+  it("recognizes 'сколько сможете дать больше всего' as a maximum-loan question", () => {
+    expect(isMaximumLoanKnowledgeQuestion("сколько сможете дать больше всего")).toBe(true);
+  });
+
+  it("does not save the vehicle value as a requested amount for 'сколько сможете дать больше всего'", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      ...validResult,
+      loanQuestionKind: "none",
+      reply: "Поняла.",
+      leadCardPatch: { requestedAmount: 1_740_000 }
+    }) } }] }) } as any;
+
+    const output = await new AgentTurnService(client).run({
+      messages: [{ author: "ai", body: "Какая сумма займа Вам необходима?", createdAt: "now" } as any],
+      facts: { vehicleModel: "Camry", vehicleYear: 2022, vehicleValue: 1_740_000 } as any,
+      settings: {}, text: "сколько сможете дать больше всего", attachments: []
+    });
+
+    expect(output.result?.leadCardPatch.requestedAmount).toBeUndefined();
+  });
+
   it("does not choose a programme for a maximum question, then applies the selected programme maximum", async () => {
     const quoteClient = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
       ...validResult, loanQuestionKind: "maximum_limit", reply: "Распознано.", leadCardPatch: {}
@@ -6272,17 +6394,18 @@ describe("single-agent dialogue", () => {
     "а каким номиналом выдаете купюры",
     "по 1000 сом?"
   ])("uses the explicit fallback for an unapproved office question: %s", async (text) => {
-    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn() } as any;
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      reply: "К сожалению, у меня нет достоверной информации по этому вопросу.", answerFound: false, questionUnderstood: true, sourceKeys: [], requestScope: "not_new_loan", contextualPolicyRelation: null
+    }) } }] }) } as any;
     const output = await new AgentTurnService(client).answerWithKnowledge({
       messages: [], facts: {}, settings: {}, text, workflowFollowUp: ""
     });
 
-    expect(output).toEqual({
+    expect(output).toMatchObject({
       reply: "По номиналу купюр у меня нет достоверной информации. Это можно уточнить у менеджера при визите.",
-      answerFound: false,
-      model: "server-knowledge-fallback"
+      answerFound: false
     });
-    expect(client.createChatCompletion).not.toHaveBeenCalled();
+    expect(client.createChatCompletion).toHaveBeenCalledOnce();
   });
 
   it("answers supported parts of a mixed office question and adds only the scoped fallback", async () => {
@@ -7009,6 +7132,34 @@ describe("single-agent dialogue", () => {
     expect(output).toMatchObject({ answerFound: false, shouldUseReply: false });
     expect(output?.reply).toBe("__WORKFLOW_STAGE_RESPONSE__");
     expect(client.createChatCompletion.mock.calls[0][0].messages[0].content).toContain("это не вопросы к базе знаний");
+  });
+
+  it("rejects a region-10 KB refusal when the client only supplied vehicle facts", async () => {
+    const forbiddenReply = "К сожалению, под такой автомобиль займ не выдаётся. Если у вас есть другой автомобиль без региона 10, можно продолжить оформление по нему.";
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      reply: forbiddenReply, answerFound: true, questionUnderstood: true, sourceKeys: ["docx_0381"], requestScope: "new_loan", contextualPolicyRelation: null
+    }) } }] }) } as any;
+
+    const output = await new AgentTurnService(client).answerWithKnowledge({
+      messages: [], facts: {}, settings: {}, text: "Кио рио 2020 пять миллионов", workflowFollowUp: vehicleStageQuestion
+    });
+
+    expect(output).toMatchObject({
+      reply: "__WORKFLOW_STAGE_RESPONSE__", answerFound: false, shouldUseReply: false
+    });
+  });
+
+  it("accepts a region-10 KB answer when the region word contains a typo", async () => {
+    const reply = "К сожалению, под такой автомобиль займ не выдаётся.";
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({ choices: [{ message: { content: JSON.stringify({
+      reply, answerFound: true, questionUnderstood: true, sourceKeys: ["docx_0381"], requestScope: "new_loan", contextualPolicyRelation: null
+    }) } }] }) } as any;
+
+    const output = await new AgentTurnService(client).answerWithKnowledge({
+      messages: [], facts: {}, settings: {}, text: "у меня 10 реон", workflowFollowUp: vehicleStageQuestion
+    });
+
+    expect(output).toMatchObject({ reply, answerFound: true, shouldUseReply: true });
   });
 
   it("uses the preceding client fact when an earlier KB reply was unhelpful", async () => {
