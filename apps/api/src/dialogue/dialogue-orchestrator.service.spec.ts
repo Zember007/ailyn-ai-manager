@@ -6536,7 +6536,7 @@ describe("single-agent dialogue", () => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockRejectedValue(abortError) } as any;
     const service = new AgentTurnService(client);
 
-    await expect(service.shouldLookupKnowledge({ messages: [], text: "так братишку брать с собой или нет ?" })).resolves.toBe(true);
+    await expect(service.shouldLookupKnowledge({ messages: [], text: "братишка тоже будет" })).resolves.toBe(true);
     expect(client.createChatCompletion).toHaveBeenCalledTimes(3);
   });
 
