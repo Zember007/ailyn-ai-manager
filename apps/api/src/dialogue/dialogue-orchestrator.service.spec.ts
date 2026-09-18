@@ -6519,6 +6519,13 @@ describe("single-agent dialogue", () => {
     expect(request.messages[1].content).not.toContain("leadCard");
   });
 
+  it("routes an amenity question to knowledge without relying on the router model", async () => {
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn() } as any;
+
+    await expect(new AgentTurnService(client).shouldLookupKnowledge({ messages: [], text: "Кофе есть" })).resolves.toBe(true);
+    expect(client.createChatCompletion).not.toHaveBeenCalled();
+  });
+
   it("retries an unavailable knowledge router up to three times", async () => {
     const abortError = Object.assign(new Error("This operation was aborted"), { name: "AbortError" });
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn()

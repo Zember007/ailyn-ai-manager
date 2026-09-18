@@ -236,6 +236,16 @@ export class AgentTurnService {
   }): Promise<boolean> {
     const currentMessage = input.currentTurnMessages?.map((message) => message.text).join(" ") ?? input.text ?? "";
     if (!this.client.isConfigured() || !currentMessage.trim()) return false;
+    // Amenities and companions are always independent service-policy topics.
+    // Do not let a small router model classify an unambiguous message such as
+    // «Кофе есть?» as a workflow fact and skip the knowledge answer.
+    if (isDeterministicNonWorkflowKnowledgeTurn(currentMessage)) {
+      await this.logs?.log("dialogue.knowledge-router", "Knowledge route decided locally", {
+        conversationId: input.conversationId,
+        metadata: { lookup: true, currentMessage, reason: "non_workflow_topic" }
+      });
+      return true;
+    }
     const previousAssistantMessage = [...input.messages].reverse().find((message) => message.author === "ai")?.body ?? "";
     const model = this.config.routerAiKnowledgeRouterModel
       ?? this.config.routerAiKnowledgeModel
@@ -3889,6 +3899,10 @@ function isLikelyKnowledgeQuestion(text: string): boolean {
   if (isProgramSelectionStatement(text)) return false;
   if (/(?:братишк|с\s+брат|сопровождающ|не\s+один|ребён|ребен|с\s+(?:собак|кошк))/iu.test(text.trim())) return true;
   return /(?:^|[.!;]\s*|\s+(?:а|и|ну)\s+)(?:(?:(?:а|и|ну)\s+)?(?:есть|можно|сколько|какой|какая|какие|где|когда|как|работает|ставите|нужн(?:о|а|ы)?|дадите|оформить|оформлю|приеду)(?=\s|$)|(?:так\s+)?что\s+делать(?:\s+дальше)?|(?:авто|машин).{0,40}(?:кредит|залоге|арест|ограничен)|(?:датчик|gps|гпс|трекер|парковк|стоянк|вещ|багаж)|(?:(?:а|и|ну|с)\s+)?(?:кофе|чай|wi-?fi|туалет|соб[ао](?:а)?к\p{L}*|животн\p{L}*).{0,60}(?:есть|можно\p{L}*|пуска\p{L}*|разреш\p{L}*))/iu.test(text.trim());
+}
+
+function isDeterministicNonWorkflowKnowledgeTurn(text: string): boolean {
+  return /(?:кофе|чай|wi-?fi|туалет|собак\p{L}*|кошк\p{L}*|животн\p{L}*|братишк\p{L}*|сопровождающ\p{L}*|реб[её]нк\p{L}*)/iu.test(text);
 }
 
 function isProgramSelectionStatement(text: string): boolean {

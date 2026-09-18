@@ -22,6 +22,15 @@ export function effectiveFactsForTurn(input: {
     ...(input.explicitFacts.documents ?? {})
   };
   const result = Object.keys(documents).length > 0 ? { ...merged, documents } : merged;
+  // The extractor occasionally puts a well-known model (for example
+  // «Камри») into the legacy `vehicleMake` field. A model is required to
+  // complete the vehicle stage, so canonicalize this unambiguous mistake
+  // before the server selects the next question.
+  const recognizedVehicle = recognizedVehicleFromMake(result.vehicleMake);
+  if (recognizedVehicle && !result.vehicleModel) {
+    result.vehicleMake = recognizedVehicle.make;
+    result.vehicleModel = recognizedVehicle.model;
+  }
   // A locality detected in the current client turn is authoritative over a
   // stale generic category from an earlier model response. Without this,
   // "Токмок" can coexist with OTHER_KG and incorrectly open the guarantor
@@ -76,6 +85,15 @@ export function effectiveFactsForTurn(input: {
     result.reportedInvalidVehicleYear = null;
   }
   return result;
+}
+
+function recognizedVehicleFromMake(value: unknown): { make: string; model: string } | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim().toLocaleLowerCase("ru-RU");
+  if (/^(?:camry|камри)$/iu.test(normalized)) return { make: "Toyota", model: "Camry" };
+  if (/^(?:accord|аккорд)$/iu.test(normalized)) return { make: "Honda", model: "Accord" };
+  if (/^(?:land\s*cruiser|ленд\s*крузер|ланд\s*крузер)$/iu.test(normalized)) return { make: "Toyota", model: "Land Cruiser" };
+  return undefined;
 }
 
 /**
