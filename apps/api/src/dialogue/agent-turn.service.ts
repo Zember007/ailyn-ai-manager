@@ -72,7 +72,7 @@ type ContextualKnowledgePolicy = { key: "region_10_refusal" | "previous_assistan
 const MAX_AGENT_RESPONSE_TOKENS = 500;
 // Auxiliary classifiers and JSON normalizers have deterministic fallbacks.
 // They must never make a client wait for the full dialogue-model timeout.
-const AUXILIARY_MODEL_TIMEOUT_MS = 5_000;
+const AUXILIARY_MODEL_TIMEOUT_MS = 7_000;
 const MAX_KNOWLEDGE_ROUTER_ATTEMPTS = 3;
 const unnormalizedMoneyFactKeys = new Set(["vehicleValue", "requestedAmount", "vehicleValueSourceCurrency", "requestedAmountSourceCurrency"]);
 const NORMALIZER_PROMPT = `Вы — технический JSON-нормализатор ответа менеджера.
@@ -270,11 +270,23 @@ export class AgentTurnService {
       }
     }
     this.logger.warn(`Knowledge router unavailable after ${MAX_KNOWLEDGE_ROUTER_ATTEMPTS} attempts: ${formatError(lastError)}`);
-    await this.logs?.warn("dialogue.knowledge-router", "Knowledge route failed; skipping lookup", {
+    await this.logs?.warn("dialogue.knowledge-router", "Knowledge route failed; applying local fallback", {
       conversationId: input.conversationId,
       metadata: { model, error: formatError(lastError), currentMessage, attempts: MAX_KNOWLEDGE_ROUTER_ATTEMPTS }
     });
-    return false;
+    // The router is an optimisation, not an availability boundary. If it
+    // times out, preserve knowledge access for an explicit/FAQ question using
+    // the local classifier. Otherwise a transient provider timeout silently
+    // turns a question into an ordinary workflow turn and the KB is never
+    // called at all.
+    const fallbackLookup = isLikelyKnowledgeQuestion(currentMessage)
+      || hasApprovedKnowledgeMatch(currentMessage)
+      || isOfficeLocationQuestion(currentMessage);
+    await this.logs?.log("dialogue.knowledge-router", "Knowledge route fallback applied", {
+      conversationId: input.conversationId,
+      metadata: { fallbackLookup, currentMessage, reason: "router_unavailable" }
+    });
+    return fallbackLookup;
   }
 
   /**

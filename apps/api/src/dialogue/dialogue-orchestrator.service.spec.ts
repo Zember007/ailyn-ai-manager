@@ -6531,6 +6531,15 @@ describe("single-agent dialogue", () => {
     expect(client.createChatCompletion).toHaveBeenCalledTimes(3);
   });
 
+  it("fails open to the knowledge route when the router times out", async () => {
+    const abortError = Object.assign(new Error("This operation was aborted"), { name: "AbortError" });
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockRejectedValue(abortError) } as any;
+    const service = new AgentTurnService(client);
+
+    await expect(service.shouldLookupKnowledge({ messages: [], text: "так братишку брать с собой или нет ?" })).resolves.toBe(true);
+    expect(client.createChatCompletion).toHaveBeenCalledTimes(3);
+  });
+
   it("uses the configured knowledge model with the complete approved corpus", async () => {
     const previousModel = process.env.ROUTERAI_KNOWLEDGE_MODEL;
     process.env.ROUTERAI_KNOWLEDGE_MODEL = "knowledge-test-model";
