@@ -74,6 +74,7 @@ const MAX_AGENT_RESPONSE_TOKENS = 500;
 // They must never make a client wait for the full dialogue-model timeout.
 const AUXILIARY_MODEL_TIMEOUT_MS = 7_000;
 const MAX_KNOWLEDGE_ROUTER_ATTEMPTS = 3;
+const MAX_KNOWLEDGE_ANSWER_ATTEMPTS = 2;
 const unnormalizedMoneyFactKeys = new Set(["vehicleValue", "requestedAmount", "vehicleValueSourceCurrency", "requestedAmountSourceCurrency"]);
 const NORMALIZER_PROMPT = `Вы — технический JSON-нормализатор ответа менеджера.
 Верните только один валидный JSON строго по переданной схеме AgentTurnResult.
@@ -321,6 +322,8 @@ export class AgentTurnService {
     currentTime?: Date;
     conversationId?: string;
     signal?: AbortSignal;
+    /** Internal counter: a provider failure receives one fresh KB attempt. */
+    knowledgeAttempt?: number;
   }): Promise<{ reply: string; answerFound: boolean; questionUnderstood?: boolean; shouldUseReply?: boolean; requestScope?: "new_loan" | "not_new_loan" | "unknown"; model: string } | undefined> {
     if (!this.client.isConfigured()) return undefined;
     // Calls reach this method only after the lightweight knowledge router
@@ -542,12 +545,33 @@ export class AgentTurnService {
     } catch (error) {
       if (input.signal?.aborted) throw error;
       const message = formatError(error);
+      const attempt = input.knowledgeAttempt ?? 1;
+      if (attempt < MAX_KNOWLEDGE_ANSWER_ATTEMPTS) {
+        this.logger.warn(`Knowledge model attempt ${attempt} failed: ${message}; retrying`);
+        await this.logs?.warn("dialogue.knowledge-model", "Knowledge model request failed; retrying", {
+          conversationId: input.conversationId,
+          metadata: { model, error: message, attempt, maxAttempts: MAX_KNOWLEDGE_ANSWER_ATTEMPTS }
+        });
+        return this.answerWithKnowledge({ ...input, knowledgeAttempt: attempt + 1 });
+      }
       this.logger.warn(`Knowledge model unavailable: ${message}`);
       await this.logs?.warn("dialogue.knowledge-model", "Knowledge model request failed", {
         conversationId: input.conversationId,
-        metadata: { model, error: message }
+        metadata: { model, error: message, attempts: attempt }
       });
-      return undefined;
+      const questionText = input.currentTurnMessages?.map((item) => item.text).join(" ") ?? input.text ?? "";
+      const questionUnderstood = isExplicitQuestionText(questionText)
+        || isLikelyKnowledgeQuestion(questionText)
+        || hasApprovedKnowledgeMatch(questionText)
+        || isMaximumLoanKnowledgeQuestion(questionText);
+      return {
+        reply: UNKNOWN_KNOWLEDGE_ANSWER,
+        answerFound: false,
+        questionUnderstood,
+        shouldUseReply: questionUnderstood,
+        requestScope: "unknown",
+        model: "server-knowledge-fallback"
+      };
     }
   }
 

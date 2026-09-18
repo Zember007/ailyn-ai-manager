@@ -7473,7 +7473,7 @@ describe("single-agent dialogue", () => {
     expect(output).toMatchObject({ reply, answerFound: true });
   });
 
-  it("does not substitute a server reply when the KB response violates its schema", async () => {
+  it("retries an invalid KB response once and returns the server fallback", async () => {
     const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockResolvedValue({
       model: "openai/gpt-4o-mini",
       choices: [{ finish_reason: "stop", message: { content: null, refusal: "refused by provider" } }]
@@ -7484,7 +7484,12 @@ describe("single-agent dialogue", () => {
       messages: [], facts: {}, settings: {}, text: "А у меня авто сломана", workflowFollowUp: ""
     });
 
-    expect(output).toBeUndefined();
+    expect(output).toMatchObject({
+      reply: "К сожалению, у меня нет достоверной информации по этому вопросу. Когда Вы приедете, сотрудники с удовольствием подскажут Вам.",
+      answerFound: false,
+      model: "server-knowledge-fallback"
+    });
+    expect(client.createChatCompletion).toHaveBeenCalledTimes(2);
     expect(logs.warn).toHaveBeenCalledWith(
       "dialogue.knowledge-model",
       "Knowledge model response failed schema validation",
@@ -7499,6 +7504,23 @@ describe("single-agent dialogue", () => {
         })
       })
     );
+  });
+
+  it("retries an aborted knowledge answer once and returns a safe answer after both attempts fail", async () => {
+    const abortError = Object.assign(new Error("This operation was aborted"), { name: "AbortError" });
+    const client = { isConfigured: vi.fn().mockReturnValue(true), createChatCompletion: vi.fn().mockRejectedValue(abortError) } as any;
+
+    const output = await new AgentTurnService(client).answerWithKnowledge({
+      messages: [], facts: {}, settings: {}, text: "Кофе есть", workflowFollowUp: ""
+    });
+
+    expect(client.createChatCompletion).toHaveBeenCalledTimes(2);
+    expect(output).toMatchObject({
+      reply: "К сожалению, у меня нет достоверной информации по этому вопросу. Когда Вы приедете, сотрудники с удовольствием подскажут Вам.",
+      answerFound: false,
+      shouldUseReply: true,
+      model: "server-knowledge-fallback"
+    });
   });
 
   it("keeps a friendly contextual acknowledgement before the pending visit after an unhandled reaction", async () => {
