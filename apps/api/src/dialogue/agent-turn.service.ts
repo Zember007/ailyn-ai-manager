@@ -239,10 +239,14 @@ export class AgentTurnService {
     // Amenities and companions are always independent service-policy topics.
     // Do not let a small router model classify an unambiguous message such as
     // «Кофе есть?» as a workflow fact and skip the knowledge answer.
-    if (isDeterministicNonWorkflowKnowledgeTurn(currentMessage)) {
+    if (isDeterministicNonWorkflowKnowledgeTurn(currentMessage) || isMaximumLoanKnowledgeQuestion(currentMessage)) {
       await this.logs?.log("dialogue.knowledge-router", "Knowledge route decided locally", {
         conversationId: input.conversationId,
-        metadata: { lookup: true, currentMessage, reason: "non_workflow_topic" }
+        metadata: {
+          lookup: true,
+          currentMessage,
+          reason: isMaximumLoanKnowledgeQuestion(currentMessage) ? "maximum_loan_question" : "non_workflow_topic"
+        }
       });
       return true;
     }
