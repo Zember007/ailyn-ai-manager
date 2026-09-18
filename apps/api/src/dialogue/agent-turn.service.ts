@@ -279,9 +279,10 @@ export class AgentTurnService {
     // the local classifier. Otherwise a transient provider timeout silently
     // turns a question into an ordinary workflow turn and the KB is never
     // called at all.
-    const fallbackLookup = isLikelyKnowledgeQuestion(currentMessage)
+    const fallbackLookup = !isProgramSelectionStatement(currentMessage)
+      && (isLikelyKnowledgeQuestion(currentMessage)
       || hasApprovedKnowledgeMatch(currentMessage)
-      || isOfficeLocationQuestion(currentMessage);
+      || isOfficeLocationQuestion(currentMessage));
     await this.logs?.log("dialogue.knowledge-router", "Knowledge route fallback applied", {
       conversationId: input.conversationId,
       metadata: { fallbackLookup, currentMessage, reason: "router_unavailable" }
@@ -3885,8 +3886,14 @@ function requiresKnowledgeAnswer(input: Pick<AgentTurnInput, "text" | "currentTu
 function isLikelyKnowledgeQuestion(text: string): boolean {
   if (/[?？]/u.test(text)) return true;
   if (wordCount(text) < 2) return false;
+  if (isProgramSelectionStatement(text)) return false;
   if (/(?:братишк|с\s+брат|сопровождающ|не\s+один|ребён|ребен|с\s+(?:собак|кошк))/iu.test(text.trim())) return true;
   return /(?:^|[.!;]\s*|\s+(?:а|и|ну)\s+)(?:(?:(?:а|и|ну)\s+)?(?:есть|можно|сколько|какой|какая|какие|где|когда|как|работает|ставите|нужн(?:о|а|ы)?|дадите|оформить|оформлю|приеду)(?=\s|$)|(?:так\s+)?что\s+делать(?:\s+дальше)?|(?:авто|машин).{0,40}(?:кредит|залоге|арест|ограничен)|(?:датчик|gps|гпс|трекер|парковк|стоянк|вещ|багаж)|(?:(?:а|и|ну|с)\s+)?(?:кофе|чай|wi-?fi|туалет|соб[ао](?:а)?к\p{L}*|животн\p{L}*).{0,60}(?:есть|можно\p{L}*|пуска\p{L}*|разреш\p{L}*))/iu.test(text.trim());
+}
+
+function isProgramSelectionStatement(text: string): boolean {
+  return /^(?:(?:нужен|нужна|хочу|давайте|буду\s+брать|оформляйте|беру)\s+)?(?:займ\p{L}*\s+)?(?:без\s+изъят\p{L}*|со\s+стоянк\p{L}*|с\s+постановкой(?:\s+автомобил\p{L}*)?\s+на\s+(?:охран\p{L}*\s+)?стоянк\p{L}*)[.!\s]*$/iu.test(text.trim())
+    || /^(?:мне\s+)?нужн\p{L}*\s+(?:стоянк\p{L}*|парковк\p{L}*)[.!\s]*$/iu.test(text.trim());
 }
 
 /** A policy candidate is deliberately narrow: the model decides whether the
