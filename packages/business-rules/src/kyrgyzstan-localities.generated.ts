@@ -1,11 +1,3 @@
-/**
- * Generated from National Statistical Committee of the Kyrgyz Republic
- * SOATE GK 003-2025 (downloaded 2026-09-03).
- * Source: https://stat.gov.kg/ru/klassifikatory/
- *
- * Ambiguous locality names are intentionally excluded. Explicit business
- * names and historical aliases are added after the SOATE import.
- */
 export const SOATE_LOCALITY_CATEGORIES = [
   [
     "15 Жаш",
@@ -4997,7 +4989,7 @@ export const SOATE_LOCALITY_CATEGORIES = [
   ],
   [
     "Чон-Таш",
-    "OTHER_KG"
+    "BISHKEK_CHUY"
   ],
   [
     "Чон-Тогуз-Бай",
